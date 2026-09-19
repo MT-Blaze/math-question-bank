@@ -163,8 +163,26 @@ _BARE_LETTER_LINE_RE = re.compile(
     r"^[ \t]*[-*]?[ \t]*[A-Ha-hＡ-Ｈ][ \t]*[.．、,，:：)）]?[ \t]*$"
 )
 
+# 一行之内的图片语法（Markdown 与 LaTeX 两种形态），用于判断选项行是否「只有图」。
+_IMAGE_SYNTAX_RE = re.compile(
+    r"!\[[^\]]*\]\([^)]*\)|\\includegraphics(?:\[[^\]]*\])?\{[^}]*\}"
+)
 
-def _backfill_choice_images(content: str, candidates, question_type: str = ""):
+# 正文里所有图片引用的 URL（两种形态各捕获一组），用于查「同一张图引用了两次」。
+_IMAGE_REF_PATTERNS = (
+    re.compile(r"!\[[^\]]*\]\(([^)]+)\)"),
+    re.compile(r"\\includegraphics(?:\[[^\]]*\])?\{([^}]+)\}"),
+)
+
+
+def _image_refs_in(text: str) -> list:
+    urls = []
+    for pattern in _IMAGE_REF_PATTERNS:
+        urls.extend(match.group(1) for match in pattern.finditer(text or ""))
+    return urls
+
+
+def _backfill_choice_images(content: str, candidates, question_type: str = "", mark=None):
     r"""把「未被正文引用的选项图」按顺序回填进空壳选项行。
 
     返回 ``(新正文, 实际回填的图片 URL 列表)``。``\item`` 行上的图**必须留下**
@@ -174,17 +192,22 @@ def _backfill_choice_images(content: str, candidates, question_type: str = ""):
     触发条件（缺一不做，避免误伤普通题）：
       ① 明确定义为选择题；
       ② 正文里存在**空壳选项行**（``\item`` 空壳，或裸字母行）；
-      ③ **没有一个**带真实内容的选项行 —— 有一个就说明 AI 写对了，不碰；
-      ④ 候选图数量 >= 空壳数量；
-      ⑤ 正文里**一处图片引用都没有** —— 否则说明 AI 已经写过引用（含
-         ``\item`` 换行挂图形态），回填会造成同一张图渲染两次。
+      ③ 没有任何**文字选项**（``\item 106 条`` 这种）—— 有文字选项说明这是一道
+         文字题，不该被塞图；「``\item`` 里只有一张图」是已填好的选项，不算文字选项；
+      ④ **未被正文引用**的候选图数量 >= 空壳数量；
+      ⑤ 至少有一张候选图还没出现在正文里 —— 全部已引用时无事可做，硬填会让同一张
+         图渲染两次。
+    ③④⑤ 都要看「实际内容」而不是「行有没有字」：实测 AI 会写漏其中**一个**选项的
+    引用（四幅选项图只写三张、剩一个空壳 ``\item``），旧版第 ③⑤ 条一见正文里已有
+    图片引用就直接放弃回填，选项 D 就永久是空壳。
     """
     if not content or question_type not in {"single_choice", "multi_choice"}:
         return content, []
-    if "![" in content or "\\includegraphics" in content:
-        return content, []
     candidates = [u for u in (candidates or []) if u]
     if not candidates:
+        return content, []
+    unreferenced = [u for u in candidates if u not in content]
+    if not unreferenced:
         return content, []
 
     lines = content.split("\n")
@@ -198,7 +221,8 @@ def _backfill_choice_images(content: str, candidates, question_type: str = ""):
             has_option_material = True
             if _EMPTY_ITEM_LINE_RE.match(line):
                 empty_slots.append(idx)
-            else:
+            elif _IMAGE_SYNTAX_RE.sub("", line).strip():
+                # 去掉图片语法后仍有文字 = AI 写的是文字选项，整题不碰。
                 has_content_item = True
         elif not in_choices and _BARE_LETTER_LINE_RE.match(line):
             # 裸字母行仅在**非** choices 环境内视为选项壳（环境内裸字母是选项内容）。
@@ -206,13 +230,15 @@ def _backfill_choice_images(content: str, candidates, question_type: str = ""):
             empty_slots.append(idx)
     if not has_option_material or not empty_slots or has_content_item:
         return content, []
-    if len(candidates) < len(empty_slots):
+    if len(unreferenced) < len(empty_slots):
         return content, []
 
     used = []
-    for slot, image_url in zip(empty_slots, candidates):
+    for slot, image_url in zip(empty_slots, unreferenced):
         lines[slot] = f"\\item ![插图]({image_url})"
         used.append(image_url)
+    if callable(mark):
+        mark()
     return "\n".join(lines), used
 
 
@@ -408,6 +434,11 @@ def post_process_pdf_parsed_questions(parsed_questions: list, paper_title: str, 
                         seen_crops.add(url)
                         found_crops.append(url)
 
+        # 记下「本题正文/解析里真的写了引用」的那批图：step 6 会把非选项引用从正文
+        # 剥掉（改由 image_paths 作为题末插图渲染），剥完就再也查不出来了，而第 7 步
+        # 的「配图数量偏多」自检必须区分「模型确实引用了这么多」与「被兜底塞进来这么多」。
+        text_crops = list(found_crops)
+
         # 顺带检查 referenced_images 属性并应用修复映射。
         # 这里同样要覆盖两类形态：模型常把 MinerU 插图只列在这个字段里（正文不写引用）。
         for ref in q.get("referenced_images") or []:
@@ -443,6 +474,8 @@ def post_process_pdf_parsed_questions(parsed_questions: list, paper_title: str, 
 
         # 灌入 image_paths 作为独立配图卡片关联
         q["image_paths"] = owned_crops
+        owned_set = set(owned_crops)
+        q["_text_crops"] = [url for url in text_crops if url in owned_set]
 
     # 5. 极致兜底机制：如果大模型在拆题时完全删除了图片占位标记或路径，导致最终题目关联的图片为空，
     # 我们利用 3-shingle 文本重合度，将原始 PDF 物理页面产生的物理插图自动关联绑定回拆分出的题目！
@@ -456,17 +489,16 @@ def post_process_pdf_parsed_questions(parsed_questions: list, paper_title: str, 
             return (int(match.group(1)), int(match.group(2))) if match else (0, 0)
 
         page_crops = {}
-        for p_idx, page_text in enumerate(ocr_results):
-            # 获取当前页生成的所有 pdf_crop_ 临时文件 URL。
-            # 按「页序_序号」数值排序（而非 set 的哈希顺序），保证展示顺序稳定。
-            urls_on_page = sorted(
-                set(re.findall(
-                    r'/static/uploads(?:_test|/test_uploads|/uploads)?/tmp/pdf_crop_[a-zA-Z0-9_-]+\.png',
-                    page_text or "",
-                )),
-                key=_crop_order,
-            )
-            page_crops[p_idx] = urls_on_page
+        # 页级裁剪图清单**必须来自磁盘**（step 1 的 task_crop_urls），不能从整页 OCR
+        # 文本里正则捞：裁图完成后 ``[ILLUSTRATION_BOX: ...]`` 与占位符都会被
+        # process_ocr_illustrations / step 6 抹掉，页文本里根本不存在 pdf_crop 路径
+        # ——旧实现因此恒得到 {0: [], 1: []}，这道兜底从来没生效过，模型一旦把图片
+        # 文件名整段丢掉，插图就彻底消失。
+        for crop_url in task_crop_urls:
+            order = _crop_order(crop_url)
+            page_crops.setdefault(order[0], []).append(crop_url)
+        for page_index in page_crops:
+            page_crops[page_index].sort(key=_crop_order)
 
         print(f"[PDF PostProcess Failsafe] 每页识别到的插图关系: {page_crops}")
 
@@ -477,11 +509,21 @@ def post_process_pdf_parsed_questions(parsed_questions: list, paper_title: str, 
         for q in parsed_questions:
             q["_source_page"] = find_source_page_by_overlap(q.get("content", ""), ocr_results)
 
+        def _crop_key(url) -> str:
+            # 兜底比对一律用文件名：正文里模型写的 URL 前缀（/static/uploads/…）
+            # 与磁盘清单（UPLOAD_DIR_REL，测试态是 /static/test_uploads/…）不一定同形，
+            # 按整串比较会把同一张图当成两张不同的图重复分配。
+            return os.path.basename(str(url or "").split("?")[0])
+
         claimed_crops = set()
         for q in parsed_questions:
             for path in (q.get("image_paths") or []):
-                claimed_crops.add(path)
+                claimed_crops.add(_crop_key(path))
 
+        # 每道「没有配图」的题按来源页排队，页内剩余裁剪图**一题一张轮转**分配。
+        # 旧实现把整页剩余图一次性全塞给文档里最早的那道题 —— 兜底刚修好就生效的话，
+        # 现象就是某题挂着四幅根本不属于自己的图（用户最反感的「图片被其他题引用」）。
+        pending_by_page = {}
         for q in parsed_questions:
             if q.get("image_paths"):
                 continue
@@ -492,13 +534,70 @@ def post_process_pdf_parsed_questions(parsed_questions: list, paper_title: str, 
                     f"跳过图像兜底: {(q.get('content') or '')[:40]}..."
                 )
                 continue
-            crops = [c for c in page_crops.get(p_source, []) if c not in claimed_crops]
-            if crops:
-                q["image_paths"] = crops
-                claimed_crops.update(crops)
+            pending_by_page.setdefault(p_source, []).append(q)
+
+        for p_source, queue in pending_by_page.items():
+            remaining = [
+                c for c in page_crops.get(p_source, []) if _crop_key(c) not in claimed_crops
+            ]
+            if not remaining:
+                continue
+            # **一题一张**：按文档顺序把页内剩余裁剪图依次发给缺图的题。
+            # 旧实现把整页剩余图一次性全塞给最早的那道题，现象就是某题挂着四幅
+            # 根本不属于自己的图（用户最反感的「图片被其他题引用」）。真需要第二幅
+            # 的题由人工对着原页【手动截图】补，宁可少发也不要错发。
+            for q, crop in zip(queue, remaining):
+                claimed_crops.add(_crop_key(crop))
+                q["image_paths"] = [crop]
                 # 打标记：这批配图是「页级兜底」推断的，模型并未给出引用，导入后需人工核对。
                 q["_image_review"] = sorted(set(q.get("_image_review") or []) | {"failsafe"})
-                print(f"[PDF PostProcess Failsafe] 成功通过重合度，将第 {p_source + 1} 页的插图 {crops} 兜底分配给题目: {(q.get('content') or '')[:40]}...")
+                print(
+                    f"[PDF PostProcess Failsafe] 成功通过重合度，将第 {p_source + 1} 页的插图"
+                    f" {crop} 兜底分配给题目: {(q.get('content') or '')[:40]}..."
+                )
+            if len(remaining) > len(queue):
+                print(
+                    "[PDF PostProcess Failsafe] 该页剩余插图多于缺图题目数，"
+                    f"未分配的 {len(remaining) - len(queue)} 张保持未归属，"
+                    "请在原页对照【手动截图】补图。"
+                )
+
+        # 5c. 仍未归属的裁剪图：只有当它**夹在两道题的已认领插图之间**时，才并给前面那道。
+        #     依据：后面那道题自己的图已经在它名下了，这张夹在中间的图不可能是它的，
+        #     只能是前一道题的第二幅（四幅选项图之后紧跟一幅解析配图就是这一形态；模型
+        #     一旦漏写引用，这张图就会变成孤儿文件被清理，用户看到的是「解析里的图凭空
+        #     消失」）。页尾无后续认领的剩余图**不并**——那正是「一题吞一页」的形态。
+        owner_by_key = {}
+        for q in parsed_questions:
+            for path in (q.get("image_paths") or []):
+                owner_by_key[_crop_key(path)] = q
+        for p_source in sorted(page_crops):
+            ordered = page_crops[p_source]
+            owners = [owner_by_key.get(_crop_key(c)) for c in ordered]
+            last_owner = None
+            chained = set()
+            for position, (crop, owner) in enumerate(zip(ordered, owners)):
+                if owner is not None:
+                    last_owner = owner
+                    continue
+                if last_owner is None or id(last_owner) in chained:
+                    continue
+                if not any(
+                    later is not None and later is not last_owner
+                    for later in owners[position + 1:]
+                ):
+                    continue
+                last_owner["image_paths"] = list(last_owner.get("image_paths") or []) + [crop]
+                owner_by_key[_crop_key(crop)] = last_owner
+                chained.add(id(last_owner))
+                last_owner["_image_review"] = sorted(
+                    set(last_owner.get("_image_review") or []) | {"failsafe"}
+                )
+                print(
+                    f"[PDF PostProcess Failsafe] 第 {p_source + 1} 页的插图 {crop}"
+                    " 夹在两题已认领插图之间，按文档顺序并给前一道题（需人工核对）："
+                    f"{(last_owner.get('content') or '')[:40]}..."
+                )
 
     # 6. 从 content 题干中静默移除已绑定至 image_paths 的图片语法，避免与配图条重复渲染。
     #    ⚠️ **选项图必须留下**：`A．![](url)` 里的图是选项本身的一部分，
@@ -522,8 +621,19 @@ def post_process_pdf_parsed_questions(parsed_questions: list, paper_title: str, 
         if not isinstance(content, str) or not content:
             continue
         q_type = q.get("question_type") or ""
-        candidates = list(q.get("image_paths") or [])
-        content, filled = _backfill_choice_images(content, candidates, q_type)
+        # 解析里已经用过的图不能拿来当选项：它属于解答，塞进选项会渲染两次。
+        answer_text = q.get("answer_markdown") or ""
+        candidates = [
+            url for url in (q.get("image_paths") or [])
+            if url and url not in answer_text
+        ]
+
+        def _mark_option_backfill():
+            q["_image_review"] = sorted(set(q.get("_image_review") or []) | {"failsafe"})
+
+        content, filled = _backfill_choice_images(
+            content, candidates, q_type, mark=_mark_option_backfill
+        )
         if not filled:
             content, filled = _synthesize_image_choices(content, candidates, q_type)
         if filled:
@@ -533,13 +643,40 @@ def post_process_pdf_parsed_questions(parsed_questions: list, paper_title: str, 
                 f"已按顺序补回 {len(filled)} 张选项图。"
             )
 
+    # 6.6 选项区重复引用同一张图：视觉模型漏框了图形，AI 只能拿已有的两张凑四个选项。
+    #     实测同一份卷子重跑时第 1 题变成「图1 图2 图1 图2」——卷面看起来是完整的，
+    #     答案却必然错，比空壳选项更危险，所以必须打标记交给人核对。
+    for idx, q in enumerate(parsed_questions, start=1):
+        content = q.get("content")
+        if not isinstance(content, str) or not content:
+            continue
+        counts = {}
+        for url in _image_refs_in(content):
+            key = os.path.basename(str(url).split("?")[0])
+            counts[key] = counts.get(key, 0) + 1
+        dupes = sorted(name for name, times in counts.items() if times > 1)
+        if dupes:
+            q["_image_review"] = sorted(set(q.get("_image_review") or []) | {"duplicate"})
+            print(
+                f"[配图自检] 第 {idx} 题的选项重复引用同一张图 {dupes}："
+                "视觉模型漏识别了部分图形，请对照原页【手动截图】补图。"
+            )
+
     # 7. 配图自检：给需要人工核对的题打标记（供卡片角标使用），并输出一行摘要。
     #    只在「配图是兜底推断来的」或「配图数量明显偏多」时提示——绝大多数题目本来就
     #    没有配图，对它报警只会淹没真正异常的那几道。
+    loose_counts = []
     for q in parsed_questions:
         paths = q.get("image_paths") or []
+        referenced = set(q.pop("_text_crops", None) or [])
         reasons = set(q.get("_image_review") or [])
-        if len(paths) >= _IMAGE_COUNT_REVIEW_THRESHOLD:
+        # 「数量偏多」只统计**没有出现在本题正文/解析里**的图（即靠推断挂上来的）。
+        # 选择题四幅选项图 + 一幅解析配图是完全合法的形态（实测 1.pdf 第 1 题 5 张
+        # 全部在正文里），把它们一起计入告警会让每道图形选择题都亮红角标，
+        # 真正「吞了别题插图」的那道题反而被淹没。
+        loose = [url for url in paths if url not in referenced]
+        loose_counts.append(len(loose))
+        if len(loose) >= _IMAGE_COUNT_REVIEW_THRESHOLD:
             reasons.add("many")
         if reasons:
             q["_image_review"] = sorted(reasons)
@@ -552,10 +689,14 @@ def post_process_pdf_parsed_questions(parsed_questions: list, paper_title: str, 
         if not reasons:
             continue
         count = len(q.get("image_paths") or [])
+        label = []
         if "failsafe" in reasons:
-            review_notes.append(f"第 {idx} 题（{count} 张，由页级兜底推断）")
-        else:
-            review_notes.append(f"第 {idx} 题（{count} 张，数量偏多）")
+            label.append("由页级兜底推断")
+        if "many" in reasons:
+            label.append(f"{loose_counts[idx - 1]} 张正文未引用")
+        if "duplicate" in reasons:
+            label.append("选项重复引用同一张图")
+        review_notes.append(f"第 {idx} 题（{count} 张，{'；'.join(label)}）")
     if review_notes:
         print("[配图自检] 以下题目的配图建议人工核对：" + "；".join(review_notes))
     else:

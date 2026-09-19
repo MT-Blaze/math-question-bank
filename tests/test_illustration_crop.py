@@ -486,7 +486,7 @@ def test_failsafe_does_not_steal_crops_claimed_by_another_question(tmp_path):
 
 
 def test_failsafe_page_crops_are_in_numeric_document_order(tmp_path):
-    """页内插图顺序必须按「页序_序号」数值排，不能受 set 哈希顺序影响。"""
+    """页内插图按「页序_序号」数值排后**一题一张**发出，且不得受 set 哈希顺序影响。"""
     from main import post_process_pdf_parsed_questions
 
     tmp_dir = tmp_path / "tmp"
@@ -494,24 +494,82 @@ def test_failsafe_page_crops_are_in_numeric_document_order(tmp_path):
     for name in ("pdf_crop_taskJ_0_2.png", "pdf_crop_taskJ_0_10.png", "pdf_crop_taskJ_0_1.png"):
         (tmp_dir / name).write_bytes(b"png")
 
-    urls = " ".join(
-        f"/static/uploads/tmp/{n}"
-        for n in ("pdf_crop_taskJ_0_2.png", "pdf_crop_taskJ_0_10.png", "pdf_crop_taskJ_0_1.png")
-    )
-    ocr_results = [f"三角函数页面 {urls}"]
+    ocr_results = ["三角函数页面"]
 
-    questions = [{"content": "三角函数与单位圆", "answer_markdown": ""}]
+    questions = [
+        {"content": "三角函数与单位圆第一问", "answer_markdown": ""},
+        {"content": "三角函数与单位圆第二问", "answer_markdown": ""},
+        {"content": "三角函数与单位圆第三问", "answer_markdown": ""},
+    ]
 
     with patch("main.TMP_UPLOAD_DIR", str(tmp_dir)):
         result = post_process_pdf_parsed_questions(
             questions, "测试卷", "taskJ", ocr_results=ocr_results
         )
 
-    assert [os.path.basename(u) for u in result[0]["image_paths"]] == [
+    assert [os.path.basename(q["image_paths"][0]) for q in result] == [
         "pdf_crop_taskJ_0_1.png",
         "pdf_crop_taskJ_0_2.png",
         "pdf_crop_taskJ_0_10.png",
     ]
+
+
+def test_orphan_crop_chains_to_the_question_whose_figure_precedes_it(tmp_path):
+    """模型漏写引用的那张图必须并给「文档顺序上紧跟其后」的那道题，不能变孤儿。
+
+    实测 1.pdf 第 1 题：四幅选项图 _0_0.._0_3 由模型写进选项，解析配图 _0_4 有时
+    被模型整段丢掉 —— 它既不在任何题的 image_paths 里，就会被孤儿清理抹掉，
+    用户看到的就是「解析里的图凭空消失」。_0_5 已被第 2 题认领，所以 _0_4 只能
+    属于第 1 题。
+    """
+    from main import post_process_pdf_parsed_questions
+
+    tmp_dir = tmp_path / "tmp"
+    tmp_dir.mkdir()
+    names = [f"pdf_crop_taskK_0_{i}.png" for i in range(6)]
+    for name in names:
+        (tmp_dir / name).write_bytes(b"png")
+
+    urls = [f"/static/uploads/tmp/{n}" for n in names]
+    q1_stem = "下列各曲线中 " + " ".join(f"![]({u})" for u in urls[:4])
+    q2_stem = "如图，在长方体中 " + f"![]({urls[5]})"
+
+    with patch("main.TMP_UPLOAD_DIR", str(tmp_dir)):
+        result = post_process_pdf_parsed_questions(
+            [
+                {"content": q1_stem, "answer_markdown": "【解析】如图，C 选项不符合定义。"},
+                {"content": q2_stem, "answer_markdown": ""},
+            ],
+            "测试卷", "taskK", ocr_results=["下列各曲线中 如图，在长方体中"],
+        )
+
+    assert [os.path.basename(u) for u in result[0]["image_paths"]] == names[:4] + [names[4]]
+    assert [os.path.basename(u) for u in result[1]["image_paths"]] == [names[5]]
+    assert result[0]["_image_review"] == ["failsafe"]
+
+
+def test_failsafe_never_hands_a_question_the_whole_page(tmp_path):
+    """一页多题时兜底必须一题一张：一道题吞掉整页剩余图是最刺眼的错归属。"""
+    from main import post_process_pdf_parsed_questions
+
+    tmp_dir = tmp_path / "tmp"
+    tmp_dir.mkdir()
+    for i in range(4):
+        (tmp_dir / f"pdf_crop_taskJ2_0_{i}.png").write_bytes(b"png")
+
+    questions = [
+        {"content": "三角函数与单位圆甲", "answer_markdown": ""},
+        {"content": "三角函数与单位圆乙", "answer_markdown": ""},
+    ]
+
+    with patch("main.TMP_UPLOAD_DIR", str(tmp_dir)):
+        result = post_process_pdf_parsed_questions(
+            questions, "测试卷", "taskJ2", ocr_results=["三角函数与单位圆甲乙丙丁"]
+        )
+
+    assert [len(q["image_paths"]) for q in result] == [1, 1]
+    # 剩下两张无人认领，不得塞给已有图的题
+    assert result[0]["image_paths"][0] != result[1]["image_paths"][0]
 
 
 def test_post_process_records_source_page_for_every_question(tmp_path):
@@ -741,6 +799,82 @@ def test_escaped_newline_before_lowercase_command_is_preserved(tmp_path):
     assert r"\neq" in content
 
 
+def test_duplicate_option_image_reference_is_flagged(tmp_path):
+    """选项重复引用同一张图必须打标记：卷面看着完整、答案却必然错。
+
+    实测同一份卷子重跑时视觉模型漏框了两幅选项曲线，AI 就拿已有的两张凑成
+    「图1 图2 图1 图2」。这比留一个空壳选项更危险，因为没人会去核对一道
+    看起来正常的题。
+    """
+    from main import post_process_pdf_parsed_questions
+
+    tmp_dir = tmp_path / "tmp"
+    tmp_dir.mkdir()
+    for i in range(2):
+        (tmp_dir / f"pdf_crop_taskU_0_{i}.png").write_bytes(b"png")
+    url_a = "/static/uploads/tmp/pdf_crop_taskU_0_0.png"
+    url_b = "/static/uploads/tmp/pdf_crop_taskU_0_1.png"
+
+    content = (
+        "下列各曲线中（）\n"
+        f"A．![插图]({url_a})\nB．![插图]({url_b})\n"
+        f"C．![插图]({url_a})\nD．![插图]({url_b})"
+    )
+    with patch("main.TMP_UPLOAD_DIR", str(tmp_dir)):
+        result = post_process_pdf_parsed_questions(
+            [{"content": content, "answer_markdown": "",
+              "question_type": "single_choice"}],
+            "测试卷", "taskU",
+        )
+
+    assert "duplicate" in (result[0].get("_image_review") or [])
+
+
+def test_partially_missing_option_image_is_backfilled(tmp_path):
+    r"""AI 只漏写**一个**选项的图引用时，剩下的空壳 `\item` 也要补回图。
+
+    实测 1.pdf 第 1 题：四幅选项图 AI 只写了三张（`_0_1/_0_2/_0_3`），第 4 个
+    ``\item`` 是空壳，而 `_0_0` 躺在 image_paths 里没人用。旧回填条件要求
+    「正文一处图片引用都没有」，于是选项 D 永久空壳。
+    """
+    from main import post_process_pdf_parsed_questions
+
+    tmp_dir = tmp_path / "tmp"
+    tmp_dir.mkdir()
+    names = [f"pdf_crop_taskT_0_{i}.png" for i in range(5)]
+    for name in names:
+        (tmp_dir / name).write_bytes(b"png")
+    urls = [f"/static/uploads/tmp/{n}" for n in names]
+
+    content = (
+        "下列各曲线中，不能表示 $y$ 是 $x$ 的函数的是（）\n"
+        f"A．![插图]({urls[1]})\n"
+        f"B．![插图]({urls[2]})\n"
+        f"C．![插图]({urls[3]})\n"
+        "D"
+    )
+    answer = "【答案】C\n\n【解析】如图 ![插图](" + urls[4] + ")"
+
+    with patch("main.TMP_UPLOAD_DIR", str(tmp_dir)):
+        result = post_process_pdf_parsed_questions(
+            [{"content": content, "answer_markdown": answer,
+              "question_type": "single_choice",
+              # 实测形态：AI 把漏掉引用的那张选项图列进了 referenced_images，
+              # 但正文只写了 A/B/C 三张。
+              "referenced_images": [urls[0]]}],
+            "测试卷", "taskT",
+        )
+
+    q = result[0]
+    item_lines = [ln for ln in q["content"].split("\n") if "\\item" in ln]
+    assert len(item_lines) == 4, q["content"]
+    assert all("includegraphics" in ln for ln in item_lines), item_lines
+    # 补进来的必须是没人用的 _0_0，而不是解析配图 _0_4
+    assert names[0] in q["content"]
+    assert names[4] not in q["content"]
+    assert q["_image_review"] == ["failsafe"]
+
+
 def test_choice_images_backfilled_when_ai_drops_them(tmp_path):
     r"""AI 只把选项图列进 referenced_images、正文不写引用时，要按顺序补回。
 
@@ -959,8 +1093,13 @@ def test_image_review_flags_failsafe_assignments(tmp_path):
     assert result[1]["_image_review"] == ["failsafe"]
 
 
-def test_image_review_flags_suspiciously_many_images(tmp_path):
-    """一题挂到 >=3 张图时提示人工核对；正常题不带标记。"""
+def test_image_review_flags_many_images_only_when_text_does_not_cite_them(tmp_path):
+    """「配图数量偏多」只统计**正文/解析里没写引用**的图。
+
+    图形选择题天然带 4 幅选项图（再加解析配图就是 5 张），旧口径按总数报警时
+    每一道这样的题都亮红角标（实测 1.pdf 第 1 题），真正「吞了别题插图」的题反而
+    被淹没。模型自己引用过的图不算可疑；只挂在 referenced_images / 兜底推断来的才算。
+    """
     from main import post_process_pdf_parsed_questions
 
     tmp_dir = tmp_path / "tmp"
@@ -971,13 +1110,213 @@ def test_image_review_flags_suspiciously_many_images(tmp_path):
 
     links = " ".join(f"![图](/static/uploads/tmp/{n})" for n in names)
     questions = [
-        {"content": f"挂了很多图 {links}", "answer_markdown": ""},
-        {"content": "只有一张 ![图](/static/uploads/tmp/pdf_crop_taskO_1_0.png)", "answer_markdown": ""},
+        # 第 1 题：3 张图全部写在正文里 —— 合法，不再误报
+        {"content": f"下列各曲线中 {links}", "answer_markdown": ""},
+        # 第 2 题：图只出现在 referenced_images，正文一张都没引用 —— 可疑
+        {
+            "content": "另有一题",
+            "answer_markdown": "",
+            "referenced_images": [f"/static/uploads/tmp/{n}" for n in names],
+        },
     ]
 
     with patch("main.TMP_UPLOAD_DIR", str(tmp_dir)):
         result = post_process_pdf_parsed_questions(questions, "测试卷", "taskO")
 
-    assert result[0]["_image_review"] == ["many"]
-    # 第二题因跨题去重拿不到图，也不应被标记
-    assert "_image_review" not in result[1]
+    assert "_image_review" not in result[0]
+    assert result[1]["_image_review"] == ["many"]
+
+
+def test_image_review_silent_for_choice_question_with_option_images(tmp_path):
+    """1.pdf 第 1 题形态：4 幅选项图 + 1 幅解析配图全部在正文里，不得报「数量偏多」。"""
+    from main import post_process_pdf_parsed_questions
+
+    tmp_dir = tmp_path / "tmp"
+    tmp_dir.mkdir()
+    names = [f"pdf_crop_taskP_0_{i}.png" for i in range(5)]
+    for name in names:
+        (tmp_dir / name).write_bytes(b"png")
+
+    urls = [f"/static/uploads/tmp/{n}" for n in names]
+    # AI 在拆题阶段的真实形态：字母标号 + 同行图片（choices 环境是入库前才生成的）
+    stem = "下列各曲线中，不能表示 $y$ 是 $x$ 的函数的是（）\n" + "\n".join(
+        f"{'ABCD'[i]}．![插图]({u})" for i, u in enumerate(urls[:4])
+    )
+    answer = "【答案】C\n\n【解析】如图 " + f"![插图]({urls[4]})"
+
+    with patch("main.TMP_UPLOAD_DIR", str(tmp_dir)):
+        result = post_process_pdf_parsed_questions(
+            [{"content": stem, "answer_markdown": answer,
+              "question_type": "single_choice"}],
+            "测试卷", "taskP",
+        )
+
+    q = result[0]
+    assert len(q["image_paths"]) == 5
+    assert "_image_review" not in q
+    # 选项图必须留在正文里（删掉就变成四个空壳选项）；入库形态是
+    # \includegraphics{文件名}，所以按文件名断言而不是整串 URL。
+    for name in names[:4]:
+        assert name in q["content"]
+    assert names[4] in q["answer_markdown"]
+
+
+# --------------------------------------------------------------------------
+# E. 模型框 -> 页面真实位图边界（裁图坐标纠正）
+# --------------------------------------------------------------------------
+
+def _render_pages(doc, out_dir, dpi=150):
+    paths = []
+    for index in range(len(doc)):
+        pix = doc.load_page(index).get_pixmap(dpi=dpi)
+        path = os.path.join(str(out_dir), f"page_{index}.png")
+        pix.save(path)
+        paths.append(path)
+    return paths
+
+
+def _one_figure_pdf(out_dir, figure, dpi=150):
+    """造一份「单页 + 一块内嵌位图」的 PDF，返回 (pdf_bytes, 整页 PNG 路径)。
+
+    用真实 PyMuPDF 几何而不是手搓坐标表：pt→px 的换算正是裁图最容易错的地方。
+    """
+    from io import BytesIO
+
+    pymupdf = pytest.importorskip("pymupdf")
+    doc = pymupdf.open()
+    page = doc.new_page(width=595, height=842)
+    tile = Image.new("RGB", (60, 60), (255, 255, 255))
+    for x in range(60):
+        for y in range(60):
+            if x % 5 == 0 or y % 5 == 0:
+                tile.putpixel((x, y), (0, 0, 0))
+    buf = BytesIO()
+    tile.save(buf, format="PNG")
+    page.insert_image(pymupdf.Rect(*figure), stream=buf.getvalue())
+    pdf_bytes = doc.tobytes()
+    page_png = _render_pages(doc, out_dir, dpi=dpi)[0]
+    return pdf_bytes, page_png
+
+
+def _expected_px(figure, rect_px, dpi=150):
+    """位图矩形（pt）→ 整页 PNG 像素矩形，与 page_figure_anchor_px 同一口径。"""
+    scale = dpi / 72.0
+    return (
+        int(round(figure[2] * scale)) - int(figure[0] * scale),
+        int(round(figure[3] * scale)) - int(figure[1] * scale),
+    )
+
+
+def test_model_box_smaller_than_figure_is_replaced_by_the_real_figure_rect(tmp_path):
+    """模型框只框到直方图一角时，裁图结果必须等于该页位图的真实矩形。
+
+    实测 1.pdf 第 4 题频率分布直方图：真实位图 (90,75,263,194)pt，模型只给了
+    左上角 135x72pt，裁出来是「频率/组距 0.035」四个字，图本身全丢了。
+    """
+    from main import resolve_ocr_illustration_boxes
+
+    figure = (90, 75, 263, 194)
+    pdf_bytes, page_png = _one_figure_pdf(tmp_path, figure)
+
+    uploads = tmp_path / "uploads_tmp"
+    uploads.mkdir()
+    # 模型框 = 真实图形的左上角一小块（y 8.5%..17%, x 15%..38%）
+    text = "频率分布直方图 [ILLUSTRATION_BOX: 8.5, 15, 17, 38] 如下"
+    with patch("main.TMP_UPLOAD_DIR", str(uploads)):
+        resolved = resolve_ocr_illustration_boxes(
+            text, page_png, "taskQ", 0, pdf_bytes=pdf_bytes
+        )
+
+    assert len(os.listdir(uploads)) == 1
+    with Image.open(uploads / os.listdir(uploads)[0]) as crop:
+        assert crop.size == _expected_px(figure, crop.size)
+    assert "![插图](tmp/" in resolved
+
+
+def test_model_box_landing_on_text_snaps_to_the_figure_below_it(tmp_path):
+    """模型框整体压在图形上方的正文行上时，吸附到同列最近的真实位图。
+
+    实测 1.pdf 第 3 题折线统计图：位图在 y=223..357pt，模型框落在其上方 79pt 的
+    文字行，裁出来是一段题干文字。
+    """
+    from main import resolve_ocr_illustration_boxes
+
+    figure = (90, 223, 488, 357)
+    pdf_bytes, page_png = _one_figure_pdf(tmp_path, figure)
+
+    uploads = tmp_path / "uploads_tmp"
+    uploads.mkdir()
+    # 框底边刚好越过位图上沿（y 18%..27.5%, x 15%..69%）
+    text = "得到数据如下 [ILLUSTRATION_BOX: 18, 15, 27.5, 69] 图"
+    with patch("main.TMP_UPLOAD_DIR", str(uploads)):
+        resolve_ocr_illustration_boxes(text, page_png, "taskR", 0, pdf_bytes=pdf_bytes)
+
+    assert len(os.listdir(uploads)) == 1
+    with Image.open(uploads / os.listdir(uploads)[0]) as crop:
+        assert crop.size == _expected_px(figure, crop.size)
+
+
+def test_far_away_anchor_is_not_dragged_into_an_unrelated_crop():
+    """模型框离位图很远时**不得**吸附：宁可裁原框，也不把别处的图搬过来。"""
+    from mathbank.illustration_crop import _snap_box_to_anchor
+
+    anchors = [(90, 700, 300, 820)]
+    # 同列但纵向间隙远大于一幅图高度
+    assert _snap_box_to_anchor((20, 400, 300, 460), anchors) is None
+    # 纵向齐平但横向完全错开（图在右栏）
+    assert _snap_box_to_anchor((20, 700, 80, 760), anchors) is None
+    # 纵向间隙小于一幅图高度、横向对齐 -> 吸附
+    assert _snap_box_to_anchor((95, 620, 290, 660), anchors) == anchors[0]
+
+
+def test_two_option_boxes_stay_two_crops():
+    """四个选项图必须各裁各的：模型框命中多个互不相交的锚点时只取重合最高的一个。"""
+    from mathbank.illustration_crop import _merge_touching_rects, _snap_box_to_anchor
+
+    option_a = (100, 100, 200, 200)
+    option_b = (300, 100, 400, 200)
+    anchors = _merge_touching_rects([option_a, option_b])
+    assert anchors == [option_a, option_b]
+    # 一个横跨两幅图的坏框：不能并成一张大图
+    snapped = _snap_box_to_anchor((90, 90, 410, 210), anchors)
+    assert snapped in (option_a, option_b)
+
+
+def test_touching_bitmaps_of_one_figure_merge_into_one_anchor():
+    """一幅图由两块位图拼成时锚点必须合并，否则会被裁成两半。"""
+    from mathbank.illustration_crop import _merge_touching_rects
+
+    merged = _merge_touching_rects([(0, 0, 100, 100), (90, 50, 200, 160), (400, 400, 500, 500)])
+    assert merged == [(0, 0, 200, 160), (400, 400, 500, 500)]
+
+
+def test_page_anchor_lookup_is_safe_without_pdf_or_bad_page_index(tmp_path):
+    """无 PDF / 页码越界 / 非 PDF 字节都必须返回空锚点表，让裁图退回旧行为。"""
+    from mathbank.illustration_crop import page_figure_anchor_px
+
+    assert page_figure_anchor_px(None, 0, 100, 100) == []
+    assert page_figure_anchor_px(b"%PDF-1.4 not really a pdf", 0, 100, 100) == []
+    assert page_figure_anchor_px(b"", 99, 100, 100) == []
+
+
+def test_failsafe_uses_disk_inventory_when_page_text_has_no_crop_urls(tmp_path):
+    """页级兜底的图清单必须来自磁盘。
+
+    旧实现从整页 OCR 文本里正则捞 pdf_crop 路径，但裁图后标签与占位符都会被擦掉，
+    页文本里根本不存在这些路径 —— 日志恒为 `{0: [], 1: []}`，这道兜底从来没生效过。
+    """
+    from main import post_process_pdf_parsed_questions
+
+    tmp_dir = tmp_path / "tmp"
+    tmp_dir.mkdir()
+    crop = "pdf_crop_taskS_0_0.png"
+    (tmp_dir / crop).write_bytes(b"png")
+
+    questions = [{"content": "如图，在长方体中", "answer_markdown": ""}]
+    with patch("main.TMP_UPLOAD_DIR", str(tmp_dir)):
+        result = post_process_pdf_parsed_questions(
+            questions, "测试卷", "taskS", ocr_results=["如图，在长方体中。"]
+        )
+
+    assert [os.path.basename(u) for u in result[0]["image_paths"]] == [crop]
+    assert result[0]["_image_review"] == ["failsafe"]

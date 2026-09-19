@@ -9,6 +9,7 @@
 from PIL import Image
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Response, UploadFile
 from fastapi.responses import JSONResponse
+from mathbank import illustration_crop
 from mathbank.ai_json import parse_ai_json
 from mathbank.ai_providers import apply_bailian_thinking_policy, apply_deepseek_thinking_policy, inject_reasoning_effort
 from mathbank.asset_security import AssetSecurityError, InvalidImageError, UploadTooLargeError, normalize_raster_image, read_stream_limited, resolve_upload_asset
@@ -1194,12 +1195,16 @@ def run_pdf_parsing_task(
                     if error:
                         real_page_num = target_page_indices[local_idx] + 1
                         raise RuntimeError(f"解析第 {real_page_num} 页出错: {error}")
-                    # 先按 ILLUSTRATION_BOX 坐标裁图，替换成占位符，再擦除残留标签
+                    # 先按 ILLUSTRATION_BOX 坐标裁图，替换成占位符，再擦除残留标签。
+                    # 传入原 PDF 字节：视觉模型的百分比框经常小于真实图形甚至整体偏移，
+                    # 裁图前要用该页内嵌位图的真实边界纠正，否则直方图会被裁成一角、
+                    # 统计图会裁成上方的正文行。
                     cropped_text = _main.resolve_ocr_illustration_boxes(
                         text,
                         page_images[local_idx],
                         task_id,
                         target_page_indices[local_idx],
+                        pdf_bytes=file_bytes,
                     )
                     processed_text = _main.process_ocr_illustrations(cropped_text)
                     real_page_num = target_page_indices[local_idx] + 1
@@ -1259,19 +1264,31 @@ def run_pdf_parsing_task(
             ocr_results,
         )
         _main.DOCUMENT_TASKS.check_cancelled(task_id)
+        # 图形对账：逐页比较「PDF 里真实有几幅图形」与「有几幅归到了题目上」。
+        # 视觉模型整幅漏掉图形时不会报错，只会让用户的图凭空消失，所以这里必须
+        # 把缺口算出来写进诊断与拆卷日志。
+        figure_report = illustration_crop.summarize_figure_coverage(
+            file_bytes,
+            list(zip(target_page_indices, page_images)),
+            final_questions,
+        )
         split_took = _lap()  # 大模型拆题 + 元数据后处理阶段耗时
         total_took = format_duration(time.monotonic() - run_started)
+        finish_log = (
+            f"完成！共拆出 {len(final_questions)} 道题。"
+            f"分步耗时：渲染 {render_took}、文字公式提取 {extract_took}、"
+            f"OCR/合成 {text_ready_took}、AI 拆题 {split_took}；总计 {total_took}。"
+        )
+        if figure_report.get("warnings"):
+            finish_log += " 插图待核对：" + "；".join(figure_report["warnings"])
         _main.DOCUMENT_TASKS.complete(
             task_id,
-            log=(
-                f"完成！共拆出 {len(final_questions)} 道题。"
-                f"分步耗时：渲染 {render_took}、文字公式提取 {extract_took}、"
-                f"OCR/合成 {text_ready_took}、AI 拆题 {split_took}；总计 {total_took}。"
-            ),
+            log=finish_log,
             data=final_questions,
             page_images=list(page_urls),
             temp_assets=list(temp_assets),
             document_type="pdf",
+            diagnostics={"figures": figure_report},
         )
     except TaskCancelled:
         _delete_task_temp_assets(temp_assets)

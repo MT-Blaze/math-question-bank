@@ -51,6 +51,10 @@ _LABEL_ERASERS = (
 # A crop smaller than this (px, either axis) is almost certainly a bad label.
 _MIN_CROP_PX = 8
 
+# 内嵌位图小于这个边长（pt）时不当作图形锚点：水印 / Logo / 装饰点。
+# 与 ``pdf_inspector_helper._extract_fitz_pages`` 的过滤口径保持一致。
+_MIN_ANCHOR_PT = 20
+
 # 页眉/页脚/水印过滤阈值（都是相对整页的比例）。
 # 视觉模型偶尔会把页眉的机构 logo、页脚装饰条也框进来，那些块和真正的题目插图
 # 的区别是「位置贴页边 + 面积小」，所以用组合条件判断，避免误伤正常插图。
@@ -258,6 +262,182 @@ def _tighten_to_content(img, pad_px=6, guard_px=4):
     return left, upper, right, lower
 
 
+def _rect_overlap(a, b) -> float:
+    """两个 (left, upper, right, lower) 矩形的交集面积（px²，无交集为 0）。"""
+    w = min(a[2], b[2]) - max(a[0], b[0])
+    h = min(a[3], b[3]) - max(a[1], b[1])
+    return float(w * h) if w > 0 and h > 0 else 0.0
+
+
+def _rect_area(r) -> float:
+    return float(max(0, r[2] - r[0]) * max(0, r[3] - r[1]))
+
+
+def _merge_touching_rects(rects):
+    """把**互相交叠**的矩形并成簇（一幅图由多块位图拼成时不能裁成几段）。
+
+    只合并真正相交者：选择题四个选项曲线是四个互不相交的矩形，必须保持四簇，
+    否则一道题会把四幅选项图并成一张大图。
+    """
+    merged = [tuple(int(v) for v in r) for r in rects]
+    changed = True
+    while changed:
+        changed = False
+        out = []
+        while merged:
+            cur = merged.pop(0)
+            for other in list(merged):
+                if _rect_overlap(cur, other) > 0:
+                    merged.remove(other)
+                    cur = (min(cur[0], other[0]), min(cur[1], other[1]),
+                           max(cur[2], other[2]), max(cur[3], other[3]))
+                    changed = True
+            out.append(cur)
+        merged = out
+    return merged
+
+
+def page_figure_anchor_px(pdf_bytes, page_index, img_width, img_height):
+    """该页**真实图形**的像素矩形列表（坐标相对整页渲染 PNG）。
+
+    视觉模型的百分比框只能当「这一带有图」的线索，不能当裁剪边界：实测整页 OCR
+    给出的框经常小于真实图形（频率分布直方图只框到「频率/组距」那一角，裁出来
+    281x149px 的碎片），甚至整体偏移到图形上方的正文行（折线统计图裁成一段文字）。
+    PDF 里的内嵌位图边界是确定信息，因此把它作为锚点去纠正模型框。
+
+    无 PDF（单题识图路线）、PyMuPDF 不可用或该页没有位图时返回 ``[]``，
+    调用方保持旧行为（直接采用模型框）。
+    """
+    if not pdf_bytes or img_width <= 0 or img_height <= 0:
+        return []
+    try:
+        import pymupdf as fitz
+    except Exception:  # pragma: no cover - PyMuPDF 随应用一起分发
+        return []
+    try:
+        with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
+            if page_index is None or page_index < 0 or page_index >= len(doc):
+                return []
+            page = doc.load_page(page_index)
+            pw, ph = float(page.rect.width), float(page.rect.height)
+            if pw <= 0 or ph <= 0:
+                return []
+            sx, sy = img_width / pw, img_height / ph
+            rects = []
+            for info in page.get_image_info(xrefs=True):
+                x0, y0, x1, y1 = info["bbox"]
+                if (x1 - x0) < _MIN_ANCHOR_PT or (y1 - y0) < _MIN_ANCHOR_PT:
+                    continue
+                rects.append((
+                    max(0, int(x0 * sx)),
+                    max(0, int(y0 * sy)),
+                    min(img_width, int(round(x1 * sx))),
+                    min(img_height, int(round(y1 * sy))),
+                ))
+            return _merge_touching_rects(rects)
+    except Exception as exc:  # pragma: no cover - 解析器异常不该拖垮 OCR 流程
+        print(f"[OCR Illustration Crop] 读取页面图形锚点失败: {exc}", flush=True)
+        return []
+
+
+def _snap_box_to_anchor(box, anchors):
+    """把模型框纠正为它所指的真实图形矩形；找不到可信锚点时返回 ``None``。
+
+    ① 与锚点有任何交集 → 用该锚点（模型框落在图形内部或边缘都算）；命中多个互不相交
+       的锚点时取**重合比例最高**的那一个，而不是把它们并起来——一个框吞两幅图就是
+       串题。
+    ② 完全不相交（模型框整块压在文字上）→ 只接受「横向基本对齐、纵向间隙小于一幅图
+       高度」的最近锚点；仍不满足就放弃纠正，宁可用原框也不凭空搬一幅远处的图过来。
+    """
+    if not anchors:
+        return None
+    left, upper, right, lower = box
+    hits = [a for a in anchors if _rect_overlap(a, box) > 0]
+    if len(hits) == 1:
+        return hits[0]
+    if len(hits) > 1:
+        best = max(
+            hits,
+            key=lambda a: (_rect_overlap(a, box) / max(1.0, _rect_area(a)), -_rect_area(a)),
+        )
+        print(
+            "[OCR Illustration Crop] 模型框同时压到多幅图形，按重合比例只取其一"
+            f"（避免一框吞多图）: {best}",
+            flush=True,
+        )
+        return best
+    best, best_gap = None, None
+    for anchor in anchors:
+        al, au, ar, ab = anchor
+        horiz = min(right, ar) - max(left, al)
+        if horiz < 0.4 * max(1, ar - al):
+            continue
+        gap = max(au - lower, upper - ab, 0)
+        if gap > max(60.0, ab - au):
+            continue
+        if best_gap is None or gap < best_gap:
+            best, best_gap = anchor, gap
+    if best:
+        print(
+            "[OCR Illustration Crop] 模型框落在文字上，已吸附到同列最近的真实图形"
+            f"（纵向偏移 {best_gap}px）: {best}",
+            flush=True,
+        )
+    return best
+
+
+def summarize_figure_coverage(pdf_bytes, page_images, parsed_questions):
+    """逐页对账「PDF 里真实有几幅图形」与「拆出来的题认领了几幅」。
+
+    视觉模型偶尔整幅漏掉一个图形（实测同一份卷子重跑，第 3 页的频率分布直方图
+    这一轮就完全没有输出坐标框）。漏掉时既不报错也不留痕，用户只能在导入后
+    发现「图呢？」。这里把缺口算出来交给任务诊断，拆卷日志与前端都能提示。
+
+    ``page_images`` 是 ``[(真实页码, 整页 PNG 路径), ...]``。
+    """
+    attributed = {}
+    for q in parsed_questions or []:
+        for path in (q.get("image_paths") or []):
+            match = re.search(r"pdf_crop_[A-Za-z0-9_-]+?_(\d+)_(\d+)\.png$", str(path))
+            if match:
+                page = int(match.group(1))
+                attributed[page] = attributed.get(page, 0) + 1
+
+    pages = []
+    try:
+        from PIL import Image
+    except Exception:  # pragma: no cover - Pillow 随应用分发
+        return {"pages": pages, "missing": 0, "warnings": []}
+    for page_index, image_path in page_images or []:
+        if not image_path or not os.path.exists(image_path):
+            continue
+        try:
+            with Image.open(image_path) as img:
+                width, height = img.size
+        except Exception:  # pragma: no cover - 坏页图不该拖垮整卷
+            continue
+        figures = len(page_figure_anchor_px(pdf_bytes, page_index, width, height))
+        got = attributed.get(page_index, 0)
+        missing = max(0, figures - got)
+        pages.append({
+            "page": page_index + 1,
+            "figures": figures,
+            "attributed": got,
+            "missing": missing,
+        })
+    warnings = [
+        f"第 {row['page']} 页有 {row['figures']} 幅图形，只有 {row['attributed']} 幅"
+        "归到题目上，其余未被识别，请对照原页【手动截图】补图。"
+        for row in pages
+        if row["missing"]
+    ]
+    return {
+        "pages": pages,
+        "missing": sum(row["missing"] for row in pages),
+        "warnings": warnings,
+    }
+
+
 def erase_illustration_labels(text: str) -> str:
     """Strip every remaining illustration-box label from ``text``."""
     if not text:
@@ -284,11 +464,14 @@ def resolve_ocr_illustration_boxes(
     page_image_path: str,
     task_id: str,
     page_num: int,
+    pdf_bytes=None,
 ) -> str:
     """按 ``[ILLUSTRATION_BOX: ymin, xmin, ymax, xmax]`` 百分比坐标从整页 PNG 裁图，
     并在原位置替换为 ``![插图](tmp/pdf_crop_{task}_{page}_{idx}.png)`` 占位符。
 
-    无法解析或退化的坐标会被跳过（随后由 :func:`process_ocr_illustrations` 擦除）。
+    传入 ``pdf_bytes`` 时会先用该页内嵌位图的真实边界纠正模型框（见
+    :func:`page_figure_anchor_px`）；无法解析或退化的坐标会被跳过
+    （随后由 :func:`process_ocr_illustrations` 擦除）。
     """
     if not text or not page_image_path or not os.path.exists(page_image_path):
         return text
@@ -335,6 +518,8 @@ def resolve_ocr_illustration_boxes(
     try:
         with Image.open(page_image_path) as img:
             width, height = img.size
+            anchors = page_figure_anchor_px(pdf_bytes, page_num, width, height)
+            cropped_by_anchor = {}
             for idx, (match, (ymin, xmin, ymax, xmax)) in enumerate(parsed):
                 left = int(xmin / 100 * width)
                 upper = int(ymin / 100 * height)
@@ -345,19 +530,30 @@ def resolve_ocr_illustration_boxes(
                 upper = max(0, upper - pad)
                 right = min(width, right + pad)
                 lower = min(height, lower + pad)
-                # 整页 OCR 时模型给的框经常偏大：把题号「1.」、图题「如图」、上下两行
-                # 题干文字一并框进去，用户看到的就是「框到文字上」。这里按像素收紧到
-                # 图形本身；图形已经贴框边时 _tighten_to_content 返回 None，保持原框。
-                # 注意：返回值是相对**中间裁剪图**的坐标，必须平移回整页坐标系。
-                tightened = _tighten_to_content(img.crop((left, upper, right, lower)))
-                if tightened:
-                    tl, tu, tr, lb = tightened
-                    left, upper, right, lower = (
-                        left + tl,
-                        upper + tu,
-                        left + tr,
-                        upper + lb,
-                    )
+                # 先用该页内嵌位图的真实边界纠正模型框。命中锚点时**不再收紧**：
+                # 锚点本身就是图形外接框，再收紧一次反而可能削掉贴边的坐标轴标签。
+                snapped = _snap_box_to_anchor((left, upper, right, lower), anchors)
+                if snapped:
+                    if snapped in cropped_by_anchor:
+                        # 两个标记指向同一幅图（模型重复输出）：复用同一张裁图，
+                        # 不产生第二份文件，也就不会被两题分别认领。
+                        replacements[match.group(0)] = cropped_by_anchor[snapped]
+                        continue
+                    left, upper, right, lower = snapped
+                else:
+                    # 整页 OCR 时模型给的框经常偏大：把题号「1.」、图题「如图」、上下两行
+                    # 题干文字一并框进去，用户看到的就是「框到文字上」。这里按像素收紧到
+                    # 图形本身；图形已经贴框边时 _tighten_to_content 返回 None，保持原框。
+                    # 注意：返回值是相对**中间裁剪图**的坐标，必须平移回整页坐标系。
+                    tightened = _tighten_to_content(img.crop((left, upper, right, lower)))
+                    if tightened:
+                        tl, tu, tr, lb = tightened
+                        left, upper, right, lower = (
+                            left + tl,
+                            upper + tu,
+                            left + tr,
+                            upper + lb,
+                        )
                 if right - left < _MIN_CROP_PX or lower - upper < _MIN_CROP_PX:
                     continue
                 # Hard bound: all coordinates are percentages of the page.
@@ -379,7 +575,10 @@ def resolve_ocr_illustration_boxes(
                 fname = f"pdf_crop_{task_id}_{page_num}_{idx}.png"
                 crop.save(os.path.join(tmp_dir, fname))
                 _register_task_temp_asset(task_id, fname)
-                replacements[match.group(0)] = f"![插图](tmp/{fname})"
+                placeholder = f"![插图](tmp/{fname})"
+                replacements[match.group(0)] = placeholder
+                if snapped:
+                    cropped_by_anchor[snapped] = placeholder
     except Exception as exc:
         print(f"[OCR Illustration Crop] 裁图失败: {exc}", flush=True)
         return text

@@ -1315,14 +1315,15 @@ def resolve_ocr_illustration_boxes(
     page_image_path: str,
     task_id: str,
     page_num: int,
+    pdf_bytes=None,
 ) -> str:
     """按 `[ILLUSTRATION_BOX: ...]` 百分比坐标从整页 PNG 裁图并替换为占位符。
 
     实现位于 ``mathbank.illustration_crop``；此处保留同名入口以维持既有
-    补丁/导入接缝。
+    补丁/导入接缝。``pdf_bytes`` 用于把模型框纠正到该页真实位图边界。
     """
     return illustration_crop.resolve_ocr_illustration_boxes(
-        text, page_image_path, task_id, page_num
+        text, page_image_path, task_id, page_num, pdf_bytes=pdf_bytes
     )
 
 

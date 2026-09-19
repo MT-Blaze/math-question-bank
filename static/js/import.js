@@ -6164,10 +6164,18 @@
                 const warn = document.createElement('span');
                 warn.className = 'self-center rounded-md border border-amber-200 bg-amber-50 '
                     + 'px-2 py-0.5 text-[10px] font-bold text-amber-700';
-                warn.textContent = reviewReasons.indexOf('failsafe') >= 0
-                    ? '配图由兜底推断，请核对'
-                    : '配图偏多，请核对';
-                warn.title = '系统按页面文本重合度自动推断出这批配图的归属，建议人工确认后再入库';
+                // 三种待核对形态各说各话：兜底推断 / 选项重复引用同一张图 / 数量偏多。
+                // 「选项重复」最危险（卷面看着完整、答案却会错），必须单列一条。
+                if (reviewReasons.indexOf('duplicate') >= 0) {
+                    warn.textContent = '选项重复引用同一张图，请核对';
+                    warn.title = '视觉模型漏识别了部分图形，本题选项重复用了同一张图；请对照原页【手动截图】补图';
+                } else if (reviewReasons.indexOf('failsafe') >= 0) {
+                    warn.textContent = '配图由兜底推断，请核对';
+                    warn.title = '系统按页面文本重合度自动推断出这批配图的归属，建议人工确认后再入库';
+                } else {
+                    warn.textContent = '配图偏多，请核对';
+                    warn.title = '本题有配图未出现在题干或解析文字里，可能是别题的插图被一并挂了过来';
+                }
                 strip.appendChild(warn);
             }
             // 转换进度小结：本题共几张图、其中几张已经是 TikZ 矢量图。
