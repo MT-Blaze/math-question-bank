@@ -83,5 +83,8 @@ def test_docx_task_restores_formula_before_returning_questions():
     task = DOCUMENT_TASKS.snapshot(task_id)
     DOCUMENT_TASKS.remove(task_id)
     assert task["status"] == "completed"
-    assert task["data"][0]["content"] == r"1. 已知 $f(x)=x^2+1$，求最小值。"
+    # 公式按锁定 id 逐字还原；开头的原卷题号会被剥到 paper_question_no，
+    # 因为 A4 预览与 exam-zh 导出都自行编号，题干留题号会排成「1. 1.」。
+    assert task["data"][0]["content"] == r"已知 $f(x)=x^2+1$，求最小值。"
+    assert task["data"][0]["paper_question_no"] == "1"
     assert task["diagnostics"]["math_locks_restored"] == 1

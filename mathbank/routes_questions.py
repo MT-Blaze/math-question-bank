@@ -86,9 +86,23 @@ from mathbank.question_metadata import (
     record_import_batch_question,
     record_tikz_versions,
 )
-from mathbank.latex_normalize import normalize_for_storage
+from mathbank.latex_normalize import normalize_for_storage, normalize_stem_for_storage
 
 router = APIRouter()
+
+
+def _normalize_pair_for_db(content: str, answer_markdown: str, question_type: str,
+                           paper_question_no: str) -> tuple[str, str, str]:
+    """写库边界统一归一化：题干/解析走同一条链，题干里残留的原卷题号回填到 paper_question_no。
+
+    A4 预览与 exam-zh 导出都会自行编号，题干自带题号会排成「1. 1. …」，所以在这里剥离；
+    已经填了原题号的（拆卷卡片、手填）保留用户自己的值不覆盖。
+    """
+    lead_no, new_content = normalize_stem_for_storage(content, question_type)
+    new_answer = normalize_for_storage(answer_markdown, is_answer=True)
+    if lead_no and not (paper_question_no or "").strip():
+        paper_question_no = lead_no
+    return new_content, new_answer, paper_question_no
 
 
 def _parse_int_or_none(value):
@@ -1087,8 +1101,9 @@ def create_question(
         # （build_question_fingerprint 内部会再归一化做哈希；图片可见性判定也依赖原文）。
         content_for_options = content
         answer_markdown_raw = answer_markdown
-        content = normalize_for_storage(content, question_type)
-        answer_markdown = normalize_for_storage(answer_markdown, is_answer=True)
+        content, answer_markdown, paper_question_no = _normalize_pair_for_db(
+            content, answer_markdown, question_type, paper_question_no
+        )
 
         # 1. Fallback if third level is empty, default to chapter
         if not category_knowledge and category_chapter:
@@ -1353,8 +1368,9 @@ def update_question(
         # （build_question_fingerprint 内部会再归一化做哈希；图片可见性判定也依赖原文）。
         content_for_options = content
         answer_markdown_raw = answer_markdown
-        content = normalize_for_storage(content, question_type)
-        answer_markdown = normalize_for_storage(answer_markdown, is_answer=True)
+        content, answer_markdown, paper_question_no = _normalize_pair_for_db(
+            content, answer_markdown, question_type, paper_question_no
+        )
 
         # 1. Fallback if third level is empty, default to chapter
         if not category_knowledge and category_chapter:

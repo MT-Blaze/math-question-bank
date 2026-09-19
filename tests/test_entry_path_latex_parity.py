@@ -10,6 +10,8 @@
 3. 保真：归一化不得吃掉表格行、图片、选项与填空宏。
 """
 import random
+import re
+import shutil
 
 import pytest
 
@@ -224,16 +226,22 @@ def test_page_markers_never_reach_storage():
         assert "MATHBANK_PDF_PAGE" not in normalize_for_storage(raw, "detailed_answer", True)
 
 
-@pytest.mark.parametrize("raw,expected", [
-    ("1.下列各曲线中（）", "1. 下列各曲线中（）"),
-    ("2、如图，已知", "2. 如图，已知"),
-    ("3．某地自 2018 年起", "3. 某地自 2018 年起"),
-    ("  12.已知函数", "12. 已知函数"),
+@pytest.mark.parametrize("raw,number,rest_start", [
+    ("1.下列各曲线中（）", "1", "下列各曲线中"),
+    ("2、如图，已知", "2", "如图，已知"),
+    ("3．某地自 2018 年起", "3", "某地自 2018 年起"),
+    ("  12.已知函数", "12", "已知函数"),
+    (r"17(1) 已知数列 $\{a_n\}$", "17", "(1) 已知数列"),
 ])
-def test_leading_question_number_style_is_unified(raw, expected):
-    out = normalize_for_storage(raw, "single_choice")
-    assert out == expected
-    assert normalize_for_storage(out, "single_choice") == out, "题号统一必须幂等"
+def test_leading_question_number_is_stripped_from_stem(raw, number, rest_start):
+    from mathbank.latex_normalize import normalize_stem_for_storage
+
+    lead, text = normalize_stem_for_storage(raw, "single_choice")
+    assert lead == number, (raw, lead)
+    assert text.startswith(rest_start), (raw, text)
+    # 再跑一次不得继续剥，也不得改动产物
+    lead2, text2 = normalize_stem_for_storage(text, "single_choice")
+    assert lead2 == "" and text2 == text
 
 
 @pytest.mark.parametrize("untouched", [
@@ -242,8 +250,32 @@ def test_leading_question_number_style_is_unified(raw, expected):
     "（1）已知 $a_1=1$，求通项公式。",  # 解答题小问
     "$|a| + |b| = 1$，求范围",       # 绝对值，不是表格行
 ])
-def test_leading_number_rule_does_not_eat_real_content(untouched):
-    assert normalize_for_storage(untouched, "detailed_answer") == untouched
+def test_number_extraction_does_not_eat_real_content(untouched):
+    from mathbank.latex_normalize import normalize_stem_for_storage
+
+    lead, text = normalize_stem_for_storage(untouched, "detailed_answer")
+    assert lead == ""
+    assert text == normalize_for_storage(untouched, "detailed_answer")
+
+
+def test_stored_question_keeps_original_number_in_paper_question_no(client):
+    """原题号必须落到 paper_question_no，且不得覆盖用户已填的值。"""
+    _id, content, _a = _post(client, "8. 已知 $a=1$，求 a。", "", "detailed_answer")
+    assert content.lstrip().startswith("已知"), content
+    q = client.get(f"/api/questions/{_id}", headers=HDRS).json()
+    q = q.get("question", q)
+    assert str(q.get("paper_question_no")) == "8", q.get("paper_question_no")
+
+    _id2, _c2, _a2 = _post(client, "9. 已知 $b=2$，求 b。", "", "detailed_answer")
+    body = {
+        "content": _c2, "answer_markdown": "", "question_type": "detailed_answer",
+        "difficulty": "basic", "paper_question_no": "17(2)",
+        "category_compulsory": "必修一", "category_chapter": "第一章",
+        "category_knowledge": "测试小节", "image_paths": "[]", "sources": "[]",
+    }
+    r = client.put(f"/api/questions/{_id2}", data=body, headers=HDRS)
+    assert r.status_code == 200, r.text
+    assert r.json()["question"]["paper_question_no"] == "17(2)"
 
 
 # 固定种子的性质测试：把真实怪癖片段随机拼装，检查「合流 + 幂等」两条不变量。
@@ -280,3 +312,42 @@ def test_normalization_chain_is_confluent_and_idempotent_on_random_combinations(
                 else normalize_question_math_markdown(raw)
             assert once == normalize_for_storage(pre, key, is_answer=is_answer), raw
             assert normalize_for_storage(once, key, is_answer=is_answer) == once, raw
+
+
+@pytest.mark.skipif(not shutil.which("xelatex"), reason="xelatex not installed")
+def test_normalized_source_compiles_without_double_numbering(client):
+    """入库源码必须能被 XeLaTeX 真编译，且不出现「1. 1.」双编号。
+
+    归一化只管文本一致还不够：exam-zh 与 A4 预览都会自行编号，题干残留原题号时
+    实测会排成「1. 1. 下列各曲线中」。这里把三条路径共同的产物送去编译并抽文本核对。
+    """
+    import pymupdf
+
+    ids = []
+    for raw in (
+        "1.下列各曲线中，不能表示 $y$ 是 $x$ 的函数的是（）\nA．甲\nB．乙\nC．丙\nD．丁",
+        "2、如图，长方体 $ABCD-A_1B_1C_1D_1$ 中与棱 $AB$ 垂直的棱有（）\n"
+        "A．2 条\nB．4 条\nC．6 条\nD．8 条",
+    ):
+        qid, _c, _a = _post(client, raw, "【答案】C\n\n【解析】由 $x_1=1$ 得结论。", "single_choice")
+        ids.append(qid)
+
+    r = client.post(
+        "/api/paper/export/pdf",
+        headers=HDRS,
+        json={
+            "title": "归一化源码编译验证", "subtitle": "", "paper_type": "exam",
+            "target": "paper", "include_answers": False,
+            "show_secret": False, "show_notice": False,
+            "questions": [{"id": i, "score": 5} for i in ids],
+        },
+    )
+    assert r.status_code == 200, r.text[:1200]
+    assert r.content[:5] == b"%PDF-"
+
+    text = "\n".join(page.get_text() for page in pymupdf.open(stream=r.content, filetype="pdf"))
+    compact = re.sub(r"[ \t]+", " ", text)
+    assert not re.search(r"(?<!\d)(\d{1,2})\.\s*(\1)\.(?!\d)", compact), "题干原题号与自动编号重复"
+    for leaked in ("\\begin", "\\item", "\\includegraphics", "\\fillin"):
+        assert leaked not in compact, f"原始 LaTeX 命令泄漏进 PDF: {leaked}"
+    assert "下列各曲线中" in compact and "如图，长方体" in compact

@@ -24,7 +24,7 @@ from main import (
 )
 
 from mathbank.math_markdown import compact_solution_markdown, normalize_question_math_markdown
-from mathbank.latex_normalize import normalize_for_storage
+from mathbank.latex_normalize import normalize_for_storage, normalize_stem_for_storage
 
 # 一道题挂到这么多张配图基本可以断定归属出了偏差，导入后提请人工核对。
 _IMAGE_COUNT_REVIEW_THRESHOLD = 3
@@ -572,7 +572,11 @@ def post_process_pdf_parsed_questions(parsed_questions: list, paper_title: str, 
     for q in parsed_questions:
         q_type = q.get("question_type") or ""
         if q.get("content"):
-            q["content"] = normalize_for_storage(q["content"], q_type)
+            # 模型没按提示词剥离原卷题号时在这里兜底：题号归 paper_question_no，
+            # 题干只留正文，否则 A4 预览与 PDF 会排成「1. 1. …」双编号。
+            lead_no, q["content"] = normalize_stem_for_storage(q["content"], q_type)
+            if lead_no and not str(q.get("paper_question_no") or "").strip():
+                q["paper_question_no"] = lead_no
         if q.get("answer_markdown"):
             # 解析（answer）不是选项，不传 question_type，避免把解析里的「A．」误转选项。
             q["answer_markdown"] = normalize_for_storage(q["answer_markdown"], is_answer=True)

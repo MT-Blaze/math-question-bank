@@ -426,32 +426,34 @@ def normalize_content_for_latex_storage(md: str, question_type: str = "") -> str
 
 
 # ---------------------------------------------------------------------------
-# 题干前导原题号：统一成「数字 + 半角点 + 一个空格」
+# 题干前导原题号：剥离出来交回给 paper_question_no
 # ---------------------------------------------------------------------------
-# 只认「1~3 位数字 + 分隔符」且分隔符后不接数字的形态，因此 `3.5 的相反数`、
-# `2019年…`、`（1）已知…` 都不会被误改。
-_LEADING_QNO_RE = re.compile(r"^(\d{1,3})[ \t]*[.．、][ \t]*(?![0-9])")
+# 两条分支都必须避开小数：`3.5 的相反数` 既不是「数字+分隔符+非数字」，也不是
+# 「数字紧跟小问括号」，因此原样保留。`2019·全国` 超过 3 位数字、`（1）已知` 不带阿拉伯
+# 题号，同样不匹配。
+_QNO_WITH_SEP_RE = re.compile(r"^(\d{1,3})[ \t]*[.．、][ \t]*(?![0-9])")
+_QNO_WITH_SUB_RE = re.compile(r"^(\d{1,3})[ \t]*(?=\(\d{1,2}\))")
 
 
-def normalize_leading_question_number(md: str) -> str:
-    r"""把题干开头的原题号统一成 ``<n>. `` 一种写法。
+def extract_leading_question_number(md: str) -> tuple[str, str]:
+    r"""取出题干开头的原卷题号，返回 ``(题号, 去掉题号后的题干)``。
 
-    视觉 OCR / 原生提取 / 手敲三种来源给出的前缀分别是 `1.下列`、`2. 如图`、
-    `3、某地`，同一份卷子进库后风格三种，组卷预览与导出里看起来就是「排版不齐」。
-    注意：本函数**只统一写法、不删除题号** —— 题库详情与 A4 预览直接渲染题干文本，
-    题号一删，网页上就没有编号了（而 exam-zh 的 PDF 会自动编号，两者本就不一致）。
-    原卷号该不该从题干里彻底剥离、改由 `questions.paper_question_no` 承载，是一个
-    会影响网页编号显示的独立决策，未拍板前不得在此处顺带改掉。
+    题号必须离开 ``content``：A4 组卷预览（``paper.js`` 的 ``globalQIndex``）与
+    exam-zh 的 PDF（``\arabic*.`` 计数器，``exam_19`` 还按 1/9/12/15 跳号）都会**自己
+    编号**，题干里再带一个就会排成「1. 1. 下列各曲线中」—— 实测 1.pdf 四题全部双编号。
+    原卷编号的归属地是 ``questions.paper_question_no``（schema v23 专门加的列，
+    ``prompts.py`` 也早已要求模型剥离题号填该字段），本函数负责兜住模型没剥的情况。
+
+    只剥开头一个；无题号时返回 ``("", md)``，因此可重复调用。
     """
     if not md:
-        return md
+        return "", md or ""
     stripped = md.lstrip()
-    if not stripped:
-        return md
-    m = _LEADING_QNO_RE.match(stripped)
-    if not m:
-        return md
-    return f"{m.group(1)}. {stripped[m.end():]}"
+    for pattern in (_QNO_WITH_SEP_RE, _QNO_WITH_SUB_RE):
+        m = pattern.match(stripped)
+        if m:
+            return m.group(1), stripped[m.end():].lstrip(" \t")
+    return "", md
 
 
 # ---------------------------------------------------------------------------
@@ -490,8 +492,18 @@ def normalize_for_storage(value: str, question_type: str = "", is_answer: bool =
     if is_answer:
         value = compact_solution_markdown(value)
     else:
-        value = normalize_leading_question_number(value)
         # 题干与解析共用同一条空行口径：3 个以上换行 = 一个自然段，压回 \n\n。
         value = re.sub(r"\n{3,}", "\n\n", value)
     return value
+
+
+def normalize_stem_for_storage(value: str, question_type: str = "") -> tuple[str, str]:
+    """题干专用：先跑完整链，再剥离开头原卷题号，返回 ``(题号, 入库题干)``。
+
+    顺序刻意是「先归一化再剥离」：还原字面 ``\\n`` 与清页标之后，题号才真正暴露在行首
+    （例如 OCR 给出的 ``\\n1. 下列``）。调用方只在 ``paper_question_no`` 为空时回填，
+    因此对同一题干重复执行结果不变。
+    """
+    text = normalize_for_storage(value, question_type)
+    return extract_leading_question_number(text)
 
