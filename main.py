@@ -5,14 +5,7 @@ import hashlib
 import atexit
 
 
-import io
-import zipfile
-
-
 import sys
-
-
-import uuid
 
 
 import json
@@ -21,25 +14,13 @@ import json
 import time
 
 
-import re
-
-
 import signal
-
-
-import datetime
 
 
 import threading
 
 
-import requests
-
-
 from contextlib import asynccontextmanager
-
-
-from pathlib import Path
 
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -53,16 +34,10 @@ if hasattr(sys.stdout, "reconfigure"):
 import secrets
 
 
-from typing import List, Optional
+from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks, Request, Header
 
 
-from PIL import Image
-
-
-from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Form, BackgroundTasks, Request, Response, Header
-
-
-from fastapi.responses import FileResponse, JSONResponse, HTMLResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, HTMLResponse
 
 
 from fastapi.staticfiles import StaticFiles
@@ -80,10 +55,8 @@ from dotenv import load_dotenv
 from mathbank.database import (
     Question,
     QuestionCurriculum,
-    Paper,
     PaperQuestion,
     engine,
-    get_db,
     init_db,
 )
 
@@ -93,10 +66,7 @@ from mathbank.question_duplicate_service import (
 )
 
 
-from mathbank.paper_helper import build_latex_document, build_answer_sheet_latex, compile_tex_to_pdf, create_tex_zip_package, create_full_bundle_zip_package, collect_referenced_images, build_restricted_tex_environment
-
-
-from mathbank.word_export_helper import build_word_document, create_word_bundle_zip
+from mathbank.paper_helper import compile_tex_to_pdf
 
 
 from mathbank.backup import acquire_runtime_lock, create_full_backup_if_due
@@ -119,43 +89,18 @@ from mathbank.routes_runtime import router as runtime_router
 
 
 from mathbank.metadata import (
-    _decorate_topic_field,
     get_metadata_cache,
     load_or_init_metadata,
-    schedule_database_export,
 )
 
 
 from mathbank.task_manager import (
-    TaskCancelled,
     TaskManager,
-    TaskQueueFull,
 )
 
 
 from mathbank.docx_helper import extract_docx_markdown
 
-
-from mathbank.content_locks import (
-    ContentLockIntegrityError,
-    lock_visible_math,
-    restore_visible_math,
-)
-
-
-from mathbank.tex_helper import (
-    MAX_TEX_BYTES,
-    decode_and_prepare_tex,
-    prepare_tex_source,
-    tex_asset_basename,
-    tex_asset_references_match,
-)
-
-
-from mathbank.latex_diagnostics import (
-    build_local_latex_diagnostic,
-    merge_ai_latex_diagnostic,
-)
 
 from mathbank import math_markdown as _math_markdown_mod
 
@@ -169,11 +114,9 @@ from mathbank.ai_http import (
 
 
 from mathbank.ai_providers import (
-    MultimodalProviderConfig,
     apply_bailian_thinking_policy,
     apply_deepseek_thinking_policy,
     inject_reasoning_effort,
-    is_deepseek_thinking_capable,
     resolve_draw_provider,
     resolve_ocr_fallbacks,
     resolve_ocr_provider,
@@ -188,23 +131,7 @@ from mathbank.curriculums import (
 
 
 from mathbank.prompts import (
-    COMMON_OCR_PROMPT,
-    ILLUSTRATION_BOX_PROMPT,
-    PDF_PAGE_ILLUSTRATION_BOX_PROMPT,
-    build_ai_solve_prompts,
-    build_classification_system_prompt,
-    build_import_parse_system_prompt,
-    build_latex_error_explanation_prompts,
-    build_paper_selection_prompts,
     build_pdf_parse_system_prompt,
-    build_tikz_correction_prompt,
-    build_tikz_draw_prompt,
-)
-
-
-from mathbank.question_types import (
-    detect_structured_question_form,
-    normalize_ai_question_form,
 )
 
 
@@ -213,8 +140,6 @@ import shutil
 
 from mathbank.pdf_inspector_helper import (
     is_pdf_inspector_available,
-    inspect_and_extract_pdf,
-    merge_pdf_page_texts,
 )
 
 
@@ -236,7 +161,6 @@ from mathbank.routes_settings import router as settings_router
 
 
 from mathbank.asset_security import (
-    AssetSecurityError,
     InvalidImageError,
     MAX_OCR_IMAGE_BYTES,
     MAX_PDF_BYTES,
@@ -244,9 +168,7 @@ from mathbank.asset_security import (
     UploadTooLargeError,
     harden_private_path,
     normalize_raster_image,
-    normalize_upload_asset_reference,
     read_stream_limited,
-    resolve_upload_asset,
 )
 
 
@@ -818,7 +740,6 @@ def normalize_fillin_macro(text: str) -> str:
     return _math_markdown_mod.normalize_fillin_macro(text)
 
 
-
 load_or_init_metadata()
 
 # 考向树 TXT 是底层文件：启动时先以 TXT 为准对齐一次活跃大纲。
@@ -893,6 +814,11 @@ def shutdown_server(
 def post_process_pdf_parsed_questions(*args, **kwargs):
     """Thin wrapper — implementation lives in ``mathbank.parsing_pipeline``."""
     return parsing_pipeline.post_process_pdf_parsed_questions(*args, **kwargs)
+
+
+def apply_storage_normalization(*args, **kwargs):
+    """Thin wrapper — 入库归一化唯一出口，实现见 ``mathbank.parsing_pipeline``。"""
+    return parsing_pipeline.apply_storage_normalization(*args, **kwargs)
 
 
 app.include_router(runtime_router)

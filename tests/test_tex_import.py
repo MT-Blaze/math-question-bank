@@ -278,8 +278,16 @@ def test_tex_parse_route_maps_includegraphics_by_stable_basename(client):
     assert response.status_code == 200
     data = response.json()
     question = data["questions"][0]
-    assert r"\includegraphics" not in question["content"]
-    assert "![插图](/static/uploads/curve-local.png)" in question["content"]
+    # TeX 路线与 PDF/Word 路线跑同一条入库归一化链，所以卡片预览就是入库形态：
+    # 图片落成 \includegraphics[选项]{文件名}（只留 basename），而不是 Markdown 图。
+    # 预览侧靠 image_paths 建立的 basename->URL 表把图找回来。
+    assert r"\includegraphics" in question["content"]
+    assert "curve-local.png" in question["content"]
+    assert "![" not in question["content"]
     assert question["image_paths"] == ["/static/uploads/curve-local.png"]
+    # 写库边界再跑同一条链必须字节不变（三条录入路径汇合的硬要求）
+    from mathbank.latex_normalize import normalize_for_storage
+
+    assert normalize_for_storage(question["content"], "detailed_answer") == question["content"]
     assert data["tex_diagnostics"]["unmapped_images"] == []
     assert data["tex_diagnostics"]["unassigned_source_images"] == []

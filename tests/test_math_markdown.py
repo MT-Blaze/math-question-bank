@@ -5,7 +5,9 @@
 只在文本层面做保守修补。
 """
 
+import inspect
 import json
+import re
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -190,12 +192,25 @@ def test_parse_paper_text_internal_defers_repair_to_the_storage_chain():
     assert "$\\alpha$" in stored_answer
 
 
+def _module_wired_to(module, *entry_points: str) -> bool:
+    """通道是否接上归一化链：自己调用该步、或经唯一入口 `normalize_for_storage` 都算。
+
+    历史判据是「模块必须 bind 单个修补函数」，链收敛到 `latex_normalize` 之后那个判据
+    会退化成「谁留了一行没用的 import 谁通过」，因此改查源码里真正调用了什么。
+    """
+    source = inspect.getsource(module)
+    return any(re.search(r"\b" + re.escape(name) + r"\b", source) for name in entry_points)
+
+
 def test_every_import_path_wires_the_repair_helper():
     """三个录入通道都必须接上修补，漏一个就会出现裸公式。"""
     from mathbank import routes_ai, routes_paper
 
     for module in (parsing_pipeline, routes_ai, routes_paper):
-        assert hasattr(module, "normalize_question_math_markdown")
+        assert _module_wired_to(
+            module, "normalize_question_math_markdown", "normalize_for_storage",
+            "apply_storage_normalization",
+        ), f"{module.__name__} 绕过了裸公式修补"
 
 
 # --------------------------------------------------------------------------
@@ -292,7 +307,10 @@ def test_every_import_path_wires_the_compaction_helper():
     from mathbank import routes_ai, routes_paper
 
     for module in (parsing_pipeline, routes_ai, routes_paper):
-        assert hasattr(module, "compact_solution_markdown")
+        assert _module_wired_to(
+            module, "compact_solution_markdown", "normalize_for_storage",
+            "apply_storage_normalization",
+        ), f"{module.__name__} 绕过了解析紧凑化"
 
 
 def _parse_with_mock_payload(payload):

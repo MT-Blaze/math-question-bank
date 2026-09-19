@@ -221,6 +221,31 @@ def test_fillin_macro_and_images_and_bold_are_preserved():
     assert "\\textbf{函数}" in normalize_for_storage(CASES[11][2], "detailed_answer")
 
 
+def test_mineru_doubled_escapes_collapse_to_one_backslash():
+    """MinerU 云路线整份 markdown 多转义一层，入库前必须压回单反斜杠。
+
+    实测 `$B _ { l } C _ { \\\\mathit { l } }$`：`\\\\` 在数学模式是换行命令，后面的
+    `mathit` 会被当正文排出，公式直接错。
+    """
+    doubled = r"在长方体 $ABCD-A_{1}B_{1}C_{1}D_{1}$ 中，$B _ { l } C _ { \\mathit { l } }$"
+    out = normalize_for_storage(doubled, "single_choice")
+    assert "\\\\mathit" not in out, out
+    assert r"\mathit" in out, out
+    # 合法硬换行（`\\` 后带空格）不得被吃掉
+    table = "\\begin{tabular}{|c|c|}\n\\hline 1 & 2 \\\\ \\hline 3 & 4 \\hline\n\\end{tabular}"
+    assert "2 \\\\ \\hline" in normalize_for_storage(table, "detailed_answer")
+    # 幂等：跑两遍结果一致
+    assert normalize_for_storage(out, "single_choice") == out
+
+
+def test_choice_options_split_by_blank_lines_stay_one_block():
+    """选项之间只隔空行时必须落成一个 choices 块（MinerU 云路线实测四段四块）。"""
+    md = "下列各曲线中（ ）\n\nA．甲\n\nB．乙\n\nC．丙\n\nD．丁"
+    out = normalize_for_storage(md, "single_choice")
+    assert out.count("\\begin{choices}") == 1, out
+    assert out.count("\\item") == 4, out
+
+
 def test_page_markers_never_reach_storage():
     for raw in (CASES[5][2], CASES[5][3]):
         assert "MATHBANK_PDF_PAGE" not in normalize_for_storage(raw, "detailed_answer", True)

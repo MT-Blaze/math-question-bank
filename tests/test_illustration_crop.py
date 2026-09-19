@@ -419,6 +419,48 @@ def test_overlap_helper_returns_negative_when_nothing_matches():
     assert find_source_page_by_overlap("立体几何与体积", pages) == 1
 
 
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("【答案】\n\n【答案】C\n\n【解析】开口向上。", "【答案】C\n\n【解析】开口向上。"),
+        ("【答案】　\n\n【答案】C\n\n【解析】x", "【答案】C\n\n【解析】x"),      # 全角空格
+        ("【答案】：\n\n【答案】D\n\n【解析】x", "【答案】D\n\n【解析】x"),      # 中文冒号
+    ],
+)
+def test_duplicate_empty_answer_shell_is_collapsed(tmp_path, raw, expected):
+    """MinerU/AI 把答案标签重复输出时，不得留下「空【答案】+【答案】C」的空壳。
+
+    但「【答案】后面直接是【解析】」是**答案真缺失**，必须原样留着让人看见。
+    """
+    from main import post_process_pdf_parsed_questions
+
+    questions = [{
+        "content": "已知 $f(x)=x^2$，则最小值为（）",
+        "answer_markdown": raw,
+        "question_type": "single_choice",
+    }]
+    with patch("main.TMP_UPLOAD_DIR", str(tmp_path / "tmp")):
+        result = post_process_pdf_parsed_questions(questions, "测试卷", None)
+
+    assert result[0]["answer_markdown"] == expected
+
+
+def test_empty_answer_before_analysis_is_preserved(tmp_path):
+    """空【答案】后面跟的是【解析】时不得删除——那是答案缺失的真实信号。"""
+    from main import post_process_pdf_parsed_questions
+
+    raw = "【答案】\n\n【解析】开口向上，最小值为 0。"
+    questions = [{
+        "content": "已知 $f(x)=x^2$，则最小值为（）",
+        "answer_markdown": raw,
+        "question_type": "single_choice",
+    }]
+    with patch("main.TMP_UPLOAD_DIR", str(tmp_path / "tmp")):
+        result = post_process_pdf_parsed_questions(questions, "测试卷", None)
+
+    assert result[0]["answer_markdown"].startswith("【答案】\n\n【解析】")
+
+
 def test_failsafe_skips_questions_without_any_page_overlap(tmp_path):
     """与任何页都对不上的题（如末题）不得被兜底塞进第 1 页的全部插图。"""
     from main import post_process_pdf_parsed_questions
@@ -1320,3 +1362,76 @@ def test_failsafe_uses_disk_inventory_when_page_text_has_no_crop_urls(tmp_path):
 
     assert [os.path.basename(u) for u in result[0]["image_paths"]] == [crop]
     assert result[0]["_image_review"] == ["failsafe"]
+
+
+def _figures_pdf(figure_boxes_per_page, dpi=150):
+    """造多页 PDF，每页放指定数量的互不相交内嵌位图，返回 pdf_bytes。"""
+    from io import BytesIO
+
+    pymupdf = pytest.importorskip("pymupdf")
+    doc = pymupdf.open()
+    tile = Image.new("RGB", (40, 40), (255, 255, 255))
+    for x in range(40):
+        for y in range(40):
+            if x % 4 == 0 or y % 4 == 0:
+                tile.putpixel((x, y), (0, 0, 0))
+    buf = BytesIO()
+    tile.save(buf, format="PNG")
+    stream = buf.getvalue()
+    for boxes in figure_boxes_per_page:
+        page = doc.new_page(width=595, height=842)
+        for box in boxes:
+            page.insert_image(pymupdf.Rect(*box), stream=stream)
+    return doc.tobytes()
+
+
+def test_count_pdf_figures_counts_clusters_per_page():
+    """整卷对账必须按「合并后的图形簇」计数：一幅图由两块位图拼成只算一幅。"""
+    from mathbank.illustration_crop import count_pdf_figures
+
+    pdf_bytes = _figures_pdf([
+        [(60, 60, 160, 160), (150, 120, 260, 230), (400, 60, 500, 160)],
+        [],
+        [(60, 60, 160, 160)],
+    ])
+    assert count_pdf_figures(pdf_bytes) == {1: 2, 3: 1}
+    assert count_pdf_figures(None) == {}
+    assert count_pdf_figures(b"not a pdf") == {}
+
+
+def test_cloud_route_coverage_is_document_wide_and_warns_about_missed_figures():
+    """云路线（无整页位图、插图名不带页码）也要给出整卷缺口，不得静默漏图。
+
+    MinerU 抽出 5 幅、模型只挂上 3 幅时，必须报警；全部挂上时不得误报。
+    """
+    from mathbank.illustration_crop import summarize_figure_coverage
+
+    boxes = [(60 + i * 120, 60, 100 + i * 120, 100) for i in range(5)]
+    pdf_bytes = _figures_pdf([boxes])
+
+    def questions_with(names):
+        return [{"image_paths": [f"/static/uploads/{n}" for n in names]}]
+
+    all_five = [f"mineru_1_{i}.jpg" for i in range(5)]
+    ok = summarize_figure_coverage(pdf_bytes, None, questions_with(all_five))
+    assert ok["figures"] == 5 and ok["missing"] == 0 and ok["warnings"] == []
+    assert ok["pages"] == []   # 整卷口径不假装知道页码
+
+    partial = summarize_figure_coverage(pdf_bytes, None, questions_with(all_five[:3]))
+    assert partial["attributed"] == 3 and partial["missing"] == 2
+    assert "5 幅图形" in partial["warnings"][0] and "3 幅" in partial["warnings"][0]
+
+    # 同一张图被两道题引用只算一次，不得靠重复计数把缺口抹平
+    dup = summarize_figure_coverage(
+        pdf_bytes, None,
+        [{"image_paths": ["/static/uploads/" + all_five[0]]}] * 2,
+    )
+    assert dup["attributed"] == 1
+
+
+def test_cloud_route_coverage_without_pdf_is_silent(tmp_path):
+    """拿不到 PDF（Word/TeX 路线）时不得凭空报警。"""
+    from mathbank.illustration_crop import summarize_figure_coverage
+
+    report = summarize_figure_coverage(None, None, [{"image_paths": ["/static/uploads/a.jpg"]}])
+    assert report == {"pages": [], "figures": 0, "attributed": 1, "missing": 0, "warnings": []}

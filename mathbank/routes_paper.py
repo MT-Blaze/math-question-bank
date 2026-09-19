@@ -16,7 +16,6 @@ from mathbank.asset_security import AssetSecurityError, InvalidImageError, Uploa
 from mathbank.content_locks import ContentLockIntegrityError, lock_visible_math, restore_visible_math
 from mathbank.database import Paper, PaperQuestion, Question, get_db
 from mathbank.latex_diagnostics import build_local_latex_diagnostic, merge_ai_latex_diagnostic
-from mathbank.math_markdown import compact_solution_markdown, normalize_question_math_markdown
 from mathbank.metadata import _decorate_topic_field, get_metadata_cache, schedule_database_export
 from mathbank.paper_helper import build_answer_sheet_latex, build_latex_document, collect_referenced_images, create_full_bundle_zip_package, create_tex_zip_package, restore_storage_images_to_markdown
 from mathbank.pdf_inspector_helper import inspect_and_extract_pdf, merge_pdf_page_texts
@@ -29,14 +28,12 @@ from sqlalchemy.orm import Session
 from typing import List, Optional
 import datetime
 import hashlib
-import io
 import json
 import os
 import re
 import shutil
 import time
 import uuid
-import zipfile
 
 import main as _main  # noqa: E402  测试接缝：延迟绑定
 
@@ -68,7 +65,6 @@ def upload_tex_source(file: UploadFile = File(...)):
         )
     except ValueError as exc:
         return JSONResponse(content={"status": "error", "message": str(exc)}, status_code=400)
-
 
 
 @router.post("/api/upload/batch")
@@ -122,7 +118,6 @@ def upload_batch_images(files: List[UploadFile] = File(...)):
             content={"status": "error", "message": f"批量图片上传失败: {str(e)}"},
             status_code=400
         )
-
 
 
 @router.post("/api/ai/parse-paper")
@@ -306,16 +301,9 @@ def ai_parse_paper(
                 else:
                     q["answer_markdown"] = ans.replace("[EXTRACTED_ORIGINAL]", "").strip()
 
-            # 后置清洗：给模型漏写定界符的高置信度裸公式补上 $...$（保守修补）。
-            for field in ("content", "answer_markdown"):
-                value = q.get(field, "")
-                if isinstance(value, str) and value:
-                    q[field] = normalize_question_math_markdown(value)
-
-            # 解析排版紧凑化：单行 $$...$$ 降级为行内 $...$，避免逐式独立成行。
-            answer_value = q.get("answer_markdown", "")
-            if isinstance(answer_value, str) and answer_value:
-                q["answer_markdown"] = compact_solution_markdown(answer_value)
+            # 归一化**不在这里做**：TeX/批量图片路线与 PDF/Word 路线共用同一个入库出口
+            # （见函数末尾的 apply_storage_normalization）。历史上这里单独跑字符层与紧凑化，
+            # 于是同一种写法在三条路径上进库变成三种源码。
 
             # 智能提取出处双重保险：AI 提取优先，若 AI 未提取则尝试正则从 content 中提取
             extracted_source = q.get("source")
@@ -392,6 +380,10 @@ def ai_parse_paper(
                 "以下配图未能确定所属题目：" + "、".join(unassigned_images[:8])
             )
                     
+        # 与 PDF/Word 路线同一个归一化出口：拆卷卡片预览必须等于入库源码（同一条幂等链），
+        # 所以只能整体跑，不许只跑其中一层；写库边界还会再跑一遍，结果字节相同。
+        parsed_questions = _main.apply_storage_normalization(parsed_questions)
+
         return {
             "status": "success",
             "questions": parsed_questions,
@@ -402,7 +394,6 @@ def ai_parse_paper(
             content={"status": "error", "message": f"试卷解析失败: {str(e)}"},
             status_code=500
         )
-
 
 
 @router.post("/api/ai/manual-crop-pdf")
@@ -482,7 +473,6 @@ def manual_crop_pdf(payload: dict):
         )
 
 
-
 def extract_title_from_latex(latex: str) -> str:
     """从 LaTeX 源码中尝试自动提取试卷标题"""
     if not latex:
@@ -523,7 +513,6 @@ def extract_title_from_latex(latex: str) -> str:
             return cleaned
             
     return ""
-
 
 
 @router.post("/api/paper/ai-select")
@@ -741,12 +730,10 @@ def ai_select_paper(payload: dict, db: Session = Depends(get_db)):
         return JSONResponse(content={"status": "error", "message": f"AI 智能选题失败: {str(e)}"}, status_code=500)
 
 
-
 def _resolve_task_paper_title(paper_title: Optional[str], filename: str) -> str:
     """用户在前端统一填写的试卷标题优先；留空时回退到文件名。"""
     title = (paper_title or "").strip()
     return title if title else os.path.splitext(filename)[0]
-
 
 
 def _register_staged_task_assets(task_id: str, urls) -> None:
@@ -981,12 +968,21 @@ def run_mineru_pdf_parsing_task(
             parsed_questions, paper_title, task_id, page_texts or None
         )
         _main.DOCUMENT_TASKS.check_cancelled(task_id)
+        # 云路线同样要对账：MinerU 抽了几幅图、模型把几幅挂到了题上。整卷口径
+        # （见 summarize_figure_coverage），因为 mineru_*.jpg 不带页码。
+        figure_report = illustration_crop.summarize_figure_coverage(
+            file_bytes, None, final_questions
+        )
+        finish_log = "完成！MinerU 云端解析 + 大模型拆解全部题目卡片。"
+        if figure_report.get("warnings"):
+            finish_log += " 插图待核对：" + "；".join(figure_report["warnings"])
         _main.DOCUMENT_TASKS.complete(
             task_id,
-            log="完成！MinerU 云端解析 + 大模型拆解全部题目卡片。",
+            log=finish_log,
             data=final_questions,
             document_type="pdf",
             temp_assets=list(temp_assets),
+            diagnostics={"figures": figure_report},
         )
     except TaskCancelled:
         _delete_task_temp_assets(temp_assets)
@@ -1002,7 +998,6 @@ def run_mineru_pdf_parsing_task(
         )
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
-
 
 
 def run_pdf_parsing_task(
@@ -1303,7 +1298,6 @@ def run_pdf_parsing_task(
         tmp_pdf_path.unlink(missing_ok=True)
 
 
-
 def parse_page_range(range_str: str, total_pages: int) -> list:
     """
     解析用户输入的页码范围字符串（1-indexed），转换为包含 0-indexed 页面索引的列表。
@@ -1343,9 +1337,6 @@ def parse_page_range(range_str: str, total_pages: int) -> list:
     if not pages:
         raise ValueError("页码范围不能为空。")
     return sorted(pages)
-
-
-
 
 
 @router.post("/api/upload/pdf-task")
@@ -1420,7 +1411,6 @@ def upload_pdf_task(
         )
 
 
-
 def _delete_task_temp_assets(paths: list) -> int:
     """Delete only explicit files below this instance's upload tmp directory."""
     removed = 0
@@ -1444,7 +1434,6 @@ def _delete_task_temp_assets(paths: list) -> int:
             except OSError:
                 pass
     return removed
-
 
 
 def run_docx_parsing_task(
@@ -1539,7 +1528,6 @@ def run_docx_parsing_task(
         )
 
 
-
 @router.post("/api/upload/docx-task")
 def upload_docx_task(
     file: UploadFile = File(...),
@@ -1607,7 +1595,6 @@ def upload_docx_task(
         )
 
 
-
 @router.get("/api/tasks/latest")
 def get_latest_document_task(document_type: str = "pdf"):
     """Return the most recently completed task so the UI can recover results."""
@@ -1623,7 +1610,6 @@ def get_latest_document_task(document_type: str = "pdf"):
     return task
 
 
-
 @router.get("/api/tasks/{task_id}/status")
 def get_pdf_task_status(task_id: str):
     task = _main.DOCUMENT_TASKS.snapshot(task_id)
@@ -1633,7 +1619,6 @@ def get_pdf_task_status(task_id: str):
             status_code=404
         )
     return task
-
 
 
 @router.post("/api/tasks/{task_id}/cancel")
@@ -1690,7 +1675,6 @@ def cancel_pdf_task(task_id: str):
     }
 
 
-
 @router.post("/api/ai/clear-temp-crops")
 def clear_temp_crops(payload: dict):
     """物理删除传递来的未入库临时裁剪图片路径"""
@@ -1705,7 +1689,6 @@ def clear_temp_crops(payload: dict):
             content={"status": "error", "message": f"清理临时插图出错: {str(e)}"},
             status_code=500
         )
-
 
 
 @router.get("/api/paper/questions")
@@ -1723,7 +1706,6 @@ def get_paper_questions(ids: str = "", db: Session = Depends(get_db)):
         return {"status": "success", "data": result}
     except Exception as e:
         return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
-
 
 
 @router.post("/api/paper/save")
@@ -1811,7 +1793,6 @@ def save_paper(payload: dict, background_tasks: BackgroundTasks, db: Session = D
         return JSONResponse(content={"status": "error", "message": f"保存试卷失败: {str(e)}"}, status_code=500)
 
 
-
 @router.get("/api/papers")
 def list_papers(db: Session = Depends(get_db)):
     """获取所有历史试卷列表"""
@@ -1833,7 +1814,6 @@ def list_papers(db: Session = Depends(get_db)):
         return {"status": "success", "data": result}
     except Exception as e:
         return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
-
 
 
 @router.get("/api/papers/{paper_id}")
@@ -1880,7 +1860,6 @@ def get_paper_detail(paper_id: int, db: Session = Depends(get_db)):
         return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
 
 
-
 @router.delete("/api/papers/{paper_id}")
 def delete_paper(paper_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     """删除指定的历史试卷，并同步扣减关联题目的 usage_count"""
@@ -1913,7 +1892,6 @@ def delete_paper(paper_id: int, background_tasks: BackgroundTasks, db: Session =
     except Exception as e:
         db.rollback()
         return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
-
 
 
 def _build_paper_questions_data(questions_input, db):
@@ -1961,7 +1939,6 @@ def _build_paper_questions_data(questions_input, db):
     return questions_data
 
 
-
 @router.post("/api/paper/export/tex")
 def export_paper_tex(payload: dict, db: Session = Depends(get_db)):
     """导出 LaTeX 源码 ZIP 压缩包"""
@@ -1994,7 +1971,6 @@ def export_paper_tex(payload: dict, db: Session = Depends(get_db)):
         })
     except Exception as e:
         return JSONResponse(content={"status": "error", "message": f"生成 LaTeX 源码失败: {str(e)}"}, status_code=500)
-
 
 
 @router.post("/api/paper/export/bundle")
@@ -2045,7 +2021,6 @@ def export_paper_bundle(payload: dict, db: Session = Depends(get_db)):
         })
     except Exception as e:
         return JSONResponse(content={"status": "error", "message": f"生成全套合并包失败: {str(e)}"}, status_code=500)
-
 
 
 def explain_latex_compile_error(log_text: str, tex_content: str) -> dict:
@@ -2102,7 +2077,6 @@ def explain_latex_compile_error(log_text: str, tex_content: str) -> dict:
         return diagnostic
 
 
-
 @router.post("/api/paper/export/pdf")
 def export_paper_pdf(payload: dict, db: Session = Depends(get_db)):
     """在线静默编译生成高清 PDF"""
@@ -2143,7 +2117,6 @@ def export_paper_pdf(payload: dict, db: Session = Depends(get_db)):
             )
     except Exception as e:
         return JSONResponse(content={"status": "error", "message": f"编译 PDF 异常: {str(e)}"}, status_code=500)
-
 
 
 @router.post("/api/paper/export/word")

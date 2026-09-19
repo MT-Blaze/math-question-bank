@@ -23,6 +23,7 @@ from mathbank.math_markdown import (
     compact_solution_markdown,
     normalize_fillin_macro,
     normalize_question_math_markdown,
+    restore_doubled_control_words,
     restore_literal_newlines,
     strip_page_markers,
 )
@@ -215,6 +216,7 @@ def latexify_choices(md: str, question_type: str = "") -> str:
     lines = text.split("\n")
     out: list[str] = []
     items: list[str] = []
+    blank_run = 0
 
     def flush() -> None:
         if items:
@@ -224,16 +226,38 @@ def latexify_choices(md: str, question_type: str = "") -> str:
             items.clear()
 
     for line in lines:
+        if not line.strip():
+            blank_run += 1
+            continue
         # min_labels=2：两选项判断题「A．对 B．错」也要正确拆成两个 \item，
         # 否则 B 标号与内容会被吞进 A 的 \item（导出侧默认 3 不改）。
-        for piece in _split_inline_option_labels(line, min_labels=2):
-            m = _CHOICE_LABEL_LINE_RE.match(piece)
+        pieces = _split_inline_option_labels(line, min_labels=2)
+        matched = [_CHOICE_LABEL_LINE_RE.match(piece) for piece in pieces]
+        if not matched[0]:
+            flush()
+            # 选项块已经收完，之前的空行属于「题干与选项之间」，必须留在原位；
+            # 选项块之后的空行由 flush 后的正文行自然承接。
+            out.extend([""] * blank_run)
+            blank_run = 0
+            # 就地替换：选项块插在选项原本出现的位置，**不挪到正文末尾**。
+            # 否则尾随图会被挤到选项块之前，导出侧 `_should_preserve_inline_image_positions`
+            # 判定变化（图后有内容 → 内联居中），「尾随图右置」版面失效。
+            out.append(line)
+            continue
+        if items:
+            # 选项之间只隔着空行（MinerU/OCR 常把四幅选项图各写成一段）：
+            # 这仍是**同一个**选项块，空行丢掉。旧实现在这里 flush，于是四个选项
+            # 变成四个独立 `\begin{choices}`，每题都从 A 重新编号，版面彻底散架。
+            blank_run = 0
+        else:
+            out.extend([""] * blank_run)
+            blank_run = 0
+        for piece, m in zip(pieces, matched):
             if m:
                 items.append("    \\item " + m.group(2).strip())
             else:
-                # 就地替换：选项块插在选项原本出现的位置，**不挪到正文末尾**。
-                # 否则尾随图会被挤到选项块之前，导出侧 `_should_preserve_inline_image_positions`
-                # 判定变化（图后有内容 → 内联居中），「尾随图右置」版面失效。
+                # 同一行里标号壳后面接了非选项文字（如 `A．1 B．2 如图`）：
+                # 已收的选项照常成块，剩下的文字按正文留在原位。
                 flush()
                 out.append(piece)
     flush()
@@ -485,6 +509,10 @@ def normalize_for_storage(value: str, question_type: str = "", is_answer: bool =
     if not value or not isinstance(value, str):
         return value or ""
     value = restore_literal_newlines(value)
+    # MinerU 云路线整份 markdown 多转义一层（``\\mathit``、``\\frac``）：``\\`` 在数学
+    # 模式是换行命令，后面紧跟的控制词会被当正文排出，公式直接错。必须早于结构层与
+    # 字符层，否则 ``\\includegraphics`` 这类形态谁都认不出来。
+    value = restore_doubled_control_words(value)
     value = strip_page_markers(value)
     value = normalize_fillin_macro(value)
     value = normalize_content_for_latex_storage(value, question_type)

@@ -85,6 +85,36 @@ def test_two_option_choice_splits_both_items():
     assert r"\item 错" in out
 
 
+def test_blank_lines_between_options_stay_one_choices_block():
+    """选项之间只隔空行时仍是**一个** choices 块（实测 MinerU 云路线四幅选项图各成一段）。
+
+    旧实现在空行处 flush，四个选项变成四个独立 `\\begin{choices}`，每块都从 A 重新
+    编号，网页与 PDF 版面全散。
+    """
+    md = (
+        "下列各曲线中，不能表示 $y$ 是 $x$ 的函数的是（ ）\n\n"
+        "A．![插图](/static/uploads/a.png)\n\n"
+        "B．![插图](/static/uploads/b.png)\n\n"
+        "C．![插图](/static/uploads/c.png)\n\n"
+        "D．![插图](/static/uploads/d.png)\n"
+    )
+    out = latexify_choices(md, "single_choice")
+    assert out.count(r"\begin{choices}") == 1, out
+    assert out.count(r"\end{choices}") == 1, out
+    assert out.count(r"\item ") == 4, out
+    # 题干与选项之间仍留一个空行，选项块没有被挪到正文末尾
+    assert "）\n\n  \\begin{choices}" in out, out
+
+
+def test_blank_line_then_prose_still_closes_choices_block():
+    """选项块之后接正文（哪怕隔着空行）必须收尾，不能把正文吃进选项。"""
+    md = "A．1\n\nB．2\n\n则下列说法正确的是（ ）"
+    out = latexify_choices(md, "single_choice")
+    assert out.count(r"\begin{choices}") == 1
+    assert out.count(r"\item ") == 2
+    assert "则下列说法正确的是" in out.split(r"\end{choices}")[1]
+
+
 def test_choices_not_wrapped_for_non_choice_question():
     """防误伤（Q3）：非选择题正文里的「A．」纯文本不得被转成选项环境。"""
     md = "设 A．为集合，D．为常数，下列正确的是（  ）"

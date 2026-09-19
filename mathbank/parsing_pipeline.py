@@ -23,7 +23,6 @@ from main import (
     resolve_text_provider,
 )
 
-from mathbank.math_markdown import compact_solution_markdown, normalize_question_math_markdown
 from mathbank.latex_normalize import normalize_for_storage, normalize_stem_for_storage
 
 # 一道题挂到这么多张配图基本可以断定归属出了偏差，导入后提请人工核对。
@@ -166,6 +165,13 @@ _BARE_LETTER_LINE_RE = re.compile(
 # 一行之内的图片语法（Markdown 与 LaTeX 两种形态），用于判断选项行是否「只有图」。
 _IMAGE_SYNTAX_RE = re.compile(
     r"!\[[^\]]*\]\([^)]*\)|\\includegraphics(?:\[[^\]]*\])?\{[^}]*\}"
+)
+
+# 空壳【答案】：后面除了空白/全角空格/markdown 星号/中文标点什么都没有，
+# 且**紧接着又一个【答案】**（否则那是「答案缺失」的真实信号，必须留着）。
+_EMPTY_ANSWER_SHELL_RE = re.compile(
+    r"【答案】[ \t　]*[：:。.、]?[ \t　*]*(?:\r?\n+[ \t　*]*)+"
+    r"(?=(?:\*\*)?【答案】)"
 )
 
 # 正文里所有图片引用的 URL（两种形态各捕获一组），用于查「同一张图引用了两次」。
@@ -315,6 +321,15 @@ def post_process_pdf_parsed_questions(parsed_questions: list, paper_title: str, 
         if am:
             am = re.sub(r"[ \t]*【", "\n\n【", am)
             am = re.sub(r"\n{3,}", "\n\n", am).strip()
+            # MinerU/AI 会把答案标签重复输出（实测每道题都是「【答案】+空行+【答案】C」），
+            # 上一步拆块后就成了两个独立板块：前端渲染出一行空答案，`has_answer` 判定也被
+            # 带偏。只留有内容的那个；**后面紧跟的必须是又一个【答案】**才删，否则「答案
+            # 缺失」这个信号会被抹掉。空白容忍全角空格、markdown 星号与中文标点。
+            while True:
+                collapsed = _EMPTY_ANSWER_SHELL_RE.sub("", am)
+                if collapsed == am:
+                    break
+                am = collapsed
             q["answer_markdown"] = am
 
     # 1. 搜集该 PDF 任务在 tmp 文件夹中生成的所有物理裁剪图片，按生成时间（mtime）进行排序
@@ -702,14 +717,20 @@ def post_process_pdf_parsed_questions(parsed_questions: list, paper_title: str, 
     else:
         print("[配图自检] 全部题目的配图归属未发现异常。")
 
-    # 8. 入库前 LaTeX 归一化（结构层 + 字符层一致）：三条录入路线（MinerU / 原生 / 视觉 OCR）
-    #    在这里把各自风格的原料统一成同一种 LaTeX 风味源码——图片 \\includegraphics{文件名}、
-    #    表格 tabular、选项 \\begin{choices}、加粗 \\textbf、填空 \\fillin，再补数学定界符
-    #    与压缩多余空行。此时图片收集/剥离（基于 URL 形态）已完成，image_paths 资源清单
-    #    已生成，正文里只剩未归属内联图（含选项图）。
-    #    必须与写库边界跑同一条链（normalize_for_storage，而非只做结构层）：拆卷卡片里
-    #    用户会手改文字，保存时边界再把同一条幂等链跑一遍，所以卡片预览必须等于入库结果；
-    #    否则同一次导入里「未改动的题」与「改过一个字的题」格式就不一致。
+    # 8. 入库前 LaTeX 归一化：与 TeX / 批量图片路线共用同一个出口函数，
+    #    保证「卡片预览 == 写库结果」只有一份实现。
+    return apply_storage_normalization(parsed_questions)
+
+
+def apply_storage_normalization(parsed_questions: list) -> list:
+    # 入库前 LaTeX 归一化（结构层 + 字符层一致）：各条录入路线（MinerU / 原生 / 视觉 OCR /
+    # TeX / 批量图片）在这里把各自风格的原料统一成同一种 LaTeX 风味源码——图片
+    # \\includegraphics{文件名}、表格 tabular、选项 \\begin{choices}、加粗 \\textbf、
+    # 填空 \\fillin，再补数学定界符与压缩多余空行。调用点必须在图片收集/剥离之后，
+    # 那时 image_paths 资源清单已生成，正文里只剩未归属内联图（含选项图）。
+    # 必须与写库边界跑同一条链（normalize_for_storage，而非只做结构层或只做字符层）：
+    # 拆卷卡片里用户会手改文字，保存时边界再把同一条幂等链跑一遍，所以卡片预览必须
+    # 等于入库结果；否则同一次导入里「未改动的题」与「改过一个字的题」格式就不一致。
     for q in parsed_questions:
         q_type = q.get("question_type") or ""
         if q.get("content"):
@@ -721,8 +742,8 @@ def post_process_pdf_parsed_questions(parsed_questions: list, paper_title: str, 
         if q.get("answer_markdown"):
             # 解析（answer）不是选项，不传 question_type，避免把解析里的「A．」误转选项。
             q["answer_markdown"] = normalize_for_storage(q["answer_markdown"], is_answer=True)
-
     return parsed_questions
+
 
 def parse_paper_text_internal(
     latex_content: str,

@@ -386,6 +386,60 @@ def _snap_box_to_anchor(box, anchors):
     return best
 
 
+def count_pdf_figures(pdf_bytes):
+    """逐页数「PDF 里真实有几幅位图图形」（相邻矩形合并成一簇），不渲染页面。
+
+    云路线（MinerU）不产生整页 PNG，拿不到像素尺寸，但图形**数量**只取决于内嵌
+    位图的边界，用页面点数当坐标走同一套判据即可。返回 ``{页码: 簇数}``（页码从 1
+    开始，只含至少有一幅图形的页）；PDF 缺失或 PyMuPDF 不可用时返回 ``{}``。
+    """
+    if not pdf_bytes:
+        return {}
+    try:
+        import pymupdf as fitz
+    except Exception:  # pragma: no cover - PyMuPDF 随应用分发
+        return {}
+    counts = {}
+    try:
+        with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
+            for index in range(len(doc)):
+                page = doc.load_page(index)
+                rects = []
+                for info in page.get_image_info(xrefs=True):
+                    x0, y0, x1, y1 = info["bbox"]
+                    if (x1 - x0) < _MIN_ANCHOR_PT or (y1 - y0) < _MIN_ANCHOR_PT:
+                        continue
+                    rects.append((x0, y0, x1, y1))
+                clusters = len(_merge_touching_rects(rects))
+                if clusters:
+                    counts[index + 1] = clusters
+    except Exception as exc:  # pragma: no cover - 解析器异常不该拖垮整卷
+        print(f"[配图对账] 读取 PDF 图形数量失败: {exc}", flush=True)
+        return {}
+    return counts
+
+
+def _summarize_document_coverage(pdf_bytes, parsed_questions):
+    """整卷口径的对账：只报「一共几幅、认领几幅」，不假装知道图在哪一页。
+
+    MinerU 落盘的插图名是 `mineru_*.jpg`，不带页码，因此无法像 `pdf_crop_*` 那样
+    按文件名回到具体页。整卷计数仍然能抓住真正的风险——模型整幅漏掉了图形。
+    """
+    figures = sum(count_pdf_figures(pdf_bytes).values())
+    claimed = {os.path.basename(str(path)) for q in (parsed_questions or [])
+               for path in (q.get("image_paths") or []) if str(path).strip()}
+    attributed = len(claimed)
+    missing = max(0, figures - attributed)
+    warnings = []
+    if figures and missing:
+        warnings.append(
+            f"全卷 PDF 共有 {figures} 幅图形，只有 {attributed} 幅归到了题目上，"
+            "其余未被识别，请对照原页【手动截图】补图。"
+        )
+    return {"pages": [], "figures": figures, "attributed": attributed,
+            "missing": missing, "warnings": warnings}
+
+
 def summarize_figure_coverage(pdf_bytes, page_images, parsed_questions):
     """逐页对账「PDF 里真实有几幅图形」与「拆出来的题认领了几幅」。
 
@@ -393,8 +447,12 @@ def summarize_figure_coverage(pdf_bytes, page_images, parsed_questions):
     这一轮就完全没有输出坐标框）。漏掉时既不报错也不留痕，用户只能在导入后
     发现「图呢？」。这里把缺口算出来交给任务诊断，拆卷日志与前端都能提示。
 
-    ``page_images`` 是 ``[(真实页码, 整页 PNG 路径), ...]``。
+    ``page_images`` 是 ``[(真实页码, 整页 PNG 路径), ...]``；云路线没有整页位图，
+    传空即退化到整卷口径（见 ``_summarize_document_coverage``）。
     """
+    if not page_images:
+        return _summarize_document_coverage(pdf_bytes, parsed_questions)
+
     attributed = {}
     for q in parsed_questions or []:
         for path in (q.get("image_paths") or []):

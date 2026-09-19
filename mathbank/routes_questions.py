@@ -33,8 +33,6 @@ from mathbank.database import (
     QuestionCurriculum,
     QuestionTopic,
     QuestionFingerprint as StoredQuestionFingerprint,
-    KnowledgePoint,
-    QuestionKnowledge,
     get_db,
     sync_question_tags,
     sync_question_knowledge,
@@ -161,7 +159,6 @@ def _normalize_analysis_methods(value):
     return _normalize_text_list(value)
 
 
-
 def schedule_question_fingerprint_retry(
     background_tasks: BackgroundTasks,
     *,
@@ -201,7 +198,6 @@ def schedule_question_fingerprint_retry(
             f"(question_id={question_id}, type={type(exc).__name__}); "
             "startup backfill will retry."
         )
-
 
 
 @router.get("/api/questions")
@@ -410,7 +406,6 @@ def list_questions(
     ]
 
 
-
 def _duplicate_payload_list(value, *, field_name: str, max_items: int = 50):
     if value is None:
         return []
@@ -424,8 +419,6 @@ def _duplicate_payload_list(value, *, field_name: str, max_items: int = 50):
     if len(value) > max_items:
         raise ValueError(f"{field_name} 数量超过 {max_items} 项")
     return value
-
-
 
 
 def _duplicate_input_from_payload(item: dict) -> QuestionDuplicateInput:
@@ -495,8 +488,6 @@ def _duplicate_input_from_payload(item: dict) -> QuestionDuplicateInput:
     )
 
 
-
-
 def _prompt_visible_image_paths(question: Question) -> list[str]:
     return select_visible_question_images(
         question.content or "",
@@ -504,8 +495,6 @@ def _prompt_visible_image_paths(question: Question) -> list[str]:
         question.display_image_paths,
         question.content_tikz_assets,
     )
-
-
 
 
 @router.post("/api/questions/check-duplicates")
@@ -664,8 +653,6 @@ def check_question_duplicates(payload: dict, db: Session = Depends(get_db)):
         raise HTTPException(status_code=503, detail="查重暂不可用，可选择继续保存") from exc
 
 
-
-
 @router.get("/api/questions/{question_id}")
 
 def get_question(question_id: int, db: Session = Depends(get_db)):
@@ -678,9 +665,6 @@ def get_question(question_id: int, db: Session = Depends(get_db)):
     q_dict["topics"] = _decorate_topic_slots(load_question_topics(db, q.id, get_active_version_code()))
     q_dict["sources"] = _load_sources_sorted(db, q.id)
     return q_dict
-
-
-
 
 
 @router.post("/api/questions/scan-duplicates")
@@ -774,8 +758,6 @@ def scan_question_duplicates(payload: dict, db: Session = Depends(get_db)):
     }
 
 
-
-
 @router.post("/api/questions/{question_id}/add-tag")
 def add_question_tag(question_id: int, payload: dict, db: Session = Depends(get_db)):
     """Append a single tag to a question (idempotent, safe to call repeatedly)."""
@@ -794,8 +776,6 @@ def add_question_tag(question_id: int, payload: dict, db: Session = Depends(get_
         sync_question_tags(db, db_question, ",".join(existing + [tag]))
         db.commit()
     return {"status": "success", "tags": db_question.tags}
-
-
 
 
 def committed_question_response(
@@ -836,8 +816,6 @@ def committed_question_response(
             f"(type={type(exc).__name__})."
         )
         return {"status": "success", "question": {"id": question_id}}
-
-
 
 
 def prepare_question_assets(
@@ -914,8 +892,6 @@ def prepare_question_assets(
     )
 
 
-
-
 def build_prepared_question_fingerprint(
     *,
     content: str,
@@ -976,8 +952,6 @@ def build_prepared_question_fingerprint(
     )
 
 
-
-
 def duplicate_review_required_response(
     db: Session,
     *,
@@ -1009,8 +983,6 @@ def duplicate_review_required_response(
             ],
         },
     )
-
-
 
 
 @router.post("/api/questions")
@@ -1271,7 +1243,6 @@ def create_question(
     if duplicate_warning:
         response["warning"] = duplicate_warning
     return response
-
 
 
 @router.put("/api/questions/{question_id}")
@@ -1562,7 +1533,6 @@ def update_question(
     return response
 
 
-
 @router.post("/api/questions/{question_id}/figure_align")
 def update_question_figure_align(
     question_id: int,
@@ -1578,7 +1548,6 @@ def update_question_figure_align(
     db.commit()
     db.refresh(db_question)
     return {"status": "success", "question_id": question_id, "figure_align": figure_align}
-
 
 
 @router.get("/api/questions/{question_id}/associated")
@@ -1598,7 +1567,6 @@ def get_associated_questions(question_id: int, db: Session = Depends(get_db)):
     
     seq_map = get_seq_mapping(db, [item.id for item in associated])
     return [{**_decorate_topic_field(item.to_dict()), "seq_num": seq_map.get(item.id)} for item in associated]
-
 
 
 @router.post("/api/questions/{question_id}/associate")
@@ -1646,7 +1614,6 @@ def associate_questions_endpoint(
         raise HTTPException(status_code=400, detail=f"关联失败: {str(e)}")
 
 
-
 @router.delete("/api/questions/{question_id}/associated")
 def remove_association(
     question_id: int,
@@ -1684,7 +1651,6 @@ def remove_association(
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=400, detail=f"解除关联失败: {str(e)}")
-
 
 
 @router.delete("/api/questions/{question_id}")
@@ -1749,7 +1715,6 @@ def delete_question(
     return {"status": "success", "message": "题目删除成功"}
 
 
-
 def rollback_question_asset_promotions(promotions: list[tuple[Path, Path]]) -> None:
     """Best-effort compensation when a DB transaction rejects promoted files."""
 
@@ -1760,8 +1725,6 @@ def rollback_question_asset_promotions(promotions: list[tuple[Path, Path]]) -> N
                 shutil.move(str(destination), str(source))
         except OSError as exc:
             print(f"[Storage Rollback] Failed to restore a promoted asset: {type(exc).__name__}")
-
-
 
 
 def _referenced_question_assets(db: Session) -> set[Path]:
@@ -1801,8 +1764,6 @@ def _referenced_question_assets(db: Session) -> set[Path]:
     return resolved_references
 
 
-
-
 def delete_unreferenced_question_assets(db: Session, references) -> int:
     """Delete committed-away images only when no remaining question uses them."""
 
@@ -1832,8 +1793,6 @@ def delete_unreferenced_question_assets(db: Session, references) -> int:
         except OSError:
             print("[Storage Cleanup] Skipped an unavailable legacy image path.")
     return removed
-
-
 
 
 def promote_question_temp_assets(

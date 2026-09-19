@@ -119,25 +119,88 @@ def lock_visible_math(value: str, scope: str) -> tuple[str, list[ContentLock]]:
     return "".join(parts), locks
 
 
+def _lock_reference_pattern(lock_id: str) -> tuple[re.Pattern, int]:
+    r"""容忍模型对 ID 的三种无害改写：大小写漂移、下划线后夹空格、前导零被吃掉。
+
+    ``MBM_27b26bd6d24742eb_0003`` 实测会被写成 ``..._3``、``MBM_27B26..._0003``，
+    或在换行处断开。这些都不是「公式丢了」，硬判丢失会让整卷拆题失败（实测 Word
+    路线 20 个锁丢 2 个就整卷报错）。序号按整数比较，且两侧语法（``]]`` / 引号）
+    仍然是边界，所以**真的没写回来的锁依旧匹配不上**，安全属性不变。
+    """
+    prefix, _, number = lock_id.rpartition("_")
+    return re.compile(
+        re.escape(prefix) + r"_\s*0*(\d{1,4})",
+        re.IGNORECASE,
+    ), int(number)
+
+
+def _lock_matches(pattern: re.Pattern, expected: int, text: str, span: tuple[int, int]):
+    """在 ``span`` 区间内找该锁的引用；序号必须完全等于 expected。"""
+    for match in pattern.finditer(text, span[0], span[1]):
+        if int(match.group(1)) == expected:
+            return match
+    return None
+
+
 def _restore_lock_in_text(value: str, lock: ContentLock) -> tuple[str, int, bool]:
     text = str(value or "")
-    token_pattern = re.compile(r"\[\[\s*" + re.escape(lock.lock_id) + r"\s*\]\]")
-    tag_pattern = re.compile(
-        rf"<{_LOCK_TAG}\b[^>]*\bid\s*=\s*(['\"])"
-        + re.escape(lock.lock_id)
-        + rf"\1[^>]*>(.*?)</{_LOCK_TAG}\s*>",
+    pattern, expected = _lock_reference_pattern(lock.lock_id)
+    token_matches = []
+    tag_matches = []
+    for match in re.finditer(r"\[\[([^\[\]]*)\]\]", text):
+        ref = _lock_matches(pattern, expected, match.group(1), (0, len(match.group(1))))
+        if ref:
+            token_matches.append(match)
+    for match in re.finditer(
+        rf"<{_LOCK_TAG}\b[^>]*\bid\s*=\s*(['\"])([^'\"]*)\1[^>]*>(.*?)</{_LOCK_TAG}\s*>",
+        text,
         flags=re.DOTALL | re.IGNORECASE,
-    )
-    token_matches = list(token_pattern.finditer(text))
-    tag_matches = list(tag_pattern.finditer(text))
+    ):
+        if _lock_matches(pattern, expected, match.group(2), (0, len(match.group(2)))):
+            tag_matches.append(match)
     count = len(token_matches) + len(tag_matches)
-    modified = any(match.group(2) != lock.original for match in tag_matches)
+    modified = any(match.group(3) != lock.original for match in tag_matches)
     if count == 1:
         if token_matches:
-            text = token_pattern.sub(lambda _match: lock.original, text, count=1)
+            text = text[: token_matches[0].start()] + lock.original + text[token_matches[0].end():]
         else:
-            text = tag_pattern.sub(lambda _match: lock.original, text, count=1)
+            text = text[: tag_matches[0].start()] + lock.original + text[tag_matches[0].end():]
     return text, count, modified
+
+
+_RESTORE_FIELDS = ("content", "answer_markdown")
+
+
+def _snapshot_fields(questions: list[dict[str, Any]]) -> list[str]:
+    """替换前的全部字段原文，用于判断模型是否把公式逐字带回了原处。"""
+    return [
+        str(question.get(field))
+        for question in questions
+        for field in _RESTORE_FIELDS
+        if isinstance(question.get(field), str)
+    ]
+
+
+def _verbatim_returned_locks(fields: list[str], locks: list[ContentLock]) -> set[str]:
+    """筛出「id 没写回，但公式本体一字不差地出现在输出里」的锁。
+
+    实测 Word 路线的拆题模型有概率直接把 `<mathbank-math>` 里的公式原样抄回、省掉
+    定位标记。公式本身没有丢，此时整卷报错会让用户白付一次 MinerU/Word 解析钱。
+
+    只认**无歧义**的那一种：这条原文在整份输出里只出现一次，且没有别的锁共用同一份
+    原文。两处都满足才谈得上「放回了原处」；同一条公式被两道题引用时无法判断归属，
+    仍旧按丢失中断（与旧行为一致），不做猜测式恢复。
+    """
+    originals = [lock.original for lock in locks]
+    joined = "\x00".join(fields)
+    safe: set[str] = set()
+    for lock in locks:
+        text = lock.original
+        if not text.strip() or originals.count(text) != 1:
+            continue
+        if joined.count(text) == 1:
+            safe.add(lock.lock_id)
+    return safe
 
 
 def restore_visible_math(
@@ -149,11 +212,13 @@ def restore_visible_math(
         "math_locks_created": len(locks),
         "math_locks_restored": 0,
         "math_locks_overwritten": 0,
+        "math_locks_implicit": 0,
         "math_locks_missing": 0,
         "math_locks_duplicated": 0,
     }
     missing: list[str] = []
     duplicated: list[str] = []
+    verbatim = _verbatim_returned_locks(_snapshot_fields(questions), locks)
 
     for lock in locks:
         occurrences: list[tuple[dict[str, Any], str, str, int, bool]] = []
@@ -168,6 +233,9 @@ def restore_visible_math(
                     occurrences.append((question, field, restored, count, modified))
                     total += count
         if total == 0:
+            if lock.lock_id in verbatim:
+                report["math_locks_implicit"] += 1
+                continue
             missing.append(lock.lock_id)
             continue
         if total != 1:

@@ -369,6 +369,24 @@ def restore_literal_newlines(value: str) -> str:
     return _LITERAL_NEWLINE_RE.sub("\n", value)
 
 
+# 「两个及以上反斜杠 + 紧跟字母」= 多转义一层的控制词。后面**必须紧跟字母**（不留空格），
+# 因为 `A & B \\ C` 这种「硬换行 + 空格」是合法写法，不能碰。
+_DOUBLED_CONTROL_WORD_RE = re.compile(r"\\{2,}(?=[A-Za-z])")
+
+
+def restore_doubled_control_words(value: str) -> str:
+    r"""把多转义的控制词压回单反斜杠（实测 MinerU 云路线整份 markdown 多转义一层）。
+
+    ``$B _ { l } C _ { \\mathit { l } }$`` 里的 ``\\`` 在数学模式是**换行命令**，
+    后面的 ``mathit`` 会被当正文排出来，公式直接错。判据要求反斜杠后紧跟字母，
+    所以表格里的 ``A & B \\ C``（换行后带空格）不受影响；用 `{2,}` 而不是固定两个，
+    是为了让「跑两遍」的入库链得到同一结果（幂等）。
+    """
+    if not value or "\\\\" not in value:
+        return value
+    return _DOUBLED_CONTROL_WORD_RE.sub(r"\\", value)
+
+
 def _strip_underline_group(text: str) -> str:
     r"""把 \underline{...} 整体换成 \fillin，含嵌套花括号。
 

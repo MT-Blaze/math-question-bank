@@ -2545,7 +2545,7 @@
                             appendImportLog(`TeX 题数核对：源码约 ${estimatedCount} 题，实际拆分 ${actualCount} 题。`, estimatedCount === actualCount ? 'info' : 'warning');
                         }
                         if (texDiagnostics.math_locks_created) {
-                            appendImportLog(`TeX 公式保真校验：${texDiagnostics.math_locks_restored || 0}/${texDiagnostics.math_locks_created} 个公式已按原源码恢复。`, 'info');
+                            appendImportLog(`TeX 公式保真校验：${texDiagnostics.math_locks_restored || 0}/${texDiagnostics.math_locks_created} 个公式已按原源码恢复` + (texDiagnostics.math_locks_implicit ? `，另有 ${texDiagnostics.math_locks_implicit} 个模型已原样带回` : '') + '。', 'info');
                         }
                         const texWarnings = Array.isArray(texDiagnostics.warnings) ? texDiagnostics.warnings : [];
                         texWarnings.forEach(message => appendImportLog(`TeX 预检：${message}`, 'warning'));
@@ -2867,7 +2867,7 @@
                             }
                             const lockedMath = report.math_locks_created || 0;
                             if (lockedMath) {
-                                appendImportLog(`公式保真校验：${report.math_locks_restored || 0}/${lockedMath} 个公式已按 Word 原文恢复，拆卷模型未直接改写最终公式。`, 'info');
+                                appendImportLog(`公式保真校验：${(report.math_locks_restored || 0) + (report.math_locks_implicit || 0)}/${lockedMath} 个公式与 Word 原文一致` + (report.math_locks_implicit ? `（其中 ${report.math_locks_implicit} 个模型已原样带回，未走定位标记）` : '') + '，拆卷模型未改写最终公式。', 'info');
                             }
                             if (reviewCount > 0) {
                                 showToast(`Word 中有 ${reviewCount} 处公式、字符、图片或表格需人工核对，已保留提示标记。`, 'warning');

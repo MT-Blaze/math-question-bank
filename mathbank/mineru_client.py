@@ -22,7 +22,6 @@ import shutil
 import time
 import zipfile
 from pathlib import Path
-from typing import Any
 
 import requests
 
