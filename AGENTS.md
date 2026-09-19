@@ -1,0 +1,224 @@
+# AGENTS.md - 本地化数学题库管理系统 开发与 AI 代理指南
+
+## 1. 项目概述
+本项目是一个本地运行的半自动化数学题库管理工作台。核心目标是通过极简的本地化部署，实现高质量图文混排数学题目（尤其是高中及更高阶数学内容）的收集、标签化管理、OCR 识别以及 AI 辅助生成解析。
+
+## 2. 核心技术栈
+本项目追求极简配置与极致体验，严格遵循以下技术选型，**不要引入复杂的现代前端构建工具（如 Webpack/Vite/Node.js 生态）**：
+- **后端**：Python + FastAPI。
+- **后端渐进式模块架构**：根目录 `main.py` 继续作为 `uvicorn main:app` 兼容入口；后端领域能力统一集中在 `mathbank/`。`database.py` 提供 SQLite ORM 与 Session，`db_migrations.py` 提供版本化、备份优先的数据库迁移，`backup.py` 提供带清单校验的完整备份与恢复，`asset_security.py` 统一校验上传内容与本地资产路径，`task_manager.py` 提供有界异步任务、协作取消与临时资源生命周期，`health.py` 提供启动就绪诊断，`paper_helper.py` 提供 LaTeX/PDF 编译排版，`parsing_pipeline.py` 承载 PDF/Word/试卷拆解的后处理与 AI 拆题实现（由 `main.py` 在底部导入并保留薄包装，使既有 `patch("main.xxx")` 接缝继续生效），`illustration_crop.py` 承载 OCR 插图坐标解析、按百分比裁图与坐标标签擦除（同样由 `main.py` 底部导入并保留同名薄包装），`sync_helper.py` 只负责 JSON 同步导出与 AI 题库导出，`paths.py` 统一锚定持久化与捆绑路径。`curriculums.py` 加载四套教材 JSON（`get_current_curriculum`/`set_current_curriculum` 为活跃教材树的可设置缓存，启动时由 `main.py` 回填），`prompts.py` 提供纯提示构建器，`ai_providers.py`、`ai_http.py`、`ai_json.py` 分别统一模型供应商解析、AI HTTP 请求与结构化输出解析。`auth.py` 提供 `LOCAL_TOKEN` 与 `require_local_token` 全局中间件依赖；`metadata.py` 提供进程级元数据缓存（`get_metadata_cache`/`set_metadata_cache`）与测试态动态 `METADATA_FILE` 解析（`IS_TESTING` 时落到 `custom_metadata_test.json`，避免覆盖真实配置）；**接口编排按域下沉为 `APIRouter` 模块**：`routes_lesson_plans.py`（教案 CRUD）、`routes_library.py`（stats/categories/sources 只读库）、`routes_runtime.py`（Pandoc 运行时状态/安装）、`routes_settings.py`（系统设置/版本检查/元数据配置）、`routes_questions.py`（题目增删改查/查重/关联）、`routes_ai.py`（OCR/整页 OCR/AI 解题/AI 分类/TikZ 生成纠正与渲染）、`routes_paper.py`（试卷解析任务 PDF/MinerU/docx/TeX/图片批量/组卷选题/试卷 CRUD 与导出），由 `main.py` 以 `app.include_router(...)` 挂载，`main.py` 本体保持薄入口。运维、迁移、检索与 Release 工具统一位于 `scripts/`，从项目根目录使用 `python3 -m scripts.<模块名>` 运行。严禁重新在根目录新增业务模块或复制供应商判断规则。
+- **数据库**：SQLite + SQLAlchemy（轻量级，数据存储在本地 `.db` 文件中）。
+- **前端页面**：纯 HTML + 原生 JavaScript。
+- **前端脚本拆分**：前端 JS 采用无编译的“渐进式级联加载”架构，按 `api.js`、`editor.js`、`ocr.js`、`import.js`、`paper.js`、`lesson.js`、`filter-panel.js` 的顺序级联加载；`api.js` 负责全局状态、API 与安全信任边界，`editor.js` 负责编辑与渲染，`ocr.js` 负责 OCR 图像交互，`import.js` 负责导入拆卷与编辑器保存，`paper.js` 负责组卷工作台，`lesson.js` 负责教案编辑，`filter-panel.js` 负责筛选面板。加载顺序严格依存，不允许产生任何编译及捆绑动作。
+- **前端共享助手唯一来源**：`window.MathBankSafe`（信任边界）、`window.MathBankModal`（弹窗栈，自动维护 `role`/`aria-modal`/`aria-hidden`、焦点陷阱与 Escape 关闭）、`escapeHtml`、`buildDuplicateAutoTag`/`appendDuplicateTagToTags` 一律由 `api.js` 定义，后续模块**禁止重复定义同名函数**——级联加载会让后加载者覆盖前者，曾因此出现 `lesson.js` 的 `showToast` 包装调用 `window.showToast` 指向自身导致无限递归、以及 `paper.js` 覆盖 `getDifficultyBadge` 后丢掉旧难度模型与转义的问题。新增通用 UI 函数请先放进 `api.js`。
+- **前端样式与字体**：Tailwind CSS + FontAwesome 图标库 + Inter/Outfit 字体包（均已下载至本地 `/static/lib` 支持 100% 离线使用与跨平台系统降级）。
+- **公式渲染**：KaTeX（已下载至本地支持 100% 离线数学公式渲染），必须支持题干与解析框实时解析、秒级渲染。
+- **中转站模型 7:3 弹性 UI 布局与 Reasoning Effort 自动解析**：在系统 API 设置中选择中转站平台（`zhongzhan_gpt` 或 `zhongzhan_claude`）时，模型输入区域自动转换为 7:3 弹性比例（70% 模型名称，30% 推理强度）。后端由 `mathbank.ai_providers.parse_model_and_effort` 自动提取纯净模型名称并注入请求参数。
+- **全局 Tooltip 提示系统**：基于纯原生事件代理接管 `title` / `data-tooltip` 浮现（详见第 6 节交互规范）。
+
+
+> [!IMPORTANT]
+> **开发规范单一来源规则**：
+> 根目录 `AGENTS.md` 是本项目面向 AI 代理与开发者的唯一开发规范来源。进行系统更新、重构、功能新增或回滚（Rollback）时，如变更影响本文记录的技术设计、接口规范、验证方式或发布流程，必须同步更新本文件，确保规范与实际代码实现准确一致；禁止再维护内容重复的平行代理指南。
+
+> [!IMPORTANT]
+> **本地版本号与发布权限边界**：
+> 全局系统版本号统一定义于 `mathbank/__init__.py` 的 `__version__`。AI 代理只按用户要求修改该本地版本号；仅在用户明确要求本地打包时运行 `scripts/build_release.py`，产物只保存在本地。Git Tag、GitHub Release、Release 草稿与附件上传全部由用户自行管理，AI 代理不得创建、移动、删除或推送 Tag，不得创建、编辑、发布或上传 GitHub Release。用户要求“同步到 GitHub”时，默认仅同步当前代码分支，不包含任何 Tag 或 Release 操作。
+
+> [!IMPORTANT]
+> **项目路径单一来源规则**：
+> 所有持久化文件和捆绑资源路径必须从 `mathbank.paths` 获取，并以 `PROJECT_ROOT` 为锚点。禁止新增依赖当前工作目录的 `./data_backup`、`os.getcwd()` 或“脚本所在目录就是数据库目录”等隐式假设，确保从任意工作目录启动服务或 CLI 都访问同一份数据。
+
+> [!WARNING]
+> **JavaScript 语法防错与浏览器兼容性警示**：前端的五个脚本文件在浏览器中级联加载。任何人在修改 JS 代码时，必须遵循以下规则：
+> 1. **确保无任何语法错误**：语法错误会导致浏览器停止解析后续脚本，挂起 `DOMContentLoaded` 事件，使界面死锁。修改后建议运行 `node -c static/js/*.js` 校验。
+> 2. **禁用正则后行断言**：前端代码中**严禁使用正则后行断言 `(?<!...)` 和 `(?<=...)`**，此类语法在旧版浏览器（如 Safari < 16.4）或移动端 WebView 中会触发致命的 `SyntaxError` 中断加载。必须改用捕获组或字符串拆分逻辑。
+> 3. **版本号缓存击穿 (Cache Busting)**：后端在首页路由 `read_index` 中根据前端 JS/CSS/Favicon 修改时间戳自动追加版本号后缀（如 `?v=时间戳`）。开发者无需手动修改 HTML 中的版本号。
+> 4. **Tailwind 自定义色彩与透明度定义**：CSS 变量含逗号分隔符时（如 `124, 58, 237`），**严禁使用 `rgb(var(--brand-xxx-rgb) / <alpha-value>)`**。必须使用 `rgba(var(--brand-xxx-rgb), <alpha-value>)` 格式以保证所有浏览器的解析兼容。
+
+## 3. 核心业务逻辑与模块设计
+### 3.1 题目收集与存储
+- **题干录入**：支持多行纯文本与 LaTeX 代码混合输入，界面配备实时 KaTeX 渲染预览区。
+- **插图管理**：提供图片上传与 TikZ 绘图代码输入。图片保存在本地文件系统（`static/uploads/`），数据库存储相对路径。
+- **插图排版位置联动与多图复合渲染**：
+  - **多模式与多插图支持**：插图在后端存储 `figure_align` 属性（支持 `right` 题干右侧、`center` 下方居中、`bottom_right` 下方居右）。
+  - **插图锚点与预览同步**：题末单图或连续图片簇继续由 `figure_align` 控制右侧、居中或居右排版；图片后仍有正文、表格闭合结构、标题或说明时，前端组卷预览与 LaTeX/PDF 导出必须保留全部 Markdown 图片的原始正文锚点。`tabular`、`tabular*`、`tabularx`、`longtable`、`tblr`、`longtblr`、`talltblr` 单元格内图片不得抽取到题末，多图复杂题的网页与 PDF 顺序必须和题库详情一致。
+  - **交互弹窗切换**：在 A4 试卷预览框中点击或右击题末可分离插图可弹出气泡菜单切换排版位置，并通过 `POST /api/questions/{qid}/figure_align` 持久化；正文或表格内锚定图片不显示整题插图位置控件，避免移动后破坏语义结构。
+  - **解答题留白调控**：解答题支持留白高度调控。若插图设为 `bottom_right` 或 `center`，插图包含在留白空间顶侧，避免垂直叠加过长。切换为 `exam_19`（高考卷）时自动恢复紧凑布局。
+- **选择题与填空题环境规范**：
+  - 选择题选项统一格式化为 LaTeX `choices` 环境（`\begin{choices}` 和 `\item`），剥离原本的 A., B., C., D. 标号前缀。
+  - **选择题 choices 网格对齐**：前端使用 `choices-grid` 容器与首行基线对齐，确保题干右侧括号 `（   ）` 靠右，选项独占下方 A4 栅格，且标号与首行文本基线精准对齐。
+  - **选择题题干末尾括号净化**：后端与前端预编译自动物理抹除题干末尾的全角/半角空括号（如 `(\quad)`、`(   )`），防止与 TeX 模板右侧 `\paren` 宏重叠。
+  - **exam-zh `\paren` 预览兼容**：试题教研工作台将文本态 `\paren` 转换为靠右的 HTML 空括号，数学环境保持原样交给 KaTeX；A4 组卷预览仍按题型生成括号，最终 PDF 仍交由 exam-zh 的 `\paren` 宏排版。
+  - **填空题 \fillin 宏规范**：下划线统一生成与清洗规范化为 `\fillin` 宏。前端负责数学环境感知与句末标点位置自愈。
+  - **HTML 解析器小于号转义**：前端预处理 KaTeX 公式时将数学环境内的 `<` 与 `>` 安全替换为 `\lt ` 与 `\gt `（禁用后行断言），防止浏览器 `innerHTML` 解析时切割 DOM 树。
+  - **LaTeX tabular 表格网格渲染**：`\begin{tabular}` 自动解析转换为现代居中、带微边框的响应式 HTML5 表格，保留 LaTeX 原生源码导出。
+  - **三列比较表导出约束**：OCR 常见的简单 `|c|c|c|` 比较表在 PDF 导出时必须转换为 `\noindent tabularx`，第一列使用窄 `m{4em}`，两列正文使用等宽 `X` 自动换行；表内图片宽度受单元格 `\linewidth` 限制，并保留上下各 3pt 内边距，避免白底图片覆盖横线。不得用整表 `resizebox` 将长文本压成过小字号。
+  - **LaTeX 段落与换行规范**：双回车（`\n\n+`）代表起新段落（`<br><br>`）；显式双反斜杠（`\\\\`）代表硬换行（`<br>`）；单回车仅视为空格不打断自然段。解答题小问标号（如 `(1)`、`①`）自动前置插入段落换行。
+- **教材大纲多版本预设与共存**：
+  - 快捷切换人教 A 版、人教 B 版、苏教版、沪教版标准大纲预设（`mathbank/resources/curriculums/`）。
+  - **活跃-镜像模式 (`question_curriculums`)**：存放题目在每套大纲中的分类镜像。主表字段反映当前活跃配置，切换大纲时后台自动运行增量迁移。
+  - **小节隔离自愈**：校验并清洗非法跨版小节，防止分类下拉菜单发生混排污染。
+- **全局试题序号同步 (#seq_num)**：
+  - 题库卡片与 Toast 交互统一采用 SQLite 物理升序计算的纯净序号 `seq_num`（1 ~ N）展示。
+  - **编辑会话状态 (`EditorState`)**：`api.js` 的 `EditorState` 是当前题目 ID、序号、草稿 ID 与编辑模式的唯一状态来源，禁止引入平行全局变量。
+- **草稿箱与未保存决策流**：
+  - 草稿统一存放在 LocalStorage 键 `mathbank_local_drafts`。离开未保存 Dirty 页面时提供“存入本地库/暂存草稿/离开/返回”决策流，入库后自动从草稿箱移除。
+- **题库列表分页契约**：`GET /api/questions` 不传 `page` 时保留历史数组响应；传入 `page` 后返回 `{items,total,page,page_size,total_pages}`，`page_size` 限制为 1–100，`sort` 仅支持 `asc` / `desc` 语义。侧栏必须使用分页响应，并以 `AbortController` 和请求序号保证最后一次请求胜出。
+- **入库前题目查重**：试卷 OCR/PDF/Word/TeX 识别、拆分和草稿编辑阶段不得自动查重；仅在用户点击单题【导入此题】、批量【导入选中题目】或普通编辑器保存时调用 `POST /api/questions/check-duplicates`。批量导入必须在任何一道题写库前完成整批预检，同时查批内与库内重复，确认后以最多 3 个并发任务逐题入库并保留部分成功语义。查重结果必须绑定 `parsedQuestionsGeneration`、客户题目标识及内容快照；题干、解析、题型或配图改变后旧结果立即失效。
+- **查重指纹与判定边界**：`question_fingerprints` 是 schema v6 引入、schema v7 将分桶索引扩展为 `(fingerprint_version, bandN, token_count)` 的可重建派生索引，指纹算法必须带 `fingerprint_version`。精确层使用保守规范化后的 SHA-256 普通索引（严禁 `UNIQUE`）；近似层使用 128-bit SimHash 拆成 8 个 16-bit 分桶索引召回有界候选，再对少量候选精排，不得全库逐题比较。schema v8 新增 8 个 `(fingerprint_version, text_bandN, token_count)` 文字片段索引：仅在精确/SimHash 候选精排后仍无需复核结果时启用，以 literal 与数字骨架 token 4-gram OPH 召回“多处小改+增删句子”题目；两阶段昂贵精排候选共享同一上限。规范化必须保留数字、变量、正负号、关系符、量词、定义域、区间开闭、选项及小问顺序；这些关键数学 token 不同时最高只能提示“可能是变式题”。数字骨架只能扩大候选召回，严禁影响 exact/critical 最终裁定。答案、解析、分类、难度、标签和来源不参与主指纹；答案差异只作为人工复核理由。可见配图按解码像素哈希提供证据，TikZ 按保守源码哈希提供证据；缺图、图不同或指纹不可用时必须标记配图待核对。
+- **查重写入与故障边界**：新建/更新题目时，`Question`、`QuestionCurriculum` 与当前版本指纹必须在同一 SQLite 事务内提交。已完成预检的请求携带 `duplicate_snapshot_hash`，写入前再复查精确指纹以关闭并发窗口；仅用户明确选择“仍作为独立题保存”时接受 `duplicate_override=independent`。查重只是可解释、可忽略的“疑似已收录”提示，严禁自动删除、自动合并或复用 `association_group_id`。查重接口/图像指纹失败时必须明示“查重暂不可用”并放行正常保存，不得伪装成“未发现重复”。旧题指纹只能在服务就绪、已完成必要备份后以小批次、可中断方式后台回填；索引未完成时 UI 必须显示覆盖率，不得声称已完整查重。
+- **查重命中复核与自动打标**：录题（普通编辑器、拆卷单题导入、整批导入三个入口）查重命中时**先弹出复核弹窗**（去审查 / 跳过 / 仍作为独立题保存），只有用户明确选择「仍作为独立题保存」才继续入库，并在入库时自动给该题追加标签——`exact`/`probable` 打 `疑似重复#<候选seq>`，`possible_variant` 打 `疑似变式#<候选seq>`（取候选集中级别最高的题号；前端共享 `buildDuplicateAutoTag`/`appendDuplicateTagToTags`，两个助手定义在 `api.js`，其他模块禁止重复定义）。`buildDuplicateAutoTag` 同时考虑库内候选 `candidates`（用 `seq_num`）与批内候选 `batch_matches`（用 `other_index + 1` 的卡片序号），仅凭 `needs_visual_review` 而无候选时不建标签；`appendDuplicateTagToTags` 幂等，重复入库不重复追加同一标签。批量入口用 `parsedBatchAutoTags`（每次整批查重前 `clear()`）把标签传给 `saveParsedQuestion` 的 `autoTag` 选项。前端保存仍传 `duplicate_override=independent` + `duplicate_snapshot_hash` 关闭后端复查窗口；仅无候选但 `needs_visual_review`（配图待核对）时保留 Toast 提示、不阻断。拆卷卡片无标签输入框，由保存时的 `tags` FormData 自动携带；普通编辑器直接写入 `#editTags` 并在快照校验前重读，保证提交内容与备份快照一致。命中精确/近似/变式任一信号后标签均以「疑似重复/疑似变式#N」为唯一口径，重复入库不重复追加同一标签。
+- **全库查重独立入口**：头部「全库查重」按钮打开扫描弹窗，`POST /api/questions/scan-duplicates` 遍历全库（逐题 `fingerprint_for_question(question, uploads_dir=..., url_prefix=...)` 重建指纹，缺失指纹计 `fingerprint_missing` 不参与），以 `find_indexed_candidates` 找候选并按 `min_level`（exact/probable/possible_variant）过滤，返回按题分组 `{question, candidates:[{id, seq_num, level, score, reasons, content, source, ...}]}` 清单，同时返回 `index_status` 覆盖率供 UI 提示。`POST /api/questions/{id}/add-tag` 幂等追加单个标签（禁止逗号、最长 64 字符），供扫描结果对候选一键打标。扫描只读、不删除不合并；UI 提供「加标签/忽略」逐对操作。两个新接口沿用全局中间件 token 校验（POST 必须带 `X-Local-Token`）。
+- **数据库一致性与迁移**：SQLite 连接必须启用外键与 `busy_timeout`；本地可写文件系统优先使用经验证的 WAL，若底层不支持共享内存/WAL，则明确告警并降级为单机 `DELETE + synchronous=FULL`；WAL 与 DELETE 都无法启用时才拒绝启动。当前结构版本写入 `PRAGMA user_version`。任何结构迁移必须先生成独立、通过完整性检查且带 SHA-256 的快照，再在单事务中修复并迁移；未来版本数据库必须在任何建表、加列或建索引前拒绝启动。题目及关系写入应以一次数据库事务为成功边界，文件清理和 JSON 同步属于提交后的补偿操作，不得把已提交写入误报为失败。
+
+### 3.2 解答与解析模块
+- **多途径解析汇总**：解答区包含手动输入、AI 智能生成（关联 OCR 上下文与引导指令）、OCR 识图、教师点评 (`review`) 与自定义标签 (`tags`) 5 个 Tab，统一汇总至编辑框。
+- **OCR 预览与灯箱**：支持粘贴 (`Cmd+V`/`Ctrl+V`)、上传图片发起 OCR，提供本地预览与全局放大灯箱。
+- **TikZ 几何绘图**：编辑 TikZ 代码可调用 `/api/render_tikz` 生成 PNG 预览；结合修改意见可调用 `/api/correct_tikz` 进行 AI 闭环纠错。
+- **题干/解答统一多模态 TikZ 工作台**：题干与终审解答编辑器都只常驻“新增绘图”轻入口和已插入绘图卡片；“新增绘图”必须始终打开空白工作台并追加一幅新图，已有或 OCR 自动生成的绘图只能通过对应卡片的铅笔入口携带资产 ID 修改，修改时只更新该图，禁止让新增入口隐式覆盖旧图。新增/修改共用同一按需弹出工作台，支持纯文字生成、参考图重绘、图文组合约束和基于已有源码修改。`POST /api/ai/draw_tikz` 使用 multipart 接收 `instruction` / `context` / `existing_tikz` / 可选上传 `reference_image` 或已安全登记的 `reference_image_path`；新上传参考图必须经统一图片安全转码，AI 生成失败时清理服务端临时副本但保留浏览器已选文件供重试，成功时返回唯一 `reference_image_path` 并绑定到当前绘图。每幅绘图最多保留一张参考图；替换或移除参考图后，旧文件只能在题目保存事务成功后经“无其他题目引用”复核再删除；取消未保存的新参考图由孤儿清理回收。生成源码须先经 `/api/render_tikz` 编译预览后才能新增或更新。题干与解答多幅绘图的 `id` / 渲染图路径 / TikZ 源码 / 绘图要求 / 可选参考图分别保存在 `questions.content_tikz_assets` 与 `questions.answer_tikz_assets` JSON 数组；旧 `tikz_code` / `tikz_reference_image_path` 仅作为首幅题干绘图兼容字段。题干 OCR 自动绘图必须作为一条题干资产登记，并把原题图绑定为该资产的参考图；编辑时弹窗必须自动预载对应原题参考图。渲染图与持久参考图都必须纳入数据库 `image_paths` 的生命周期管理，但题干与解答的参考图均不得进入前端 `uploadedImages`、正文 Markdown、题干普通插图列表或 Word/PDF/AI 题库导出；`Question.to_dict()` / `to_summary_dict()` 的 `image_paths` 必须过滤这些 AI 专用参考路径。这些可编辑源与参考路径仅在题目详情中返回，列表摘要不得返回。
+- **TikZ 前端状态单一来源**：`api.js` 的 `TikzState` 统一以 `contentAssets` / `answerAssets` 两个数组持有题干与解答的多幅可编辑绘图及参考图路径；OCR 注册、题目/草稿载入、保存、新增、替换及删除都必须读写该状态。禁止重新引入隐藏的题干/解答 TikZ 面板、隐藏源码 textarea 或 `lastOcrOriginalImagePath` / `contentLastCompiledTikzPath` 等平行全局状态；所有可见生成、修改、编译与新增操作都走统一工作台。
+- **双阶段多模态识图**：单题 OCR 仅在全图恰有一幅位于表格外的独立几何/函数图时注入 `[ILLUSTRATION_BOX: ...]`，后端擦除标记并调用 `PREFER_DRAW_MODEL` 重绘 TikZ。多图或表格内插图必须在各图原位置保留 `[插图待补: 图1]`（无图号按阅读顺序编号），表格内占位留在对应单元格，且不得触发整页自动 TikZ。
+- **整页 OCR 的插图坐标是强制项**：`ocr_pdf_page_image()` 必须携带 `include_illustration_box=True` 与 `PDF_PAGE_ILLUSTRATION_BOX_PROMPT`。整页与单题语义不同——一页试卷常含多幅图，故整页版**放宽**「仅一幅」限制（表格外每幅图都按阅读顺序输出坐标，表格内仍写 `[插图待补: 图N]`）；单题版 `ILLUSTRATION_BOX_PROMPT` 保持窄口径不变。坐标解析/裁图/标签擦除实现位于 `mathbank.illustration_crop`，`main.py` 仅留同名薄包装。占位符 `tmp/pdf_crop_{task}_{page}_{idx}.png` 与裁剪图必须**按文件名**映射（多页并行 OCR 下 mtime 顺序 ≠ 文档顺序），仅模型自编图名才按出现顺序兜底。
+
+### 3.3 JSON 同步导出、完整备份与 AI 只读题库
+- **JSON 同步导出 (`data_backup/questions_backup.json`)**：后台异步导出题目字段，便于检索与兼容旧流程；它不含数据库约束和完整上传目录，**不是灾难恢复用完整备份**。
+- **可验证完整备份 (`data_backup/snapshots/mathbank-backup-*.zip`)**：通过 SQLite 在线快照保存数据库、数据库引用的 `static/uploads/` 文件及自定义元数据，并在 `manifest.json` 记录逐文件 SHA-256、大小、表计数与结构版本；明确排除 `.env`、本地 Token 和 API 密钥。创建并复验使用 `python3 -m scripts.backup`，仅验证使用 `python3 -m scripts.restore <备份.zip>`。
+- **恢复安全边界**：实际恢复必须完全关闭服务并显式运行 `python3 -m scripts.restore <备份.zip> --apply --yes`。服务在首次访问数据库前持有跨平台运行锁，恢复 API/CLI 必须持有同一把锁；锁被占用时必须停止，不得用 PID 信号探测替代。恢复前先创建已验证安全备份；若当前数据库已损坏或缺失而无法生成标准快照，则保留原数据库、WAL/SHM、上传和元数据的原始灾难恢复包，再原子替换并在失败时回滚。默认不带 `--apply` 只检查，不能修改现有数据。
+- **AI 专属只读题库 (`data_backup/questions_library.md`)**：只输出册次、章节、小节和题干，过滤答案与点评，清洗 `\item`、`\\` 等排版命令，完全保留 `$` 公式。
+- **终端检索工具 (`scripts/search_questions.py`)**：提供 CLI 工具支持模糊匹配与结构化题目拉取（运行 `python3 -m scripts.search_questions -q <关键词>`）。
+- **填空题下划线迁移工具 (`scripts/migrate_fillin.py`)**：批量规范化旧下划线格式为 `\fillin` 并刷新备份。
+- **题目分类体系 (schema v9)**：界面层级为 册次→章节→小节→考点，字段 `category_compulsory`（册次，内部字段名保留）、`category_chapter`、`category_knowledge`（小节）、`topic`（考点，挂在小节下可自定义）；`applicable_grade`（适用年级）与册次并列独立，固定 3 值：`g1` 高一 / `g2` 高二 / `g3` 高三（旧 5 档 `g1_sync/g2_sync/g3_round1/g3_round2/g3_sprint` 由 metadata 自愈替换为 3 档；前端选册次时自动建议适用年级：必修一/二→`g1`、选修一/二/三→`g2`，可手动改）。`metadata.curriculum` 的每个小节约为 `{name, topics: []}` 对象数组，旧字符串小节由 `normalize_metadata_curriculum` 自愈。难度四平级并列：`basic` 基础 / `medium` 中档 / `hard` 压轴 / `novel` 新定义，统计、AI 分类与导出统一此口径。
+- **一题多考点 (schema v10, `question_topics`)**：`LATEST_SCHEMA_VERSION` 见 v12。每题在主分类（questions 主字段，即第一考向）外可挂 1~3 个附加考向，共同组成 2~4 个平级考向，服务于教案按考向筛题与整卷输出。`question_topics` 表字段 `question_id / version_code / compulsory / chapter / knowledge / topic_id / sort_order`，`sort_order=0` 恒为主考向镜像（创建/更新题目时与主字段在同一事务内由 `mathbank/topics_helper.sync_question_topics` 重写），附加考向为 1..N；同题同版本同考向去重（`UNIQUE(question_id, version_code, compulsory, chapter, knowledge, topic_id)`）。版本感知：行携带活跃大纲 version_code（A/B/S/G），切换教材树互不混染。`extra_topics` 为前端 Form 字段（JSON 数组，最多 3 条，`parse_extra_topics` 清洗裁剪并解析 `topic_id`），旧客户端不传时只写主考向（兼容）。`GET /api/questions` 新增 `extra_topics`（JSON）+ `topic_mode`（`and` 默认 / `or`）组合过滤：AND 为逐考向 EXISTS 交集（全部命中，考向条件按 `topic_id` 精确定位，名字不在大纲时回退小节匹配），OR 为任一考向命中；仍可与 topic 单值等值过滤叠加（名字先经 `topic_ids_for_name` 翻译成 ID 集合，`IN` 命中）。详情、列表与写响应统一附带 `topics` 数组（`load_question_topics` / `load_questions_topics_map` 批量加载），槽位含 `topic_id` 与翻译后的 `topic` 当前名。前端：编辑区「附加考向」chips + 弹窗级联选择（`openExtraTopicModal`，状态 `window.ExtraTopicsState`）；侧栏「考向组合筛选」弹窗（`openTopicFilterModal`，状态 `window.extraTopicFilter`，AND/OR 切换，`renderTopicFilterSummary` 摘要）；草稿 `extra_topics` JSON 与查重快照对比均纳入 `editorMatchesBackupSnapshot`，保存 FormData 自动携带。
+- **考点 ID 化 (schema v11, `LATEST_SCHEMA_VERSION=11`)**：每个考点拥有稳定字符串 ID `"k_" + sha1(f"{compulsory}||{chapter}||{knowledge}||{name}")[:10]`（`mathbank/topics_helper.topic_id_for`，确定性；重命名保 ID 由调用方把旧 id 传回）。题目只存 `questions.topic_id` 与 `question_topics.topic_id`，**不存考点名快照**；大纲 topics 元素统一为 `{id, name}` 对象（`normalize_topic_list` 自愈字符串，`normalize_metadata_curriculum` 保存路径同步对象化）。展示与导出层由后端把 `topic_id` 翻译为当前名（`_topic_display` / `_decorate_topic_field` / `_decorate_topic_slots`，响应字段保持 `topic`=当前名 + 槽位 `topic_id`）；考点删除后显示占位（翻译为空字符串）。录题手输新考点时自动补建（`_resolve_topic_id` 记录待建集合，提交后 `_flush_auto_topics` best-effort 写回大纲，与题目写入解耦）。重命名考点只改大纲映射，题库与筛题天然跟随；AI 题库 Markdown 导出经 `topic_translator` 显示当前名（`sync_helper.export_database_to_files`）。迁移：`_ensure_v11_topic_id_columns`（ADD topic_id + 按 `topic_id_for` 逐行回填 + DROP 含 topic 的索引与列，旧库缺 category_* 列时跳过回填）、`_rebase_question_topics_to_topic_ids`（旧表 RENAME→重建→INSERT OR IGNORE 转换）、`_upgrade_v10_topic_ids`（v10→v11 单事务）；v<2 / derived / v6-7 / v8 / v9 路径均接入 v11。
+- **试卷分类列 (schema v12, `LATEST_SCHEMA_VERSION=12`)**：`questions` 表新增 `paper_category VARCHAR(50) NOT NULL DEFAULT ''` 并建索引 `idx_questions_paper_category`（迁移函数 `_upgrade_v11_paper_category`，单事务 `BEGIN IMMEDIATE`，已存在则跳过）。当前结构版本常量为 `mathbank/db_migrations.py` 的 `LATEST_SCHEMA_VERSION = 12`；**新增迁移时必须同步本文件的版本号段落与 `tests/` 中引用该常量的断言**（迁移测试应跟随常量而非硬编码数字）。
+- **高三专题复习大纲 (G)**：`mathbank/resources/curriculums/G.json` 是第五套大纲预设（注册于 `CURRICULUM_NAMES`，`resetMetadataToDefault('G')` 一键载入），面向高三教案筛题。册次层=10 专题（集合·复数·逻辑/函数/导数/三角函数与解三角形/数列/立体几何/解析几何/概率统计/平面向量/不等式·比较大小·选填技巧），章节层=专题内分组（61 组），小节层=考向（467 条，`topics` 空）。一轮/二轮不进入树层级，由 `applicable_grade` 标签解耦。`get_active_version_code` 与 metadata 保存时的 target 检测须优先识别 G（特征：curriculum 含「不等式·比较大小·选填技巧」或「集合·复数·逻辑」）；**切换到大纲 G 时跳过 `route_chapter` 自动迁移**（G 与教材树不同构），旧题分类保留在各版本镜像中。
+
+### 3.4 题目双向关联
+- 通过 `association_group_id` 进行变式题、子母题双向绑定，提供 `GET/POST/DELETE /api/questions/{id}/associated` 路由。
+
+### 3.5 批量图片上传与 AI 智能拆卷
+- **批量图片上传 (`/api/upload/batch`)**：拖拽上传多张试卷截图，限制 1–20 张、单张 10MB、总计 50MB，使用 Pillow 验证真实图片。
+- **TeX 安全预处理**：只接受单文件 `.tex`（≤5MB），展开无参/单参简单宏，规范 `choices` 结构，锁定 TeX 数学环境（`$...$`、`$$...$$` 等）。
+- **AI 智能拆卷 (`/api/ai/parse-paper`) 与两阶段解答**：阶段一完成切片、分类与提取；解析格式统一经 `mathbank.ai_json.parse_ai_json` 处理。勾选自动生成解答时，阶段二由前端并发队列（上限 3）调用 `/api/ai/solve` 推导无答案题目。
+- **拆卷状态高亮与重置**：拆卷日志仅当前执行步骤显示高亮 (`aria-current="step"`)，进入下一阶段自动转为灰色完成态。提供“一键清除”确认重置操作。
+
+### 3.6 存储空间自愈
+- **垃圾图片清理**：删除或编辑题目发生图片变更时自动删除孤儿图片。
+- **就绪后维护**：数据库迁移、必要目录/token 与 metadata cache 仍在就绪前完成；全库教材自愈、孤儿图片清理、引用校准、每日完整备份和 XeLaTeX/Pandoc/PyMuPDF 可选探测必须在 `FastAPI lifespan` 启动、模块完整导入后转入低优先级后台线程；维护前先保留已验证备份，再做数据自愈/清理。
+
+### 3.7 启动就绪与网络容错
+- **启动器环境与身份自愈**：macOS 包不内置 Python，运行前要求本机已安装 Python 3.10+；macOS 必须依次探测可用的 `python3` / 具名 Python 3.10+ 解释器，使用项目隔离的 `venv` 并通过 `python -m pip` 补齐锁定依赖；旧 `venv` 不兼容时先保留临时备份、自动重建，并仅在新服务通过健康检查后清理备份。Windows 便携包面向 Windows 10/11 x64，内置完整 Python 及应用本地 VC++ 运行时，无需本机另行安装。生产式双击启动不得携带 `--reload`。
+- **Windows 批处理薄壳与换行硬约束**：正式 `.bat` 只能是无 BOM 的 7-bit ASCII 薄壳，负责确定项目根目录、核对包内 `python\python.exe` 与三枚应用本地 VC++ DLL、执行 `python -B -m scripts.windows_launcher` 并原样返回退出码；正式入口不得创建/修改 venv，也不得回退到系统 Python。源码开发者应按第 7 节开发命令自行准备环境。BAT 不得承载中文提示、进程检查、状态管理、端口、覆盖升级或健康探测逻辑；上述复杂逻辑统一放入可在 Release overlay 和三方依赖修复前安全导入、只使用 Python 标准库且直接从自身文件位置锚定项目根的 `scripts/windows_launcher.py`。每一行只允许使用 CRLF（`\r\n`），仓库必须用 `.gitattributes` 固定 `*.bat text eol=crlf`；Release 构建器仍须在复制后主动规范化 CRLF，并对暂存文件和最终 ZIP 内原始字节分别复验。禁止只用 `read_text()` 或普通字符串断言代替 ASCII/BOM/原始换行检查，因为文本解码和通用换行转换会掩盖字节级回归。
+- **跨平台私有文件写入**：`os.fchmod` 等仅 Unix 可用的接口必须通过 `getattr` / 能力探测后调用，并保证任何失败路径都会关闭文件描述符、清理临时文件；不得只捕获 `OSError` 来假设接口在 Windows 上存在。涉及平台专用 API 的代码必须增加“接口缺失”模拟测试。
+- **Windows 日志编码安全**：`main.py` 必须在导入可能输出日志的业务模块前将 stdout/stderr 设为 UTF-8；被导入模块不得在模块顶层打印 Emoji 或其他依赖终端编码的装饰字符，启动与后台日志优先使用 ASCII/GBK 均可表示的文本。必须保留一次 CP936 严格输出环境下的直接导入回归测试，防止重定向日志时触发 `UnicodeEncodeError`。
+- **端口、状态与进程所有权**：Windows 启动核心进入任何状态、覆盖或服务操作前必须持有独占 launcher lock，防止两个启动流程同时检查或改写状态；launcher lock 只用于互斥，绝不能作为某个服务进程仍存活或可以被终止的证据。权威运行状态为同目录临时文件、刷新落盘后 `os.replace` 的 `server-state.json`，至少记录 schema、PID、Windows `CreationDate` 的 .NET ticks、项目根、真实解释器、逐项精确启动命令和随机 `launch_id`；旧 `server.pid/server.identity` 仅作兼容镜像。只有 PID 已不存在，或当前进程的 `CreationDate` 与权威 JSON 明确不同，才可证明新格式状态陈旧并将其隔离；旧格式状态没有保存 `CreationDate`，只要对应 PID 仍存活就必须失败关闭，无论其可见命令是否看似无关，PID 已不存在时才可隔离迁移。CIM 查询失败、访问拒绝、字段缺失/损坏、时间无法规范化及其他未知情况一律失败关闭并保留诊断证据。启动器只允许关闭同时通过 PID、`CreationDate`、当前项目根、真实解释器、精确 argv、唯一 27182 listener、仓库身份与 `launch_id` 复核的本项目服务；真正旧版本没有实例字段时仅保留仓库/token/进程/端口兼容验证。关闭只能经带本地 Token 与可用 `X-MathBank-Launch-ID` 的 `/api/shutdown` 协作完成，检查与请求前后都必须重新核对身份；严禁仅凭 PID、状态文件、launcher/runtime lock、端口或父子关系执行 `taskkill`、`Stop-Process`、发送强制终止信号或结束未经验证的进程。端口被陌生进程占用、任一监听 PID 无法完整验明身份、旧格式状态对应 PID 仍存活或检查结果未知时必须报错退出。
+- **Windows venv shim 监听者兼容**：源码开发环境下 venv 的 `python.exe` 是重定向 shim——启动器 spawn 的 child 进程运行 venv python，但真正监听 27182 的是其直接子进程（基础解释器，`ExecutablePath` 为基础 `python.exe`，而 `CommandLine` 仍命名项目 venv python）。所有端口归属校验统一经 `_listener_owned_by`：接受「监听者为 child 本身，或监听者是其直接子进程且 `CommandLine` 匹配 `uvicorn main:app` 并命名项目 `venv/Scripts/python.exe` 或 `python/python.exe`」为本项目服务；关闭旧服务、启动健康检查与协作关闭均走该判定，不得仅凭 `ExecutablePath` 拒认 venv shim 的真实监听进程。
+- **Release 覆盖升级契约**：启动器建立状态目录后，必须先安全停止已验明身份的当前或旧版 MathBank 服务，再自愈并确认受支持的 Python 环境，最后才能进行任何项目依赖导入。根目录存在 `RELEASE-MANIFEST.json` 时，必须运行 `python -B -m scripts.release_overlay --platform macos|windows-x64`，对账当前文件并仅删除旧清单中、新清单已移除的发布管理文件；失败必须拒绝启动。必须保护根目录数据库及 WAL/SHM、`.env`、`data_backup/`、`static/uploads/`、`.system_generated/` 与 `venv/`。无 Release 清单的源码工作区不得触发此对账。便携升级文档必须要求用户先做完整备份、通过网页电源键关闭并确认服务已停，将新 ZIP 解压到临时目录后再复制其“内容”到原目录；macOS Finder 禁止整体替换旧文件夹，Windows 必须替换所有同名文件。
+- **依赖锁变更检测**：源码启动器必须记录锁文件摘要；`requirements.txt` 内容变化时，即使旧环境仍可 import，也要重新按精确版本安装并执行 `pip check`，成功后才更新摘要。
+- **自适应健康检查与实例关闭协议**：后台拉起服务统一使用 `-u` 参数强制无缓冲输出标准流；Windows 启动器为每个 child 生成 `launch_id`，通过 `MATHBANK_LAUNCH_ID` 注入，应用将它作为 `SERVER_INSTANCE_ID` 同时返回于 `/healthz` 与 `/api/version`。启动脚本每 0.5 秒探测 `/healthz`（最长 60 秒，单次请求不超过 2 秒），并显式使用标准库 `ProxyHandler({})` 直连 `127.0.0.1`，完全保留主服务的全局代理环境；只有 Popen child handle 仍存活、PID/`CreationDate` 未变、唯一 27182 listener 等于 child、HTTP 200 且 `server_instance_id == launch_id` 时才可打开浏览器。探针捕获 503 响应体与网络异常并写入 `.system_generated/probe.log`。`/api/shutdown` 必须同时校验本地 Token 与 `X-MathBank-Launch-ID`，用进程内 `signal.raise_signal(SIGINT)` 交给 uvicorn 正常执行 lifespan，并以进程级 Event/Lock 保证多次关闭请求只安排一次信号；旧标签页实例 ID 不匹配时返回 409。进程提前退出时立即失败；超时、状态登记或健康失败后若协作关闭不可用，不得强制终止，必须保留状态和诊断证据。
+- **前端静默重试与 UI 兜底**：首屏抓取异常时自动重试（间隔 1.5 秒，上限 3 次），多次失败展现带有 `[重新加载]` 按钮的错误提示面板。分类填充入口设置 DOM 空值防护。
+
+### 3.8 PDF 试卷多模态拆解与双轨探测
+- **双轨分流架构与解析策略 (`pdf-inspector`)**：
+  - **PyMuPDF 导入规范**：统一使用 `import pymupdf as fitz` 保持既有调用兼容；禁止继续使用已弃用的 `import fitz` 入口。应用代码、测试与双平台启动器依赖自检必须保持一致。
+  - **阶段 0 探测与分流**：PDF 上传后支持选择解析策略（`native_preferred` 原生文字公式提取 vs `force_ocr` 全图视觉 OCR）。
+  - **原生电子卷直提 (`native_preferred`)**：`TextBased` 直接毫秒级提取排版与文本流拆题（0 视觉 Token），结合 `_has_math_formula_loss` 自动校验公式完备性。若检测到 Word/MathType 特殊导出卷（公式硬转化为了内联图片导致文本丢公式），系统自动翻转 `needs_ocr = True` 平滑降级至 VLM 识图补全。
+  - **全图视觉转译 (`force_ocr`)**：绕过文本直提，强制将所有页面渲染为 PyMuPDF 150DPI 图像并调用多模态 VLM 进行全图 OCR 识别与转译，兜底应对极端排版复杂或规则失效的试卷。
+  - **逐页可信分流与跨页合并**：按页码提取 Markdown，无需直提的页面单独调用 VLM OCR，页标使用 `<!-- MATHBANK_PDF_PAGE:N -->` 合并且不切断跨页题目。
+- **配图关联**：题目拆解默认不含配图。若原题有插图，由用户点击【手动截图】在 PDF 灯箱中框选，向 `/api/ai/manual-crop-pdf` 发送百分比坐标进行精准裁剪。
+- **有界任务与协作取消**：PDF/Word 导入共用 `mathbank.task_manager.TaskManager`，默认最多 2 个工作任务与 4 个排队任务，PDF 最多 80 页、OCR 并发最多 4。前端轮询 `/api/tasks/{task_id}/status`，点击【中止拆分】或按 `ESC` 调用取消；工作线程必须在阶段转换和付费 AI 调用前检查取消信号。`completed` / `error` / `cancelled` 是不可覆盖终态，取消端点必须复核最终状态，不能把刚完成任务误报为已取消。
+- **任务资源生命周期**：完成结果保留 1 小时供前端导入；终态过期或因容量淘汰时必须同时删除登记的 PDF 页面、截图等临时资产。手动裁图生成的新资产必须追加到同一任务记录，不得形成长期孤儿文件。
+
+### 3.9 Word (.docx) 安全保真拆分与公式提取
+- **公式结构化转换**：`mathbank/omml_helper.py` 处理 OMML，`mathbank/mtef_helper.py` 解析 MathType/MTEF。统一经 `normalize_word_formula_latex` 规范化。未知私用字符保留 `[公式结构待核对]`；MTEF 节点拼接自动增加字母边界空格，防止控制词粘连。
+- **Word 语义保真**：解析 `word/numbering.xml` 恢复自动编号；普通段落上标、下标、下划线转化为 LaTeX/Markdown 表达；表格转为 `tabular`（支持合并单元格转义）；图片校验格式与大小。
+- **公式可见性锁定协议 (`lock_visible_math`)**：拆卷前用带唯一 ID 的 `<mathbank-math>` 锁定公式，模型只返回 ID 引用，提取完成后在解题前逐字恢复原公式，ID 异常立即中断报错。
+
+### 3.10 组卷排版工作台
+- **A4 Live Preview 渲染引擎**：结合 KaTeX + 动态 DOM 模拟 A4 试卷（210mm x 297mm）。支持密封线 (`\secret`)、大/副标题双向 WYSIWYG 编辑、注意事项 (`notice`) 显隐控制与解答题留白调控。
+- **留白连续微调**：单题留白微调控制条必须绝对锚定在可伸缩留白区域顶部且不参与文档流；增减留白优先只改变区域底边，不得让纯 UI 控件改变网页预览分页预算。重绘前后按题目 ID 恢复控制条的视口锚点与原按钮焦点，以覆盖嵌图在 0 cm 切换位置或临界换页；数值槽和四个增减按钮宽度保持稳定，支持鼠标原位连续点击。
+- **面板架构**：右侧控制面板静态固定，下方 A4 画布具备独立滚动条，避免重叠。
+- **拖拽与管理**：支持 HTML5 原拖拽试题卡片排序，具备侧边栏折叠及已保存试卷的数据库存档与载入管理。
+- **按题查看答案**：题库卡片默认隐藏答案，通过 `has_answer` 轻量标志区分空答案；首次展开时调用 `GET /api/questions/{id}` 按需获取完整 `answer_markdown`，在当前会话内缓存并经 `MathBankSafe` + KaTeX 安全渲染。展开状态不进入 LocalStorage，也不得影响右侧试卷正文、PDF 或导出结果。
+
+### 3.11 高考级 LaTeX/PDF 编译引擎
+- **试卷模板与排版**：
+  - 提供 `exam`（常规）、`quiz`（小练）、`exam_19`（高考 19 题跳跃）三套模板。插图自动映射 `wrapfigure` (右侧)、`figure` (居中)、`adjustbox` (右下)。
+  - 题干、参考答案与答题卡只要生成含 `max width` 的 `\includegraphics`，导言区必须使用 `\usepackage[export]{adjustbox}`，保证自适应图片参数可由 `graphicx` 识别。
+  - 导言区注入 `\raggedbottom` 防止大题标题下方拉伸。
+- **模板内置与编译缓存**：
+  - `templates/exam-zh/` 全量内置 `exam-zh.cls` 及其依赖宏包，保障离线免配置编译。
+  - 后端线程安全 LRU 内存缓存（容量 20）根据源码 MD5 与配图修改时间复用 PDF 字节流。
+- **编译诊断与导出**：
+  - XeLaTeX 启用 `-halt-on-error`；每题前写入 `% MathBank-Question-ID: <id>` 标记；日志进行 UTF-8/GBK 进程级安全平滑解码。
+  - 自动补包失败时通过 `mathbank.latex_diagnostics` 和 `PREFER_PARSE_MODEL` 输出结构化诊断。支持 PDF、LaTeX ZIP 源码包及 Word ZIP 导出。
+
+### 3.12 可编辑 Word 试卷导出
+- **解耦与原生 OMML**：`mathbank.word_export_helper` 使用 python-docx 生成试卷结构，公式批量由 Pandoc 转为 Word 原生 OMML (`m:oMath`)，导出默认返回包含试卷正文与含答案解析两份文档的 `.zip` 打包。
+- **复杂表格与图片锚点**：Word 导出必须先在完整题干中提取 `tabular`，再拆分普通段落，禁止因单元格图片周围空行而泄漏原始 LaTeX。正文与表格内 Markdown 图片按原锚点写入；只有题末可分离图片簇使用 `figure_align`。三列比较表总宽固定为 9000 DXA，短标签首列窄于两列正文，`tblW`、`tblGrid` 与 `tcW` 必须一致，单元格图片同时受最大宽高约束。`\multicolumn` 与 `\multirow` 必须分别生成原生 Word 横向和纵向合并，不得以源码文字或重复空单元格代替。
+- **Pandoc 按需运行组件**：Word 导出前先复用通过启动校验的用户指定、MathBank 管理或系统 Pandoc；缺失时须由用户一次确认后，由 `mathbank.runtime_components` 按 Windows x64 / macOS arm64 / macOS x86_64 下载固定版本。下载顺序为 Pandoc 官方 GitHub Release 后 SourceForge 备用镜像，两者必须通过同一份固定 SHA-256、大小、安全解压、`pandoc --version` 与真实 OMML DOCX smoke 后才能原子安装到 `.system_generated/runtime/pandoc/`；安装完成后必须自动续接原 Word 导出，不得要求用户选路径、配 PATH 或重启服务。
+- **降级机制**：Pandoc 缺失或转换失败时调用 XeLaTeX 栅格化为 PNG 兜底，失败显示红色 `[公式待核对：...]`。
+- **字体与版面规范**：
+  - 正文中文字体使用宋体 10.5pt，英文/数字使用 Times New Roman 10.5pt；主标题使用华文中宋，大题标题使用宋体 11pt 加粗。
+  - 填空题 `\fillin` 在 Word 中必须生成可编辑的本地下划线，默认宽度为 18 个不换行空格，不得将横线转为公式图片。
+  - OMML 变量使用 Times New Roman 斜体（加 `m:nor` 保护），数字/运算符使用正体；严禁对所有数学 run 注入 `w:sz` 防止 WPS 显示异常。
+  - 页面采用 A4，四边 2.54cm，正文使用至少 18pt 行距。
+
+### 3.13 版本检测系统
+- 后端接口 `GET /api/version/check-update` 异步拉取 GitHub Releases，比对语义化版本号。
+- 前端启动 1 秒静默检测，有新版本时设置齿轮亮起红点；提供专属【版本更新】控制台与版本忽略功能。
+
+### 3.14 讲义工作台（LATEST_SCHEMA_VERSION=21）
+- **三张讲义表**：lecture_settings（单行全局设置：封面标题/副标题/品牌角标/编著/名言池/装订模式）、lecture_notes（知识块修订稿：
+ote_key=type:compulsory:chapter:knowledge[:topic_id]，知识梳理挂小节、易错点/解题方法挂考向）、lecture_drafts（讲义草稿：config JSON 存选题编排 {topics:[{topic_id,name,items:[{question_id,role}]}], extra_ids:[]}，role ∈ example/variant/practice/homework）。迁移函数 _upgrade_v19_lecture，已挂入 ensure_late_tables 与 REQUIRED_TABLES。
+- **一题多来源 (schema v21, `question_sources`)**：`LATEST_SCHEMA_VERSION=21`。每条来源 = 年份 + 学校/地区简称 + 考试类型显示名 + 整卷出处（`year/region/exam_type/paper_title/sort_order/created_at`），一道题可挂 N 条（`format_source_text` 拼接为 "2026年哈三中三模"）。排序规则（`mathbank/sources_helper.py`）：考试类型优先级 高考 > 模考 > 联考 > 校考/月考（`source_rank` 按 exam_type 含词推断），同优先级年份新在前、再同 id 新在前；**主来源 = 排序后第一条**。**写路径统一**：create/update 题目签名带 `sources: str = Form("[]")`（JSON 数组），经 `sync_question_sources`（合法数组→删旧插新并回填 `questions.source` 为主来源文本；None/非法→不动）在事务内重写；详情响应 `GET /api/questions/{id}` 返回排序后 `sources` 列表。讲义 preview 的 `questions[i].sources` 返回排序后列表；前端 `lecture.js` 学生版只显示主来源 + "亦见于 N 份试卷"、教师版全列（`body.view-yuan .q-src-all{display:none}` / `body.view-jiexi .q-src-main{display:none}`），答案册无来源。录题界面（editor.js `window.EditorSources` + 隐藏 `editSource`）走 `sources` Form 字段提交结构化多来源；拆卷导入（index.html `importSrcYear/Region/ExamType` 三字段）由 `buildStandardPaperTitle`/`applyStandardPaperTitle` 合成整卷标准出处文本填入卡片 `.card-source`，入库时以单条 `source` 文本提交，不构造 `sources` 数组。查重命中可「并入已有题（仅追加来源）」。CRUD 路由在 `routes_questions.py`：`GET/POST /api/questions/{id}/sources`、`DELETE /api/questions/{id}/sources/{source_id}`（POST 校验三字段至少一项、年份为数字、长度上限；POST/DELETE 后经 `resequence_sources` 重排 `sort_order`=展示序，并把 `questions.source` 同步为排序后第一条主来源文本；旧逻辑"仅空时回填"已被"始终同步"取代）。前端保存快照（`requestBackupSnapshot`）必须携带 `applicable_grade/topic/extra_topics` 三键与 `editorMatchesBackupSnapshot` 对齐，`saveQuestion` FormData 必须提交 `topic/extra_topics/applicable_grade`（拆卷路径同），否则选过年级/考点后保存会被"查重期间已发生变化"误拦、考点落空。迁移函数 `_upgrade_v20_question_sources` + `_ensure_question_sources_table`，已挂入 migrate_database（current==20）、ensure_late_tables 与 REQUIRED_TABLES。
+- **讲义渲染不落服务端**：mathbank/lecture_helper.py（资源加载/修订稿收集/预览组装）+ mathbank/routes_lecture.py（12 路由：settings/cover-bg/quotes/notes CRUD/preview/drafts CRUD）返回结构化数据，前端 static/js/lecture.js 用 parseMarkdownWithMath 逐题转 HTML 后 iframe srcdoc A4 打印视图渲染（复用组卷 KaTeX/公式管线，不另造渲染引擎）。交付出口为 iframe 内浏览器打印（工具栏【打印 / PDF】按钮 → contentWindow.print()，配 @media print 分页 CSS）；学生版/教师版/答案册三视图由 LectureManager.switchView 经 postMessage（`mathbank-set-view`）通知 iframe 内 switchView 切换 body 类实现，刷新预览后按 ST.view 重放。preview 返回 `missing_ids`（编排/实战演练引用但库中已删的题目 ID），前端 toast 警示而非静默吞掉。
+- **知识块可编辑并复用**：知识梳理/易错点/解题方法支持弹窗源码编辑（\(...\) 公式），保存到 lecture_notes，同小节重新生成讲义自动按修订稿填充。notes 查询按 note_key 各段（type:compulsory:chapter:knowledge[:topic_id]）精确比较过滤，禁止用 LIKE 前缀通配（小节名互为子串会误命中、topic_id 的下划线会被当作 SQL 通配符）。
+- **讲义前端级联顺序**：lecture.js 在 lesson.js 之后、ilter-panel.js 之前；selectWorkspace('lecture') 切入时调 window.LectureManager.refresh()。封面背景库与名言池资源在 mathbank/resources/lecture/（cover_bg.json 19 张 / quote_pool.json 227 条）。
+- **讲义草稿树与届次（config JSON，零迁移）**：草稿在 config JSON 中新增 `series`（sync 同步讲义 / review 复习讲义）、`drawer`（同步=册次名如"必修一"，复习=一轮复习/二轮复习/三轮复习）、`year`（届次）、`cloned_from`（版本谱系）。左侧栏为两级树（系列 → 抽屉 → 卡片），顶部届次筛选条（全部 + 各年份 chips，来自 config.year 与 created_at 推导）：选中具体届次时整树切到该年份架子，该年的 archived 草稿提升入树。【复制为新版】cloneDraft = POST 新行（year=所选届、cloned_from=旧 id）+ PUT 旧行 `{"status":"archived"}`（走既有 patch 语义，仅改 status）；archived 草稿默认收进树底部「历史版本」折叠区，卡片提供【恢复】（PUT status=draft）。旧草稿无 series/drawer 时按 sync + d.compulsory 归类，天然兼容。归档不依赖数据库迁移（status 列早已存在）。
+- **考向树来源**：讲义工作台考向面板调 GET /api/lesson-plans/section-topics（blocks: no/level/title/topic_id）复用教案考向树；题目按 	opic_id 分组、角色分配后交 preview。
+
+## 4. 外部 API 接入规范
+- **密钥与鉴权**：读取 `.env` 密钥，修改类接口必须携带 `X-Local-Token` 头部。
+- **API 设置界面的厂商超链**：设置弹窗「API 接口设置」为 DeepSeek/硅基流动/阿里百炼提供固定「获取 API Key」超链；中转站 A/B 因地址由用户自定义，提供动态「厂商控制台」链接——`api.js` 的 `updateZhongzhanVendorLinks` 由两个 Base URL 输入框 `oninput` 触发，`vendorRootUrl` 将 Base URL 去掉路径/查询/哈希取域名根（自动补 `https://`），Base URL 为空时链接置灰（`aria-disabled` + `opacity-50 pointer-events-none`）并提示先填写。
+- **模型配置**：
+  - OCR 首选阿里百炼 `qwen3.7-flash` 或硅基流动 `Qwen/Qwen3-VL-8B-Instruct`（中转站推荐 `gpt-5.6-luna`）。
+  - 阿里百炼预设按任务隔离：OCR、拆卷与分类默认 `qwen3.7-flash`，解答与绘图默认 `qwen3.7-plus`，`qwen3.8-max` 仅作为高性能可选项；旧型号不再列为预设，但既有配置与自定义模型必须继续可见且不得被静默改写。
+  - **阿里百炼思考策略隔离**：仅对 `provider_code == "bailian"` 的 Qwen3.7/3.8 生效。OCR、拆卷、分类、AI 选题和 LaTeX 诊断显式关闭思考；解答服从前端开关；TikZ 绘图显式开启思考。Qwen3.7 使用 `thinking_budget`，Qwen3.8 Max 使用 `reasoning_effort=medium`，两者禁止同时发送；当前型号使用 `max_completion_tokens`，不得改变 DeepSeek、硅基流动和中转站载荷。
+  - 解答 (`PREFER_SOLVE_MODEL`)、拆卷 (`PREFER_PARSE_MODEL`)、分类 (`PREFER_CLASSIFY_MODEL`) 与绘图 (`PREFER_DRAW_MODEL`) 可单独配置。
+- **融合题自动分类优先级**：单题自动定位与拆卷分类共用 `mathbank.prompts.CLASSIFICATION_PRIORITY_RULE`。若一道题实际融合多个教材模块，按当前大纲从上到下的顺序选择最靠后的模块：先比较学段顺序，同一学段再比较章节顺序；仅作背景且解题无需使用的内容不参与候选。
+- **单题教材分类与题型确认边界**：`POST /api/ai/classify` 返回推荐学段 `compulsory`、章节 `chapter`、小节 `knowledge`、考向 `topic` 及粗粒度 `question_form` 五个字段（`knowledge`/`topic` 服务于"AI 自动建档"，后端按当前大纲做精确匹配与去序号模糊匹配，匹配不上时返回空字符串；分类提示词要求模型"包含且仅包含以下五个 key"）。后端硬规则优先：题干出现 `\begin{choices}` 判为 `choice`，出现 `\fillin` 判为 `fill_in_blank`；其余才采用 AI 的 `choice` / `fill_in_blank` / `detailed_answer` / `unknown` 建议。AI 严禁区分单选与多选；前端收到 `choice` 时必须由用户手动确认 `single_choice` 或 `multi_choice` 后才能保存，`unknown` 保留当前题型，禁止用缺失或未知值默认覆盖为解答题。
+
+## 5. 启动诊断与双平台 Release 构建
+- **启动诊断**：服务启动打印 Python 环境、PDF Inspector、PyMuPDF、XeLaTeX、Pandoc 及数据库状态。
+- **打包脚本 (`scripts/build_release.py`)**：构建 Windows (`MathBank-Windows-x64.zip`，内嵌 Python 3.10 + 依赖 + `.bat`) 与 macOS (`MathBank-macOS.zip`，含 `.command`) 发布包。Python 嵌入运行时、官方 CPython NuGet 包与 Microsoft VC++ 运行库 VSIX 必须使用默认 TLS、固定可信 SHA-256 和原子下载，缓存每次复验；VC++ 运行库固定为 Visual Studio 2026 Stable `Microsoft.VC.14.51.CRT.Redist.X64.base` 14.51.36247，仅允许从正式 `VC\\Redist` x64 目录提取未修改的 `msvcp140.dll`、`vcruntime140.dll` 与 `vcruntime140_1.dll`，禁止 `debug_nonredist`/preview 文件进包，并须遵守 Microsoft Visual Studio 再分发许可。三枚 DLL 的包级/文件级 SHA-256、x64 架构、暂存目录及最终 ZIP 缺一不可，Windows CI 须用内嵌 `python.exe` 实际导入 `greenlet`、PyMuPDF 与 `pdf_inspector`。Windows 的 `python310._pth` 必须同时显式包含应用根目录 `..`、`site-packages` 与 `import site`。Windows 启动器必须由构建器跨平台规范化为无 BOM 的 7-bit ASCII CRLF，并在暂存目录和 ZIP 内各校验一次；`scripts/windows_launcher.py` 必须进入应用白名单和最终清单。应用文件采用显式白名单，禁止测试、隐藏、数据库、日志和上传残留。打包前必须解析 Release 关键函数的类型注解，构建后执行源码/运行时 smoke，写入 `RELEASE-MANIFEST.json`，完成 ZIP CRC、清单内文件 SHA-256 与外部 `.zip.sha256` 校验。任何异常必须以非零状态退出并删除部分产物。
+- **依赖运行时净化**：Release 构建仅按 `scripts/build_release.py` 中的显式审查清单移除固定依赖 wheel 携带的非运行时测试/代理文档目录（如 `certifi`、`colorama`、`fastapi`、`greenlet`）；Word 模板所需的 `.rels` 关系元数据必须保留并纳入清单校验。
+- **依赖与目标平台**：`requirements.txt` 与 `requirements-dev.txt` 使用精确版本；Windows 交叉构建额外读取 `requirements-windows.txt`，目标平台依赖必须在共享运行时锁或 Windows 锁中显式固定，禁止依赖构建主机的 `sys_platform` marker。构建下载 wheel 必须使用 `sys.executable -m pip`。
+
+## 6. 界面设计与交互规范
+- **视觉与色彩**：极简教研卡片风格，支持 6 套主题（默认曜石黑 `.theme-obsidian`）。图标采用平面极简设计（Flat Minimalist）。
+- **暗色模式规范**：高通透玻璃底 + 10% 品牌色透光微光与高对比文字；下拉菜单统一使用 `.glass-dropdown`；深色编辑器采用高对比选中样式（`selection:bg-indigo-600`）。
+- **全局悬浮提示 (Global Fast Tooltip)**：`api.js` 事件代理接管带 `title` 或 `data-tooltip` 的元素，移入停顿 500ms 显示提示气泡，移出 0ms 隐藏，自动进行边缘碰撞检测并防重叠。
+- **交互与留白**：按钮与 Tab 具备平滑过渡动画（`duration-300`），参考 Notion 注重留白与呼吸感。
+- **题型确认状态反馈**：单选/多选人工确认按钮以 `aria-checked` 为唯一选中状态；选中后必须同时显示高对比实色背景、白色文字和勾选图标，选中态在 hover/active 下不得被通用按钮样式覆盖或弱化，不能仅依赖颜色传达状态。
+- **不可信内容渲染**：题干、答案、来源、标签、AI/OCR/导入结果及图片属性都视为不可信输入；写入 `innerHTML` 前必须统一经 `MathBankSafe` 与 DOMPurify 白名单净化。可展示图片仅允许同源 `static/uploads/` 下的被动光栅格式，修改请求的 `X-Local-Token` 只能附加到同源 `/api/` 请求。
+- **预览内的表格禁止依赖内联 `style`**：`RICH_HTML_CONFIG.ALLOWED_ATTR` **不含 `style`**（也没有 `ALLOW_DATA_ATTR`），任何内联样式都会被 DOMPurify 静默剥掉——写在内联 `style` 里的表格边框/内边距会全部消失，表格看起来就是"一行挤在一起的文字"。因此：
+  - Markdown / HTML 管线表格统一由 `buildPipeTableHtml()`（editor.js，`preprocessFormulaForKaTeX` 内）产出，只挂 `md-table-wrap` / `md-table` 类 + `text-left|center|right` 对齐类；三条产出路径（MinerU 原始 `<table>` 直通、MinerU Markdown 表格、OCR 兜底 Markdown 表格）都必须走它，**不得再各写一份**。
+  - 视觉样式集中在 `static/css/app.css` 的 `.md-table-wrap` / `.md-table`（含 `.dark` 变体）。
+  - 表头与分隔行列数不一致（AI/OCR 常写少一格）时由构造器按最宽者补齐，不得错位。
+  - 表格判据保持"**首尾都要有 `|`**"：放宽会误吞 `|x| < 1`、`|a| + |b|` 这类绝对值。
+- **净化白名单之外的元素必须走 DOM 构建**：`sanitizeRichHtml` 的白名单**不含 `<button>`**、且 `ALLOW_DATA_ATTR: false`（只有 `data-safe-image-open` / `data-figure-align-qid` 等显式列出的 `data-*` 存活），内联 `onclick` 也会被剥掉；`ALLOWED_ATTR` 里也**没有 `style`**（见下条）。因此任何"要能点"的预览内控件**不能用 innerHTML / 模板串拼接**——净化后按钮外壳会被拆掉只剩文本（历史上表现为配图下方孤零零一行 "TikZ"，既点不动又被误读成"已经是 TikZ"）。正确姿势 = 在 `innerHTML = sanitizeRichHtml(...)` **之后**用 `createElement` 追加并 `addEventListener` 绑定，例如 `decoratePreviewIllustrationButtons()`（由 `renderQuestionPreviewContent` 统一调用）。只用 `class`/`title` 的角标可以随净化一起写；任何**样式**都必须走 CSS 类。
+- **拆题预览的插图必须标明来源**：`describeQuestionImageSource()` 按文件名判定——`pdf_crop_{task}_{page}_{idx}.png` → 「位图 · 第N页」（PDF 原题裁剪，**不是 TikZ**），`tikz_*` → 「AI · TikZ」，其余 → 「位图」。题干预览的配图条与解答预览里的 `<img>` 都要挂角标；位图另给「转 TikZ」入口（`/api/ai/draw_tikz` 参考图重绘 → `/api/render_tikz` 编译 → 登记为该题 `content_tikz_assets` 一条资产，原图作为 `reference_image_path`）。同一张位图重复点击必须原地更新同一资产，不得push 出重复项。
+- **题干图与解答图必须分槽（题干有图、解答也有图的题）**：数据库只有一个扁平的 `questions.image_paths`（题干图与解答图混存，用于**文件生命周期**：晋升/清理），所以**归属只能在渲染与登记时派生**，规则全项目统一为「**出现在解答 markdown 里的图属于解答，其余属于题干**」（`collectAnswerImagePaths`，编辑器与导入保存路径同源）。据此：
+  - 题干配图条 / 卡片 `card-images-badges-*` 徽章**必须剔除解答图**（否则解答图在题干处重复出现一次）；
+  - 解答预览内联呈现解答图（带角标与「转 TikZ」）；
+  - 「转 TikZ」按归属写入 `content_tikz_assets`（题干）或 `answer_tikz_assets`（解答），**禁止全部塞进题干槽位**（会污染 `tikz_code` / `tikz_reference_image_path` 这两个题干主图字段）；
+  - 手动裁图必须能选投放位置（弹窗「题干 / 解答」切换，`window.pdfCropTargetSlot`，每次打开复位为题干），选解答时把 `![插图](...)` 追加进 `.card-answer-textarea`。
+  - **不要**为了分槽把解答图从 `image_paths` 里删掉——那会让文件变成孤儿并被清理。
+- **可访问性与移动端**：375px 宽度下编辑器、侧栏和弹窗必须可操作；主要触控目标至少 44px。统一弹窗应支持焦点陷阱、`Esc` 关闭、背景不可聚焦和关闭后焦点恢复；打开时默认将程序化焦点放在 `aria-labelledby` 标题或弹窗语境容器上，不得自动选中关闭按钮或第一个操作控件，只有显式 `autofocus` / `initialFocus` 才聚焦具体控件。加载按钮同步 `disabled` / `aria-busy`，并尊重 `prefers-reduced-motion`。
+
+## 7. 开发与运行指令
+- **Python 版本**：最低 Python 3.10。
+- **本地启动**：`uvicorn main:app --reload`
+- **验证**：运行 `python3 -m pytest tests/`（必须限定在 `tests/` 目录下）、`python3 -m pip check`、`for file in static/js/*.js; do node --check "$file"; done`；macOS 启动器另运行 `bash -n 启动题库系统.command`。Windows Release 守卫必须检查 `.bat` 原始字节为 7-bit ASCII、无 BOM 且纯 CRLF，模拟 `os.fchmod` 缺失并在 CP936 严格输出环境直接导入后台模块；CI 在 Python 3.10 与当前版本上执行上述检查，并在 macOS/Windows 单独运行 Release 守卫测试。Windows CI 还必须构建最终 ZIP、解压到含中文和空格的路径、启动一个无害 sleeper，将其 PID 与错误 `CreationDate` 写入正式状态后通过最终包内 BAT 执行陈旧状态回归，并同时断言 sleeper 仍存活、状态只被隔离、输出不含 `��` 或 `is not recognized`。Mac 上的交叉构建静态检查不能替代真实 Windows 启动验证，Windows CI 通过也不能替代 Windows 10/11 用户机的最终首启复核。

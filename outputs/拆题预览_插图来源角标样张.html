@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>拆题预览 · 插图来源角标与「转 TikZ」样张</title>
+<style>
+  :root{
+    --ink:#0f172a; --muted:#64748b; --line:#e2e8f0; --bg:#f8fafc;
+    --indigo:#4f46e5; --indigo-soft:#eef2ff; --indigo-line:#c7d2fe;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; padding:28px 22px 40px;
+    font-family:"Segoe UI","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+    color:var(--ink); background:var(--bg); line-height:1.6;
+  }
+  h1{font-size:17px; margin:0 0 4px}
+  .sub{font-size:12px; color:var(--muted); margin:0 0 22px}
+  h2{font-size:13px; margin:26px 0 10px; padding-left:9px; border-left:3px solid var(--indigo)}
+  .note{font-size:11.5px; color:var(--muted); margin:0 0 10px}
+  .card{
+    background:#fff; border:1px solid var(--line); border-radius:14px;
+    padding:14px 16px; margin-bottom:14px;
+  }
+  .strip{display:flex; flex-wrap:wrap; gap:8px; padding-top:10px;
+         border-top:1px dashed #e2e8f0}
+  .tile{
+    border:1px solid var(--line); border-radius:10px; overflow:hidden;
+    background:#fff; width:124px; box-shadow:0 1px 2px rgba(15,23,42,.04);
+    display:flex; flex-direction:column;
+  }
+  .figure{position:relative; aspect-ratio:4/3; display:flex;
+          align-items:center; justify-content:center; background:#fff}
+  .badge{
+    position:absolute; top:2px; left:2px; padding:1px 4px; border-radius:4px;
+    font-size:8px; font-weight:700; color:#fff; white-space:nowrap;
+  }
+  .badge.bitmap{background:rgba(51,65,85,.85)}
+  .badge.tikz{background:rgba(79,70,229,.9)}
+  .art{width:76%; height:76%}
+  .act{font-size:8px; font-weight:600; text-align:center; padding:2px 4px; color:var(--muted)}
+  .act.done{color:var(--indigo)}
+  button.convert{
+    width:100%; padding:4px 0; font-size:9px; font-weight:700; color:var(--indigo);
+    background:var(--indigo-soft); border:0; border-radius:0 0 9px 9px;
+    cursor:pointer; display:flex; align-items:center; justify-content:center; gap:4px;
+    font-family:inherit;
+  }
+  button.convert:hover{background:#e0e7ff}
+  /* 解答正文里的内联插图 */
+  .answer-line{font-size:12.5px; color:#334155}
+  .inline-wrap{position:relative; display:inline-block; vertical-align:top; margin:0 4px}
+  .inline-wrap .art{width:104px; height:78px; display:block;
+                    border:1px solid var(--line); border-radius:8px; background:#fff}
+  .btn-inline{
+    position:absolute; right:0; bottom:0; padding:1px 4px; border-radius:5px;
+    font-size:8px; font-weight:700; color:#4338ca;
+    background:rgba(224,231,255,.95); border:0; cursor:pointer; font-family:inherit;
+  }
+  .btn-inline:hover{background:#c7d2fe}
+  table{border-collapse:collapse; width:100%; font-size:11.5px; margin-top:6px}
+  th,td{border:1px solid var(--line); padding:6px 9px; text-align:left}
+  th{background:#f1f5f9; font-weight:700}
+  code{background:#f1f5f9; padding:1px 5px; border-radius:4px; font-size:11px}
+  /* 裁图弹窗底部工具栏（深色，与真实弹窗一致） */
+  .crop-bar{background:#020617; border-top:1px solid #1e293b; border-radius:10px;
+            padding:14px 16px; display:flex; justify-content:space-between; align-items:center; gap:12px}
+  .crop-hint{font-size:10px; color:#94a3b8; display:flex; align-items:center; gap:6px}
+  .seg{display:flex; align-items:center; background:#1e293b; border:1px solid #334155;
+       border-radius:12px; padding:2px}
+  .seg button{border:0; background:transparent; font-family:inherit; cursor:pointer;
+              font-size:11px; font-weight:700; padding:6px 12px; border-radius:8px; color:#cbd5e1}
+  .seg button.on{background:#0284c7; color:#fff}
+  .btn-ghost{border:1px solid #334155; background:#1e293b; color:#cbd5e1; font-weight:700;
+             font-size:12px; padding:8px 16px; border-radius:12px; font-family:inherit; cursor:pointer}
+  .btn-primary{border:0; background:#0284c7; color:#fff; font-weight:700; font-size:12px;
+               padding:8px 18px; border-radius:12px; font-family:inherit; cursor:pointer}
+  .slot-row{display:flex; gap:14px; align-items:flex-start}
+  .slot-row > div{flex:1; min-width:0}
+  .slot-label{font-size:10px; font-weight:700; color:var(--muted); letter-spacing:.04em; margin-bottom:6px}
+  /* 右侧预览区：加载态 + 日志面板（迁移后） */
+  .pane{background:#f1f5f9; border:1px solid var(--line); border-radius:14px; padding:14px;
+        display:flex; flex-direction:column; gap:12px; height:430px}
+  .pane-load{flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center;
+             text-align:center; gap:10px}
+  .spinner{width:52px; height:52px; border-radius:14px; background:#fff; border:1px solid #bae6fd;
+           display:flex; align-items:center; justify-content:center; color:#0284c7; font-size:20px}
+  .bar{width:180px; height:6px; border-radius:99px; background:#e2e8f0; overflow:hidden}
+  .bar > i{display:block; height:6px; width:46%; background:#0284c7; border-radius:99px}
+  .log-panel{flex:1; min-height:180px; display:flex; flex-direction:column; background:#fff;
+             border:1px solid var(--line); border-radius:14px; overflow:hidden}
+  .log-head{display:flex; align-items:center; justify-content:space-between; gap:8px;
+            padding:8px 14px; background:#f8fafc; border-bottom:1px solid #f1f5f9; font-size:10px}
+  .log-head b{font-weight:700; color:var(--muted); display:flex; align-items:center; gap:6px}
+  .log-body{flex:1; min-height:0; overflow-y:auto; background:#f8fafc; padding:10px 12px;
+            font-family:Consolas,"SFMono-Regular",monospace; font-size:10px; color:#475569}
+  .log-body > div{padding:1px 0}
+  .log-body .t{color:#94a3b8}
+  /* 与 app.css 的 .md-table 一致（表格样式唯一来源） */
+  .md-table-wrap{overflow-x:auto; max-width:100%; margin:0.75rem 0; text-align:center}
+  .md-table{border-collapse:collapse; margin:0 auto; max-width:100%; font-size:12px; line-height:1.5;
+            color:#334155; background:rgba(241,245,249,.6)}
+  .md-table th,.md-table td{border:1px solid #cbd5e1; padding:0.35rem 0.7rem; vertical-align:middle}
+  .md-table th{font-weight:700; border-bottom-width:2px; border-bottom-color:#64748b}
+  .md-table tbody tr:hover{background:rgba(241,245,249,.45)}
+  .broken-table{border-collapse:collapse; margin:0 auto; font-size:12px; color:#334155}
+  .broken-table th,.broken-table td{border:0; padding:0}
+</style>
+</head>
+<body>
+
+<h1>拆题预览 · 插图来源角标与「转 TikZ」</h1>
+<p class="sub">静态样张（非真实渲染）：用于确认角标文案、配色与按钮形态。实际页面刷新后即为该样式。</p>
+
+<h2>① 题干配图条 · 三种状态</h2>
+<p class="note">角标由文件名判定：<code>pdf_crop_{task}_{page}_{idx}.png</code> → 「位图 · 第N页」；<code>tikz_*</code> → 「AI · TikZ」；其余 → 「位图」。</p>
+<div class="card">
+  <div class="strip">
+
+    <div class="tile">
+      <div class="figure">
+        <span class="badge bitmap" title="从 PDF 第 3 页按坐标裁剪出的原题位图（不是 TikZ）">位图 · 第3页</span>
+        <svg class="art" viewBox="0 0 120 90" aria-label="三棱锥示意图">
+          <polygon points="60,14 18,72 104,72" fill="none" stroke="#334155" stroke-width="1.6"/>
+          <line x1="60" y1="14" x2="60" y2="72" stroke="#334155" stroke-width="1.1" stroke-dasharray="4 3"/>
+          <circle cx="60" cy="14" r="2.2" fill="#334155"/>
+          <circle cx="18" cy="72" r="2.2" fill="#334155"/>
+          <circle cx="104" cy="72" r="2.2" fill="#334155"/>
+          <circle cx="60" cy="72" r="2.2" fill="#334155"/>
+          <text x="63" y="12" font-size="9" fill="#334155">D</text>
+          <text x="8" y="82" font-size="9" fill="#334155">A</text>
+          <text x="107" y="82" font-size="9" fill="#334155">B</text>
+          <text x="55" y="85" font-size="9" fill="#334155">C</text>
+        </svg>
+      </div>
+      <div class="act"><button class="convert" type="button">✎ 转 TikZ</button></div>
+    </div>
+
+    <div class="tile">
+      <div class="figure">
+        <span class="badge bitmap" title="普通位图（不是 TikZ）">位图</span>
+        <svg class="art" viewBox="0 0 120 90" aria-label="函数图像示意图">
+          <line x1="14" y1="76" x2="106" y2="76" stroke="#94a3b8" stroke-width="1"/>
+          <line x1="22" y1="12" x2="22" y2="82" stroke="#94a3b8" stroke-width="1"/>
+          <path d="M26 74 Q60 10 102 74" fill="none" stroke="#334155" stroke-width="1.6"/>
+        </svg>
+      </div>
+      <div class="act"><button class="convert" type="button">✎ 转 TikZ</button></div>
+    </div>
+
+    <div class="tile">
+      <div class="figure">
+        <span class="badge tikz" title="该位图已按参考图重绘为 TikZ 矢量图">AI · TikZ</span>
+        <svg class="art" viewBox="0 0 120 90" aria-label="重绘后的 TikZ 渲染结果">
+          <polygon points="60,14 18,72 104,72" fill="none" stroke="#4f46e5" stroke-width="1.8"/>
+          <line x1="18" y1="72" x2="104" y2="72" stroke="#4f46e5" stroke-width="1.8"/>
+          <line x1="60" y1="14" x2="60" y2="72" stroke="#4f46e5" stroke-width="1.1" stroke-dasharray="4 3"/>
+          <rect x="98" y="66" width="7" height="7" fill="none" stroke="#4f46e5" stroke-width="1"/>
+          <circle cx="60" cy="14" r="2.2" fill="#4f46e5"/>
+          <circle cx="18" cy="72" r="2.2" fill="#4f46e5"/>
+          <circle cx="104" cy="72" r="2.2" fill="#4f46e5"/>
+          <text x="63" y="12" font-size="9" fill="#4f46e5">D</text>
+          <text x="8" y="82" font-size="9" fill="#4f46e5">A</text>
+          <text x="107" y="82" font-size="9" fill="#4f46e5">B</text>
+        </svg>
+      </div>
+      <div class="act done">已转为 TikZ</div>
+    </div>
+
+  </div>
+</div>
+
+<h2>② 解答预览正文里的插图</h2>
+<p class="note">解答里的图同样挂角标，右下角给一个小号「转 TikZ」；已重绘的只留 <strong>AI · TikZ</strong> 角标（不再给按钮，避免重复重绘）。</p>
+<div class="card">
+  <p class="answer-line">
+    【解析】由题意，作 <span class="inline-wrap"><svg class="art" viewBox="0 0 120 90" aria-label="辅助线示意图"><polygon points="60,14 18,72 104,72" fill="none" stroke="#334155" stroke-width="1.6"/><line x1="18" y1="72" x2="60" y2="72" stroke="#334155" stroke-width="1.1" stroke-dasharray="4 3"/></svg><span class="badge bitmap">位图 · 第2页</span><button class="btn-inline" type="button">转 TikZ</button></span> 于平面内，可得结论成立。
+  </p>
+  <p class="answer-line">
+    （2）由（1）同理，<span class="inline-wrap"><svg class="art" viewBox="0 0 120 90" aria-label="已重绘的示意图"><polygon points="60,14 18,72 104,72" fill="none" stroke="#4f46e5" stroke-width="1.8"/><rect x="98" y="66" width="7" height="7" fill="none" stroke="#4f46e5" stroke-width="1"/></svg><span class="badge tikz">AI · TikZ</span></span> 故所求余弦值为 <code>√3/3</code>。
+  </p>
+</div>
+
+<h2>④ 题干有图 + 解答也有图 → 分槽呈现</h2>
+<p class="note">题干配图条<strong>不再重复</strong>列出解答图；解答图只在解答区出现（并带自己的角标与「转 TikZ」）。数据库仍把它们统一放在 <code>image_paths</code> 里管文件生命周期，只在展示与登记时分槽。</p>
+<div class="card">
+  <div class="slot-row">
+    <div>
+      <div class="slot-label">题干配图条（只有题干图）</div>
+      <div class="strip" style="border-top:1px dashed #e2e8f0; padding-top:10px">
+        <div class="tile">
+          <div class="figure">
+            <span class="badge bitmap">位图 · 第3页</span>
+            <svg class="art" viewBox="0 0 120 90"><polygon points="60,14 18,72 104,72" fill="none" stroke="#334155" stroke-width="1.6"/><line x1="60" y1="14" x2="60" y2="72" stroke="#334155" stroke-width="1.1" stroke-dasharray="4 3"/></svg>
+          </div>
+          <div class="act"><button class="convert" type="button">✎ 转 TikZ</button></div>
+        </div>
+      </div>
+    </div>
+    <div>
+      <div class="slot-label">解答预览（只有解答图）</div>
+      <p class="answer-line" style="margin:8px 0 0">
+        【解析】作 <span class="inline-wrap"><svg class="art" viewBox="0 0 120 90"><polygon points="60,14 18,72 104,72" fill="none" stroke="#334155" stroke-width="1.6"/><line x1="18" y1="72" x2="60" y2="72" stroke="#334155" stroke-width="1.1" stroke-dasharray="4 3"/></svg><span class="badge bitmap">位图 · 第2页</span><button class="btn-inline" type="button">转 TikZ</button></span> 于平面内，故成立。
+      </p>
+    </div>
+  </div>
+</div>
+
+<h2>⑤ 手动裁图的投放位置</h2>
+<p class="note">原来只能截到题干；现在弹窗底部可切「题干 / 解答」，每次打开复位为<strong>题干</strong>。选「解答」时把 <code>![插图](...)</code> 追加进解答，于是它自动归入解答槽位。</p>
+<div class="crop-bar">
+  <div class="crop-hint"><span>ⓘ</span><span>提示：在上方 PDF 页面图上按住鼠标左键并拖拽，即可框选题目中的几何插图区域。</span></div>
+  <div style="display:flex; align-items:center; gap:12px">
+    <div class="seg" role="group" aria-label="配图归属">
+      <button type="button" class="on" aria-pressed="true">题干</button>
+      <button type="button" aria-pressed="false">解答</button>
+    </div>
+    <button class="btn-ghost" type="button">清除框选</button>
+    <button class="btn-primary" type="button">✂ 确认截取配图</button>
+  </div>
+</div>
+
+<h2>⑥ 解析日志迁到右侧预览区</h2>
+<p class="note">原来日志挤在左侧输入栏底部（<code>h-24</code> = 96px，宽度 <code>max-w-md</code>）；现迁入右侧预览区、与加载态并列，高度 <code>min-h-[18rem]</code>（288px，<strong>约 3 倍</strong>）并占满拆解期间的下方空白。显隐跟随加载态自动同步，结果出来后自动隐藏、把空间还给题目卡片。</p>
+<div class="pane">
+  <div class="pane-load">
+    <div class="spinner">◌</div>
+    <div class="slot-label" style="margin:0">文本与公式准备就绪！正在调用大模型拆解题目与标注属性...</div>
+    <div class="bar"><i></i></div>
+    <div class="note" style="margin:0">文本与公式已提取完毕，正在通过大模型进行题目切片与属性标注...</div>
+  </div>
+  <div class="log-panel">
+    <div class="log-head">
+      <b>▶ 解析日志</b><span style="color:#94a3b8">实时输出 · 可滚动回看</span>
+    </div>
+    <div class="log-body">
+      <div><span class="t">[13:13:03]</span> 视觉转译进度: 1 / 2 页已完成...</div>
+      <div><span class="t">[13:13:04]</span> 文本与公式准备就绪！正在调用大模型拆解题目与标注属性...</div>
+      <div><span class="t">[13:13:41]</span> 模型返回 19 道题目，正在建立插图映射...</div>
+      <div><span class="t">[13:13:42]</span> 第 2 页裁出插图 2 张（位图 · 第3页 ×2）</div>
+      <div><span class="t">[13:13:59]</span> 拆解完成，共 19 题，等待你审查后导入题库。</div>
+      <div>[SYSTEM] 准备就绪，等待上传图片...</div>
+    </div>
+  </div>
+</div>
+
+<h2>⑦ 表格渲染（"表格不对"的修复）</h2>
+<p class="note">根因：表格的边框/内边距原来写在<strong>内联 <code>style</code></strong> 里，而 DOMPurify 白名单 <code>ALLOWED_ATTR</code> 不含 <code>style</code> → 被静默剥掉。现在样式统一由 CSS 类提供，三条表格产出路径共用同一个构造器。</p>
+<div class="card" style="display:flex; gap:22px; align-items:flex-start; flex-wrap:wrap">
+  <div style="flex:1; min-width:260px">
+    <div class="slot-label">修复前（内联 style 被剥掉）</div>
+    <table class="broken-table">
+      <tr><th>x</th><th>10</th><th>15</th><th>20</th><th>25</th><th>30</th></tr>
+      <tr><td>Q(x)</td><td>50</td><td>55</td><td>60</td><td>55</td><td>50</td></tr>
+    </table>
+  </div>
+  <div style="flex:1; min-width:260px">
+    <div class="slot-label">修复后（.md-table）</div>
+    <div class="md-table-wrap">
+      <table class="md-table">
+        <tbody>
+          <tr><th scope="col">x</th><th scope="col">10</th><th scope="col">15</th><th scope="col">20</th><th scope="col">25</th><th scope="col">30</th></tr>
+          <tr><td>Q(x)</td><td>50</td><td>55</td><td>60</td><td>55</td><td>50</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+<p class="note">另外：原表格的分隔行只写了 5 格（表头 6 格），现在构造器会按最宽者<strong>补齐</strong>，不会再错位。
+表格判据仍要求<strong>首尾都有 <code>|</code></strong> —— 放宽会误吞 <code>|x| &lt; 1</code> 这类绝对值。</p>
+
+<h2>⑧ 预览配图的「转 TikZ」入口（"这个是转完的还是没转的？"）</h2>
+<p class="note">原来入口被拼成 <code>&lt;button onclick=…&gt;</code> 塞进 HTML，而 DOMPurify 白名单不含 <code>&lt;button&gt;</code>、不放行 <code>onclick</code> —— <strong>按钮外壳被拆掉，只剩一行 "TikZ" 文本</strong>，绝对定位也失效、掉到图片下方。既点不动，又像"已经是 TikZ"的标记。</p>
+<div class="card" style="display:flex; gap:26px; align-items:flex-start; flex-wrap:wrap">
+  <div style="flex:1; min-width:230px">
+    <div class="slot-label">修复前（净化后只剩文本，不可点）</div>
+    <div style="text-align:center">
+      <svg width="150" height="120" viewBox="0 0 120 90" style="border:1px solid #e2e8f0;border-radius:8px;background:#fff"><circle cx="60" cy="45" r="30" fill="none" stroke="#334155" stroke-width="1.4"/><line x1="10" y1="45" x2="110" y2="45" stroke="#94a3b8" stroke-width="1"/><line x1="60" y1="8" x2="60" y2="82" stroke="#94a3b8" stroke-width="1"/><circle cx="60" cy="45" r="2" fill="#334155"/></svg>
+      <div style="font-size:11px; color:#0284c7; font-weight:600; margin-top:2px">✎ TikZ</div>
+    </div>
+  </div>
+  <div style="flex:1; min-width:230px">
+    <div class="slot-label">修复后（真按钮 · 悬停提示"以此图为参考重绘"）</div>
+    <div style="text-align:center; position:relative; display:inline-block">
+      <svg width="150" height="120" viewBox="0 0 120 90" style="border:1px solid #e2e8f0;border-radius:8px;background:#fff"><circle cx="60" cy="45" r="30" fill="none" stroke="#334155" stroke-width="1.4"/><line x1="10" y1="45" x2="110" y2="45" stroke="#94a3b8" stroke-width="1"/><line x1="60" y1="8" x2="60" y2="82" stroke="#94a3b8" stroke-width="1"/><circle cx="60" cy="45" r="2" fill="#334155"/></svg>
+      <span style="position:absolute; left:50%; bottom:-9px; transform:translateX(-50%); background:#0284c7; color:#fff; font-size:11px; font-weight:600; padding:3px 10px; border-radius:999px; white-space:nowrap; box-shadow:0 4px 10px rgba(2,132,199,.35)">✎ 转 TikZ</span>
+    </div>
+  </div>
+</div>
+<p class="note"><strong>语义约定</strong>：图下方的 <strong>「✎ 转 TikZ」= 入口，说明<u>还没转</u></strong>（当前显示的是原题位图）；转换完成后该图会换成 TikZ 渲染结果并标上 <strong>AI · TikZ</strong> 角标（见第 ① 节）。<code>tikz_*</code> 文件名的图与 AI 专用参考图不会再给这个入口。</p>
+
+<h2>③ 判定规则与落库行为</h2>
+<table>
+  <tr><th>文件名特征</th><th>角标</th><th>是否给「转 TikZ」</th></tr>
+  <tr><td><code>pdf_crop_{task}_{page}_{idx}.png</code></td><td>位图 · 第N页（N=page+1）</td><td>是</td></tr>
+  <tr><td><code>tikz_*.png</code></td><td>AI · TikZ</td><td>否（已是矢量图渲染结果）</td></tr>
+  <tr><td>其它位图</td><td>位图</td><td>是</td></tr>
+  <tr><td>已被重绘的位图（资产 <code>reference_image_path</code> 命中）</td><td>AI · TikZ + “已转为 TikZ”</td><td>否（重复点击会原地更新同一资产）</td></tr>
+</table>
+
+<table>
+  <tr><th>图片归属</th><th>判定依据</th><th>展示位置</th><th>「转 TikZ」写入槽位</th></tr>
+  <tr><td>题干图</td><td>不在解答 markdown 里</td><td>题干配图条 + 卡片配图徽章</td><td><code>content_tikz_assets</code></td></tr>
+  <tr><td>解答图</td><td>出现在解答 markdown 里</td><td>只在解答预览内联</td><td><code>answer_tikz_assets</code></td></tr>
+</table>
+<p class="note" style="margin-top:8px">两者都仍保留在 <code>questions.image_paths</code> 中，用于文件晋升与清理；<strong>不因分槽而摘除</strong>，否则图片会变成孤儿被回收。</p>
+
+</body>
+</html>

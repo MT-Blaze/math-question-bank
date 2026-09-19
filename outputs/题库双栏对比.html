@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>题库系统双栏对比 · 我们(v19) vs 参考应用</title>
+<style>
+  :root{
+    --bg:#f6f7fb; --card:#ffffff; --line:#e5e7eb; --text:#1f2937; --muted:#6b7280;
+    --ours:#2563eb; --ours-bg:#eff6ff; --other:#059669; --other-bg:#ecfdf5;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;padding:28px 22px 60px;background:var(--bg);color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;line-height:1.6;}
+  .wrap{max-width:1240px;margin:0 auto;}
+  h1{font-size:22px;margin:0 0 6px;}
+  .sub{color:var(--muted);font-size:13px;margin-bottom:16px;}
+  .verdict{background:var(--card);border:1px solid var(--line);border-left:4px solid var(--ours);
+    border-radius:10px;padding:14px 16px;font-size:13.5px;margin-bottom:18px;}
+  .verdict b{color:var(--ours);}
+  table{width:100%;border-collapse:separate;border-spacing:0;background:var(--card);
+    border:1px solid var(--line);border-radius:12px;overflow:hidden;font-size:12.5px;}
+  thead th{position:sticky;top:0;z-index:2;background:#f3f4f6;text-align:left;padding:11px 13px;
+    font-size:12.5px;border-bottom:1px solid var(--line);}
+  thead th.dim{width:132px;color:var(--muted);}
+  thead th.ours{width:calc((100% - 132px)/2);color:var(--ours);}
+  thead th.other{width:calc((100% - 132px)/2);color:var(--other);}
+  tbody td{padding:10px 13px;border-bottom:1px solid var(--line);vertical-align:top;}
+  tbody tr:last-child td{border-bottom:none;}
+  tbody td.dim{font-weight:700;color:#374151;background:#fafafa;}
+  tbody td.ours{background:var(--ours-bg);}
+  tbody td.other{background:var(--other-bg);}
+  tbody tr:hover td.ours{background:#e0edff;}
+  tbody tr:hover td.other{background:#d9f7ea;}
+  .tag{display:inline-block;font-size:11px;padding:1px 7px;border-radius:999px;margin:0 4px 3px 0;border:1px solid transparent;}
+  .win{background:#dcfce7;color:#166534;border-color:#bbf7d0;}
+  .gap{background:#fee2e2;color:#991b1b;border-color:#fecaca;}
+  .same{background:#eef2ff;color:#3730a3;border-color:#e0e7ff;}
+  h2{font-size:15px;margin:26px 0 8px;}
+  ul{margin:6px 0 0;padding-left:20px;}
+  li{margin:3px 0;font-size:12.5px;}
+  .foot{color:var(--muted);font-size:12px;margin-top:20px;}
+  .legend{font-size:12px;color:var(--muted);margin:6px 0 14px;}
+  .legend span{margin-right:14px;}
+  code{background:#f1f5f9;padding:0 3px;border-radius:4px;font-size:11.5px;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>题库系统双栏对比</h1>
+  <div class="sub">左：<b>我们的题库</b>（math-question-bank-main，schema <b>v19</b>，13 表 / 78 API）　|　右：<b>参考应用</b>（E:\math-wangyou\question-bank，v0.9.0，34 表 / 92 API）　·　更新于 2026-09-15</div>
+
+  <div class="verdict">
+    <b>一句话结论：</b>参考库原先在“数据模型”上的优势——标签/知识点多对多、考试元数据、组卷快照、导入回滚、TikZ 版本树、图片内容寻址、结构化选项、细目表组卷——<b>我们已在 v15～v19 全部补齐</b>；同时保留了它没有的<b>查重指纹体系</b>与<b>考向树 TXT 双向同步</b>。<b>现在两者的差距只剩“课件体系 / 多空间 / 分享”这一类面向产品化的功能</b>，对个人单机题库属可选。
+  </div>
+
+  <div class="legend">
+    <span><span class="tag win">✓ 我们更强 / 已对齐</span></span>
+    <span><span class="tag gap">△ 我们缺失 / 较弱</span></span>
+    <span><span class="tag same">≈ 各有侧重</span></span>
+  </div>
+
+  <table>
+    <thead>
+      <tr><th class="dim">对比维度</th><th class="ours">我们的题库（v19）</th><th class="other">参考应用（question-bank）</th></tr>
+    </thead>
+    <tbody>
+      <tr><td class="dim">交付形态</td>
+        <td class="ours">本地 Web 服务 + 浏览器访问（或打包 exe 启动器），前端无构建</td>
+        <td class="other">Electron 43 桌面应用（题库.exe，约 215 MB），内嵌 Next.js 服务端</td></tr>
+      <tr><td class="dim">技术栈</td>
+        <td class="ours"><b>Python FastAPI + SQLAlchemy + 原生 HTML/JS + KaTeX + Pandoc/LaTeX</b></td>
+        <td class="other">Next.js 16 + React 19 + TypeScript + Tailwind 4 + SQLite（node ≥ 24）</td></tr>
+      <tr><td class="dim">源码可读性</td>
+        <td class="ours"><span class="tag win">✓</span>全部可读可改，无编译/混淆</td>
+        <td class="other"><span class="tag gap">△</span>编译+混淆；app.asar 只有 Electron 壳；GitHub 404，拿不到源码</td></tr>
+      <tr><td class="dim">数据存储</td>
+        <td class="ours">项目根 <code>math_question_bank.db</code>(SQLite) + <code>static/uploads/</code>(sha256 寻址) + <code>考向树/*.txt</code></td>
+        <td class="other"><code>%APPDATA%\题库\data\tiku.db</code>(SQLite WAL) + <code>data\uploads\</code></td></tr>
+      <tr><td class="dim">数据表 / API</td>
+        <td class="ours">13 表 / 78 API</td>
+        <td class="other"><b>34 表</b> / 92 API</td></tr>
+      <tr><td class="dim">题目字段</td>
+        <td class="ours">题干/答案解析/评述、题型、难度 L1~L5 + <b>难度系数 0~1</b>、四维分类(册/章/节/考向)、
+          年级、试卷分类、<b>年份/地区/阶段/视频/选项列数/解法</b>、<b>认知层次/核心素养/易错点</b>、
+          标签、知识点、<b>结构化选项</b>、配图/TikZ、引用次数</td>
+        <td class="other">题干/选项/答案/解析、解析方法、题型、难度 1~5、年份、地区、视频、翻译、条件、
+          选项列数、AI 置信度、来源、备注</td></tr>
+      <tr><td class="dim">标签体系</td>
+        <td class="ours"><span class="tag win">✓</span><code>tags</code>+<code>question_tags</code> 多对多（v15）+ 缓存列；查重自动标签</td>
+        <td class="other"><span class="tag win">✓</span><code>tags</code>+<code>question_tags</code> 多对多</td></tr>
+      <tr><td class="dim">知识点 / 大纲</td>
+        <td class="ours"><span class="tag win">✓</span><b>两者兼备</b>：考向树(章→节→L1~L5→考向) TXT↔Web 双向同步
+          <b>且</b> <code>knowledge_points</code>+<code>question_knowledge</code> 细粒度多对多（v16）</td>
+        <td class="other"><code>knowledge_points</code>+<code>question_knowledge</code> 多对多；无备考向树</td></tr>
+      <tr><td class="dim">教育测量属性</td>
+        <td class="ours"><span class="tag win">✓</span>难度系数(0~1)、认知层次、核心素养、易错点（v18）</td>
+        <td class="other">难度 1~5、解析方法、AI 置信度</td></tr>
+      <tr><td class="dim">目录 / 空间</td>
+        <td class="ours"><span class="tag gap">△</span>固定四级教材分类；单库单用户</td>
+        <td class="other"><span class="tag win">✓</span><code>catalogs</code> 可递归目录树 + <code>spaces</code> 多空间</td></tr>
+      <tr><td class="dim">组卷</td>
+        <td class="ours">题序+分值；A4/exam-zh 模板；tex/PDF/Word/zip 导出；<b>冻结快照</b>（删题后仍可印，v15）</td>
+        <td class="other"><span class="tag win">✓</span>分区/题项/留白/锁题/快照/内容 hash + 生成规则 + 随机种子 + 生成记录</td></tr>
+      <tr><td class="dim">双向细目表</td>
+        <td class="ours"><span class="tag win">✓</span><code>POST /api/questions/blueprint-match</code> 按 题型×知识点×难度 逐行挑题（v19，前端有弹窗）</td>
+        <td class="other">支持知识点选题 / 细目表组卷（是其组卷模型的一部分）</td></tr>
+      <tr><td class="dim">批量导入</td>
+        <td class="ours">任务式导入（PDF/Word/TeX/Markdown/MinerU 云端），逐题落库</td>
+        <td class="other"><span class="tag win">✓</span><code>import_batches</code>：计划→确认→提交，带备份/报告</td></tr>
+      <tr><td class="dim">导入回滚</td>
+        <td class="ours"><span class="tag win">✓</span>导入批次 <code>import_batches</code>，一键整批回滚（v19；快照不受影响）</td>
+        <td class="other"><span class="tag win">✓</span>完整回滚 + 审计 + 计划哈希</td></tr>
+      <tr><td class="dim">查重</td>
+        <td class="ours"><span class="tag win">✓</span>精确/关键数学 token/SimHash/文字片段 4-gram/图形与 TikZ 哈希</td>
+        <td class="other"><span class="tag gap">△</span>未见独立查重表与指纹体系</td></tr>
+      <tr><td class="dim">AI / OCR</td>
+        <td class="ours">多 AI 供应商(DeepSeek/硅基流动/百炼/中转站)、MinerU 云端、视觉 OCR、AI 解题与 TikZ 绘图</td>
+        <td class="other">AI 标注 / LaTeX 格式化 / AI 画 TikZ；OCR 配置与每日限额</td></tr>
+      <tr><td class="dim">导出</td>
+        <td class="ours">LaTeX / PDF / Word / zip（试卷 + 答案页）</td>
+        <td class="other">HTML / LaTeX / PDF / JSON / archive / <b>答题卡</b></td></tr>
+      <tr><td class="dim">课件 / 知识卡</td>
+        <td class="ours"><span class="tag gap">△</span>只有教案(<code>lesson_plans</code>)，无课件与知识卡片</td>
+        <td class="other"><span class="tag win">✓</span>课件(分区+多块+快照)；知识卡片+分段+前置依赖图</td></tr>
+      <tr><td class="dim">TikZ 绘图</td>
+        <td class="ours"><span class="tag win">✓</span>题级 <code>tikz_code</code> + 题干/解答资产 + <b>版本树</b> <code>tikz_versions</code>（v19，按源码 sha256 去重）</td>
+        <td class="other"><code>tikz_diagrams</code>+<code>tikz_versions</code>（父版本/模型/渲染器版本/hash）</td></tr>
+      <tr><td class="dim">图片资产</td>
+        <td class="ours"><span class="tag win">✓</span><b>sha256 内容寻址去重</b>（v19）+ 引用守卫清理</td>
+        <td class="other"><code>paper_assets.sha256</code> 内容寻址 + 来源标记(upload/tikz)</td></tr>
+      <tr><td class="dim">分享 / 协作</td>
+        <td class="ours"><span class="tag gap">△</span>单机 + 本地令牌，无分享</td>
+        <td class="other"><code>shares</code>+<code>share_log</code>，偏协作</td></tr>
+      <tr><td class="dim">安全模型</td>
+        <td class="ours"><span class="tag win">✓</span>本地令牌(X-Local-Token)、私有资产路径校验、上传硬化、备份/迁移/健康检查</td>
+        <td class="other">桌面本地应用，未做 Web 暴露面</td></tr>
+      <tr><td class="dim">可维护性</td>
+        <td class="ours"><span class="tag win">✓</span>无构建链路，改完刷新即生效；721 项回归测试</td>
+        <td class="other"><span class="tag gap">△</span>需 Next 构建 + Electron 打包，源码混淆，二次开发成本高</td></tr>
+      <tr><td class="dim">适用场景</td>
+        <td class="ours">个人/教研组本地题库，重考向、重查重、重可维护</td>
+        <td class="other">面向“产品级桌面应用”，重课件/多空间/可回滚导入</td></tr>
+    </tbody>
+  </table>
+
+  <h2>我们独有的优势（参考库没有）</h2>
+  <ul>
+    <li>考向树（章→节→L1~L5→考向）与 TXT 双向同步，备考属性更强。</li>
+    <li>完整查重指纹体系（精确 / 关键数学 token / SimHash / 文字片段 / 图形 / TikZ）。</li>
+    <li>架构轻、可读可改，无 Webpack/Vite/Node 构建依赖；721 项回归测试托底。</li>
+    <li>多 AI 供应商 + MinerU 云端 + 视觉 OCR 的灵活接入。</li>
+    <li>本地令牌安全边界、备份/迁移/健康检查等运维能力。</li>
+  </ul>
+
+  <h2>参考库仍然领先 / 我们仍缺的点</h2>
+  <ul>
+    <li><b>课件体系</b>（courseware：分区 + 多类型块 + 题目快照）与 <b>知识卡片</b>（含分段与前置依赖图）。</li>
+    <li><b>多空间 spaces</b>（多租户/多库）——对个人单机属过度设计。</li>
+    <li><b>分享/协作</b>（shares / share_log）。</li>
+    <li><b>结构化组卷的分区模型</b>（paper_sections / items 分区与规则）——我们用“细目表挑题 + 扁平题序”近似替代。</li>
+    <li>导出多一个 <b>答题卡</b>；题目多 <code>translation</code>/<code>conditions</code>/<code>confidence</code> 等小字段（个人题库暂不需要）。</li>
+  </ul>
+
+  <div class="foot">
+    配套文件：<code>outputs/题库系统对比分析.md</code>、<code>outputs/参考题库App-数据库结构.sql</code>（34 表建表语句）。
+    本表按我们 <b>v19</b> 现状刷新，之前 v16 版已过时。
+  </div>
+</div>
+</body>
+</html>

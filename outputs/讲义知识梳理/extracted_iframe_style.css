@@ -1,0 +1,76 @@
+@page{size:A4;margin:0}
+*{box-sizing:border-box}
+body{margin:0;background:#e5e7eb;font-family:"CangErJinKai","仓耳今楷","KaiTi","SimSun",serif;color:#1e293b}
+.sheet{width:210mm;min-height:297mm;margin:14px auto;padding:18mm 18mm 16mm;background:#fff;box-shadow:0 4px 18px rgba(0,0,0,.15);position:relative;page-break-after:always;overflow:hidden}
+@media print{.sheet{margin:0;box-shadow:none;page-break-after:always}}
+.cover{display:flex;flex-direction:column;align-items:center;justify-content:space-between;padding:22mm 24mm}
+.cover svg{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+.cover-brand{position:absolute;top:23mm;left:28mm;font-size:20px;font-weight:700;color:#1f3a5f;z-index:2}
+.cover-subtitle{position:absolute;top:57mm;left:0;right:0;text-align:center;font-size:20px;color:#334155;z-index:2}
+.main-title{position:absolute;top:99mm;left:0;right:0;text-align:center;font-size:56px;font-weight:700;color:#0f2440;letter-spacing:6px;z-index:2}
+.cover-author{position:absolute;bottom:99mm;left:0;right:0;text-align:center;font-size:20px;font-weight:700;color:#000;z-index:2}
+.cover-ver{position:absolute;bottom:20mm;left:0;right:0;text-align:center;font-size:16px;color:#64748b;z-index:2}
+body.view-yuan .cover-ver{display:none}
+.chapter-info{font-size:24px;font-weight:700;color:#1f3a5f;text-align:center;margin-bottom:6mm}
+.section-title{font-size:22px;font-weight:700;color:#1e3a8a;text-align:center;margin:4mm 0 6mm;position:relative}
+.knowledge{font-size:14px;line-height:1.9}
+.knowledge .key{font-weight:700;color:#1e3a8a}
+.knowledge p{margin:2mm 0}
+.knowledge table.def{width:100%;border-collapse:collapse;margin:2mm 0;font-size:13px}
+.knowledge table.def th,.knowledge table.def td{border:1px solid #cbd5e1;padding:1.6mm 2mm;text-align:left}
+.knowledge table.def th{background:#f1f5f9;font-weight:700}
+.kn-empty{color:#94a3b8;font-size:14px}
+.map{display:flex;flex-direction:column;gap:4mm;padding:6mm 0}
+.map-row{display:flex;align-items:center;gap:4mm;padding:3mm 4mm;border:1px solid #dbe3ef;border-radius:2mm;background:#f8fafc}
+.map-idx{width:8mm;height:8mm;border-radius:50%;background:#1e3a8a;color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px;flex-shrink:0}
+.map-name{font-size:15px;font-weight:600;color:#1e293b}
+.page-head{display:flex;justify-content:space-between;align-items:baseline;border-bottom:1px solid #cbd5e1;padding-bottom:2mm;margin-bottom:4mm}
+.ph-title{font-size:17px;font-weight:700;color:#1e3a8a}
+.ph-quote{font-size:13px;color:#64748b}
+.subsection-title{font-size:18px;font-weight:700;color:#1f3a5f;margin:3mm 0}
+.km-box{display:flex;flex-direction:column;gap:2mm;margin-bottom:4mm}
+.km-item{padding:2.5mm 3mm;border-radius:1.5mm;font-size:13.5px;line-height:1.7}
+.km-pit{background:#fffbeb;border-left:3px solid #f59e0b}
+.km-method{background:#eff6ff;border-left:3px solid #3b82f6}
+.km-label{font-weight:700;margin-right:2mm}
+.km-pit .km-label{color:#b45309}.km-method .km-label{color:#1d4ed8}
+.km-empty{color:#94a3b8}
+.qa{margin-bottom:6mm}
+.q-src{font-size:12px;color:#64748b;margin-bottom:1mm;line-height:1.5}
+body.view-yuan .q-src-all{display:none}
+body.view-jiexi .q-src-main{display:none}
+.q-head{font-weight:700;margin-bottom:1.5mm}
+.tag{display:inline-block;background:#1e3a8a;color:#fff;padding:0.6mm 2.5mm;border-radius:1mm;font-size:13px;margin-right:2mm}
+.q-body{font-size:14px;line-height:1.9}
+.q-body .choices-grid{display:grid;grid-template-columns:1fr 1fr;gap:1mm 6mm;margin-top:1.5mm}
+.q-body table{border-collapse:collapse;margin:2mm 0}
+.q-body table td,.q-body table th{border:1px solid #cbd5e1;padding:1.5mm 2mm}
+.answer-block{margin-top:2mm;padding:2mm 3mm;background:#f8fafc;border-radius:1.5mm;font-size:13.5px;line-height:1.8}
+.ab-label{font-weight:700;margin-right:1mm}
+.ab-label.ans{color:#dc2626}
+.page-foot{position:absolute;bottom:5mm;left:0;right:0;text-align:center;font-size:12px;color:#64748b}
+#page-answer-book{display:none}
+.ans-item{margin-bottom:3mm;font-size:13.5px;line-height:1.8}
+.ans-tag{display:inline-block;background:#f1f5f9;color:#1e3a8a;padding:0.6mm 2.5mm;border-radius:1mm;font-weight:700;margin-right:2mm;font-size:12.5px}
+.view-jiexi .answer-block{display:block}
+.view-yuan .answer-block{display:none}
+body.view-daan .sheet:not(.cover):not(#page-answer-book){display:none!important}
+body.view-daan #page-answer-book{display:block}
+.mind-hint{font-size:12px;color:#94a3b8;text-align:center;margin:-2mm 0 4mm}
+.mind-wrap{display:flex;flex-direction:column;gap:5mm}
+.mind-title{display:inline-block;background:#1e3a8a;color:#fff;font-size:18px;font-weight:700;padding:2.5mm 8mm;border-radius:2mm;margin:0 auto 2mm;cursor:pointer;box-shadow:0 2px 6px rgba(30,58,138,.25)}
+.mind-title:hover{outline:2px solid #60a5fa}
+.mind-branch{display:flex;align-items:flex-start;gap:3mm}
+.mind-branch-label{min-width:30mm;max-width:34mm;flex-shrink:0;color:#fff;font-weight:700;font-size:15px;padding:2.5mm 3mm;border-radius:1.5mm;text-align:center;cursor:pointer;box-shadow:0 2px 5px rgba(0,0,0,.12)}
+.mind-branch-label:hover{outline:2px solid rgba(0,0,0,.25)}
+.mind-branch-line{flex:1;align-self:center;border-top:2px solid var(--mc);position:relative;margin:0 1mm}
+.mind-dot{position:absolute;right:-1.5mm;top:-2mm;width:3.5mm;height:3.5mm;border-radius:50%;border:2px solid #fff;box-shadow:0 0 0 1.5px var(--mc)}
+.mind-items{flex:1;display:flex;flex-direction:column;gap:2mm;min-width:0}
+.mind-item{background:var(--mcb);border-left:3px solid var(--mc);padding:2mm 3mm;border-radius:0 1.5mm 1.5mm 0;font-size:13.5px;line-height:1.7;cursor:pointer}
+.mind-item:hover{outline:1.5px solid var(--mc)}
+.mind-item-children{margin-left:6mm;padding-left:4mm;border-left:1.5px dashed var(--mc);display:flex;flex-direction:column;gap:1.8mm}
+.mind-table-wrap{margin:1mm 0}
+.mind-table{width:100%;border-collapse:collapse;font-size:12.5px;line-height:1.5}
+.mind-table td{border:1px solid #cbd5e1;padding:1.2mm 2mm;cursor:pointer;background:#fff}
+.mind-table td:hover{outline:1.5px solid var(--mc);background:#f8fafc}
+.mind-table tr:first-child td{background:#f1f5f9;font-weight:700}
