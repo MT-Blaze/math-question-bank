@@ -9,7 +9,7 @@
 2. 幂等：normalize_for_storage 对自身输出恒等（草稿箱重存、二次保存不走形）。
 3. 保真：归一化不得吃掉表格行、图片、选项与填空宏。
 """
-import re
+import random
 
 import pytest
 
@@ -244,3 +244,39 @@ def test_leading_question_number_style_is_unified(raw, expected):
 ])
 def test_leading_number_rule_does_not_eat_real_content(untouched):
     assert normalize_for_storage(untouched, "detailed_answer") == untouched
+
+
+# 固定种子的性质测试：把真实怪癖片段随机拼装，检查「合流 + 幂等」两条不变量。
+FRAGMENTS = [
+    r"已知 $f(x)=x^2-2x$，则 f(x) 的最小值为（）",
+    r"设 a=2, b=3，则 a*b = ____",
+    r"解集为 \underline{\hspace{2em}} 。",
+    r"计算 3+5：\nA．8\nB．9",
+    "<!-- MATHBANK_PDF_PAGE:2 -->\n求 $\\dfrac{1}{2}$。",
+    "| 年份 | 2018 | 2019 |\n| --- | --- | --- |\n| 数量 | 160 | x_1 |",
+    r"**重点**：$|a|+|b|=1$，则 a 与 b 的关系",
+    r"如图 ![图](/static/uploads/a.png) 所示",
+    "\\begin{choices}\n\\item 2 条\n\\item 4 条\n\\end{choices}",
+    r"5. 已知数列 $\{a_n\}$ 满足 $a_1=1$，$a_{n+1}=2a_n$。",
+    "$$x=1$$\n\n\n故得解。",
+    r"（1）求通项公式；（2）求前 n 项和。",
+    "\\begin{tabular}{|c|c|}\\hline x & y \\\\ \\hline 1 & 2 \\\\ \\hline\\end{tabular}",
+    r"已知 $\alpha=30^\circ$，则 \tan\alpha = ___",
+    r"求函数 $y=\sqrt{x-1}$ 的定义域为 ____，值域为 \fillin 。",
+]
+QUESTION_TYPES = ["single_choice", "multi_choice", "fill_in_blank", "detailed_answer"]
+
+
+def test_normalization_chain_is_confluent_and_idempotent_on_random_combinations():
+    rng = random.Random(20260919)
+    for _ in range(300):
+        raw = rng.choice(["1.", "2. ", "3、", ""]) + rng.choice(FRAGMENTS)
+        qt = rng.choice(QUESTION_TYPES)
+        for is_answer in (False, True):
+            key = "" if is_answer else qt
+            once = normalize_for_storage(raw, key, is_answer=is_answer)
+            # 拆解/OCR 阶段先跑过字符层的半成品，经完整链后必须与直接入库完全一致
+            pre = compact_solution_markdown(normalize_question_math_markdown(raw)) if is_answer \
+                else normalize_question_math_markdown(raw)
+            assert once == normalize_for_storage(pre, key, is_answer=is_answer), raw
+            assert normalize_for_storage(once, key, is_answer=is_answer) == once, raw
