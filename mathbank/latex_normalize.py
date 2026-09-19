@@ -426,6 +426,35 @@ def normalize_content_for_latex_storage(md: str, question_type: str = "") -> str
 
 
 # ---------------------------------------------------------------------------
+# 题干前导原题号：统一成「数字 + 半角点 + 一个空格」
+# ---------------------------------------------------------------------------
+# 只认「1~3 位数字 + 分隔符」且分隔符后不接数字的形态，因此 `3.5 的相反数`、
+# `2019年…`、`（1）已知…` 都不会被误改。
+_LEADING_QNO_RE = re.compile(r"^(\d{1,3})[ \t]*[.．、][ \t]*(?![0-9])")
+
+
+def normalize_leading_question_number(md: str) -> str:
+    r"""把题干开头的原题号统一成 ``<n>. `` 一种写法。
+
+    视觉 OCR / 原生提取 / 手敲三种来源给出的前缀分别是 `1.下列`、`2. 如图`、
+    `3、某地`，同一份卷子进库后风格三种，组卷预览与导出里看起来就是「排版不齐」。
+    注意：本函数**只统一写法、不删除题号** —— 题库详情与 A4 预览直接渲染题干文本，
+    题号一删，网页上就没有编号了（而 exam-zh 的 PDF 会自动编号，两者本就不一致）。
+    原卷号该不该从题干里彻底剥离、改由 `questions.paper_question_no` 承载，是一个
+    会影响网页编号显示的独立决策，未拍板前不得在此处顺带改掉。
+    """
+    if not md:
+        return md
+    stripped = md.lstrip()
+    if not stripped:
+        return md
+    m = _LEADING_QNO_RE.match(stripped)
+    if not m:
+        return md
+    return f"{m.group(1)}. {stripped[m.end():]}"
+
+
+# ---------------------------------------------------------------------------
 # 唯一入库归一化入口（三条录入路径在此汇合）
 # ---------------------------------------------------------------------------
 def normalize_for_storage(value: str, question_type: str = "", is_answer: bool = False) -> str:
@@ -461,6 +490,7 @@ def normalize_for_storage(value: str, question_type: str = "", is_answer: bool =
     if is_answer:
         value = compact_solution_markdown(value)
     else:
+        value = normalize_leading_question_number(value)
         # 题干与解析共用同一条空行口径：3 个以上换行 = 一个自然段，压回 \n\n。
         value = re.sub(r"\n{3,}", "\n\n", value)
     return value

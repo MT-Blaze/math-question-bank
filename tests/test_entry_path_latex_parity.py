@@ -222,3 +222,25 @@ def test_fillin_macro_and_images_and_bold_are_preserved():
 def test_page_markers_never_reach_storage():
     for raw in (CASES[5][2], CASES[5][3]):
         assert "MATHBANK_PDF_PAGE" not in normalize_for_storage(raw, "detailed_answer", True)
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("1.下列各曲线中（）", "1. 下列各曲线中（）"),
+    ("2、如图，已知", "2. 如图，已知"),
+    ("3．某地自 2018 年起", "3. 某地自 2018 年起"),
+    ("  12.已知函数", "12. 已知函数"),
+])
+def test_leading_question_number_style_is_unified(raw, expected):
+    out = normalize_for_storage(raw, "single_choice")
+    assert out == expected
+    assert normalize_for_storage(out, "single_choice") == out, "题号统一必须幂等"
+
+
+@pytest.mark.parametrize("untouched", [
+    "3.5 的相反数是（）",           # 小数，不是题号
+    "2019·全国高考题已知 $a=1$",     # 年份出处
+    "（1）已知 $a_1=1$，求通项公式。",  # 解答题小问
+    "$|a| + |b| = 1$，求范围",       # 绝对值，不是表格行
+])
+def test_leading_number_rule_does_not_eat_real_content(untouched):
+    assert normalize_for_storage(untouched, "detailed_answer") == untouched

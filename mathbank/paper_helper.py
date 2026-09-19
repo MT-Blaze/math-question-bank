@@ -931,11 +931,16 @@ def compile_tex_to_pdf(tex_content: str, image_paths: list = None) -> tuple:
                     tex_file.write(current_tex)
 
                 # Pass 1: Generate .aux file and initial layout.
+                # text=True 会按本地编码（中文 Windows 是 CP936）解码管道，XeLaTeX 的
+                # UTF-8 日志字节会在读取线程里直接抛 UnicodeDecodeError；必须显式指定
+                # UTF-8 + replace，让诊断文本永不因编码而崩（见 AGENTS.md 日志编码安全）。
                 first_proc = subprocess.run(
                     cmd,
                     cwd=temp_dir,
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=30,
                     env=build_restricted_tex_environment(temp_dir),
                 )
@@ -961,6 +966,8 @@ def compile_tex_to_pdf(tex_content: str, image_paths: list = None) -> tuple:
                     cwd=temp_dir,
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=30,
                     env=build_restricted_tex_environment(temp_dir),
                 )
