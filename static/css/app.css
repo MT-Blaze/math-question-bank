@@ -1964,3 +1964,101 @@ main {
     color: #fca5a5;
     background: rgba(239, 68, 68, 0.18);
 }
+
+
+/* ============ 单题录入元数据区（三组一行） ============
+   原来 13 组控件挤在一个 flex-wrap 里，换行点随窗口宽度乱跳、看不出填写顺序。
+   现在切成「身份 / 分类 / 来源」三组，组名做成左侧标签，依赖链
+   册次→章节→小节→考点 严格按从左到右排。样式集中在这里，不用内联 style。 */
+.editor-meta-group {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+}
+
+#metaFullRow > .editor-meta-group:not(:first-child) {
+    border-top: 1px solid rgba(148, 163, 184, 0.22);
+    padding-top: 0.5rem;
+}
+
+.editor-meta-group-label {
+    flex: 0 0 auto;
+    width: 2.75rem;
+    margin-top: 3px;
+    text-align: center;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    color: #94a3b8;
+    background: rgba(148, 163, 184, 0.12);
+    border-radius: 6px;
+    padding: 2px 0;
+    white-space: nowrap;
+}
+
+.editor-meta-fields {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    column-gap: 0.75rem;
+    row-gap: 0.5rem;
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+/* 一列里放「字段行 + 已存来源 chips」，chips 由 editor.js 运行时插进来 */
+.editor-meta-col {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+/* 附加考向行与组的字段列左对齐（标签宽 2.75rem + 间距 0.5rem） */
+.editor-meta-indent {
+    margin-left: 3.25rem;
+}
+
+#editorSrcMoreFields {
+    row-gap: 0.5rem;
+}
+
+#editorSrcMoreFields[hidden] {
+    display: none;
+}
+
+.dark #metaFullRow > .editor-meta-group:not(:first-child) {
+    border-top-color: rgba(148, 163, 184, 0.18);
+}
+
+.dark .editor-meta-group-label {
+    color: #cbd5e1;
+    background: rgba(148, 163, 184, 0.16);
+}
+
+@media (max-width: 768px) {
+    /* 窄屏：组名换到字段上方，附加考向行允许折行，375px 也能逐个点到 */
+    .editor-meta-group {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 0.25rem;
+    }
+
+    .editor-meta-group-label {
+        width: auto;
+        display: inline-block;
+        text-align: left;
+        margin-top: 0;
+        padding: 1px 6px;
+    }
+
+    .editor-meta-indent {
+        margin-left: 0;
+    }
+
+    .extra-topic-row {
+        flex-wrap: wrap;
+        row-gap: 0.5rem;
+    }
+}

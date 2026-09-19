@@ -1845,7 +1845,7 @@ def test_editor_source_chips_render_and_delete_one_source():
     chips_start = source.index("function editorSourceChipsHost(")
     assert "innerHTML" not in source[chips_start:]
 
-    script = """
+    script = r"""
 class El {
   constructor(tag, id) {
     this.tagName = String(tag || 'DIV').toUpperCase();
@@ -1884,7 +1884,15 @@ class El {
   addEventListener(t, fn) { (this.listeners[t] = this.listeners[t] || []).push(fn); }
   dispatch(t) { (this.listeners[t] || []).forEach(function (fn) { fn(); }); }
   click() { this.dispatch('click'); }
-  closest() { return this.parentNode; }
+  closest(sel) {
+    let n = this;
+    const cls = /^\.([\w-]+)$/.exec(sel);
+    while (n) {
+      if (!cls || (n.className || '').split(/\s+/).indexOf(cls[1]) >= 0) return n;
+      n = n.parentNode;
+    }
+    return null;
+  }
 }
 class Opt {
   constructor(v, t) { this.value = v; this.textContent = t === undefined ? v : t; this.parentNode = null; }
@@ -1899,8 +1907,11 @@ function select(id, label, items, custom) {
   return s;
 }
 const metaRow = el('DIV', 'metaFullRow');
-const row = el('DIV');
-metaRow.appendChild(row);
+const group = el('DIV'); group.className = 'editor-meta-group';
+const col = el('DIV'); col.className = 'editor-meta-col';
+const fields = el('DIV'); fields.className = 'editor-meta-fields';
+const row = el('DIV'); row.className = 'inline-flex items-center gap-1.5 shrink-0';
+metaRow.appendChild(group); group.appendChild(col); col.appendChild(fields); fields.appendChild(row);
 [
   select('editSrcYear', '年份', ['2023', '2024', '2025', '2026']),
   select('editSrcSemester', '学段', ['上', '下']),
@@ -1936,7 +1947,7 @@ out.mainFieldsKept = year.value === '2016' && region.value === '南溪一中';
 out.tailOptions = region.options.map(function (o) { return o.value; }).slice(-2);
 
 const host = document.getElementById('editorSourceChips');
-out.hostInMetaRow = host.parentNode === metaRow;
+out.chipsInSourceCol = host.parentNode === col;
 out.chipLabels = host.children.map(function (c) { return c.firstChild.textContent; });
 out.delAria = host.children.map(function (c) { return c.nodes[1].getAttribute('aria-label'); });
 out.mainBadge = host.children[0].className.indexOf('is-main') >= 0;
@@ -1975,7 +1986,7 @@ console.log(JSON.stringify(out));
     out = json.loads(result.stdout.strip().splitlines()[-1])
     assert out["mainFieldsKept"] is True, out
     assert out["tailOptions"] == ["南溪一中", "__custom__"], out   # 补的选项插在「自定义」之前
-    assert out["hostInMetaRow"] is True, out
+    assert out["chipsInSourceCol"] is True, out   # chips 落在来源组的字段列里，不挤进控件行
     assert out["mainBadge"] is True, out
     # 排序口径与后端一致：高考 > 模考 > 联考 > 校考/期末，同级别年份新在前
     assert out["chipLabels"] == [
@@ -1991,3 +2002,159 @@ console.log(JSON.stringify(out));
 
     assert out["cancelledCount"] == 2, out
     assert out["rebuildSkipped"] is True, out
+def test_editor_source_sync_survives_the_province_city_cascade():
+    """回写来源必须先重建级联选项再赋值，否则城市会被静默清掉。
+
+    真实浏览器实测：旧 `syncEditorSourceFields` 先 `pEl.value=` / `cEl.value=`，
+    再调 `fillEditorSrcCity()` 重建 option —— 而重建前城市列表是空的（要按省份过滤），
+    于是「哈尔滨市」根本挂不上，下一次字段变更 `applyEditorSourceFields` 读回空值，
+    就把这道题的 city 覆写成空。
+    """
+
+    editor_source = _read(STATIC_JS_DIR / "editor.js")
+    start = editor_source.index("var EDITOR_GRADE_LABELS")
+    end = editor_source.index("window.applyEditorSourceFields = applyEditorSourceFields;", start)
+    main_block = editor_source[start:end]
+    cascade_start = editor_source.index("function fillEditorSrcProvince(")
+    cascade_end = editor_source.index("function matchEditorSrcSchoolToGeo(", cascade_start)
+    cascade_block = editor_source[cascade_start:cascade_end]
+    assert "fillEditorSrcCity();" in cascade_block
+    assert "fillEditorSrcSchoolSelect();" in cascade_block
+
+    script = r"""
+class El {
+  constructor(tag, id) {
+    this.tagName = String(tag || 'DIV').toUpperCase();
+    this._id = ''; this.nodes = []; this._text = ''; this.attrs = {};
+    this.listeners = {}; this.hidden = false; this.parentNode = null;
+    this.className = ''; this.type = ''; this.title = ''; this._value = '';
+    if (id) this.id = id;
+  }
+  get id() { return this._id; }
+  set id(v) { this._id = v; if (v) registry[v] = this; }
+  get options() { return this.tagName === 'SELECT' ? this.nodes : undefined; }
+  get children() { return this.nodes; }
+  get value() { return this._value; }
+  set value(v) {
+    const want = v === null || v === undefined ? '' : String(v);
+    if (this.tagName === 'SELECT') {
+      // 浏览器语义：option 列表里没有这个值就回落成空
+      this._value = this.nodes.some(function (o) { return o.value === want; }) ? want : '';
+    } else { this._value = want; }
+  }
+  get textContent() { return this._text; }
+  set textContent(v) { this._text = String(v); }
+  set innerHTML(v) {
+    const m = /^<option value="">([^<]*)<\/option>$/.exec(String(v));
+    if (!m) throw new Error('这里只允许 select 的 option 复位写法：' + String(v).slice(0, 40));
+    this.nodes = []; this.appendChild(new Opt('', m[1])); this._value = '';
+  }
+  appendChild(n) { this.nodes.push(n); n.parentNode = this; return n; }
+  insertBefore(n, ref) {
+    if (!n) return n;
+    const i = ref ? this.nodes.indexOf(ref) : -1;
+    if (i < 0) this.nodes.push(n); else this.nodes.splice(i, 0, n);
+    n.parentNode = this; return n;
+  }
+  setAttribute(k, v) { this.attrs[k] = String(v); }
+  getAttribute(k) { return k in this.attrs ? this.attrs[k] : null; }
+  addEventListener() {}
+  closest(sel) {
+    let n = this;
+    const cls = /^\.([\w-]+)$/.exec(sel);
+    while (n) {
+      if (!cls || (n.className || '').split(/\s+/).indexOf(cls[1]) >= 0) return n;
+      n = n.parentNode;
+    }
+    return null;
+  }
+}
+class Opt {
+  constructor(v, t) { this.value = v; this.textContent = t === undefined ? v : t; this.parentNode = null; }
+}
+const registry = {};
+function el(tag, id) { const e = new El(tag, id); if (id) registry[id] = e; return e; }
+function select(id, label) { const s = el('SELECT', id); s.appendChild(new Opt('', label)); return s; }
+const row = el('DIV');
+[
+  (function () { const y = select('editSrcYear', '年份'); ['2023', '2024', '2025'].forEach(function (v) { y.appendChild(new Opt(v, v)); }); return y; })(),
+  select('editSrcSemester', '学期'),
+  select('editSrcProvince', '省份'), select('editSrcCity', '城市'),
+  select('editSrcRegion', '学校'), select('editSrcExamType', '考试类型'),
+  el('INPUT', 'editSrcPaperTitle'), el('INPUT', 'editSource'),
+  select('editApplicableGrade', '年级'),
+].forEach(function (n) { row.appendChild(n); });
+globalThis.document = {
+  getElementById: function (id) { return registry[id] || null; },
+  createElement: function (tag) { return tag === 'OPTION' ? new Opt('') : new El(tag); },
+};
+globalThis.window = globalThis;
+window.EditorSources = [];
+window.confirm = function () { return true; };;
+window._regionsTree = [{ province: '黑龙江省', cities: ['哈尔滨市', '大庆市'] }];
+window._schoolsDict = [{ name: '哈三中', province: '黑龙江省', city: '哈尔滨市' }];
+function renderEditorPaperMeta() {}
+""" + cascade_block + main_block + """
+const out = {};
+document.getElementById('editSrcCity').appendChild(new Opt('__custom__', '＋ 自定义…'));
+window.EditorSources = [{
+  year: '2024', province: '黑龙江省', city: '哈尔滨市', region: '哈三中',
+  semester: '上', exam_type: '三模', paper_title: '2024哈三中三模',
+}];
+renderSourceChips();
+out.provinceAfterSync = document.getElementById('editSrcProvince').value;
+out.cityAfterSync = document.getElementById('editSrcCity').value;
+
+// 模拟用户只动了一下年份：字段回读后城市不得消失
+document.getElementById('editSrcYear').value = '2023';
+applyEditorSourceFields();
+const saved = window.EditorSources[0];
+out.cityAfterApply = saved.city;
+out.yearAfterApply = saved.year;
+out.hiddenAfterApply = document.getElementById('editSource').value;
+console.log(JSON.stringify(out));
+"""
+    result = _run_node_script(script)
+    assert result.returncode == 0, result.stderr
+
+    import json
+
+    out = json.loads(result.stdout.strip().splitlines()[-1])
+    assert out["provinceAfterSync"] == "黑龙江省", out
+    assert out["cityAfterSync"] == "哈尔滨市", out
+    assert out["cityAfterApply"] == "哈尔滨市", out
+    assert out["yearAfterApply"] == "2023", out
+    assert "哈尔滨市" in out["hiddenAfterApply"], out
+
+def test_editor_meta_group_styles_live_in_app_css():
+    """元数据分组与来源 chips 的样式必须在 app.css 里，且带窄屏断点。
+
+    预览净化白名单不含 `style`（AGENTS.md §6），录入区同样禁止内联样式：
+    类名一旦只出现在 JS/HTML 里而 CSS 没有对应规则，就会静默变成「挤成一行的文字」。
+    375px 必须可操作，所以还要有 768px 断点把组标签翻到字段上方、并取消左缩进。
+    """
+
+    css = _read(CSS_PATH)
+    html = _read(INDEX_PATH)
+    for cls in (
+        ".editor-meta-group",
+        ".editor-meta-group-label",
+        ".editor-meta-fields",
+        ".editor-meta-col",
+        ".editor-meta-indent",
+        ".editor-source-chip",
+        ".editor-source-chip-del",
+    ):
+        assert cls in css, cls
+    assert ".editor-source-chips[hidden]" in css and ".editor-meta-indent" in css
+    media_at = css.index("@media (max-width: 768px)", css.index(".editor-meta-group"))
+    block_end = css.index(".extra-topic-row {", media_at)
+    block = css[media_at:css.index(chr(10) + "}", block_end)]
+    assert ".editor-meta-indent" in block and "margin-left: 0" in block
+    assert ".editor-meta-group" in block and "flex-direction: column" in block
+    # HTML 侧只挂类名，不得出现内联 style
+    region = html[html.index('<div id="metaFullRow"'):html.index('id="questionContentPanel"')]
+    assert 'style="' not in region, "元数据区不得写内联 style"
+    assert region.count('class="editor-meta-group"') == 3, region.count('class="editor-meta-group"')
+
+

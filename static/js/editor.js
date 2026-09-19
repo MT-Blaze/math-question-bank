@@ -3350,16 +3350,42 @@ function syncEditorSourceFields() {
     if (sEl) setSelectWithFallback(sEl, main ? main.semester : '');
     if (ptEl) ptEl.value = main ? String(main.paper_title || '') : '';
     if (pEl || cEl) {
-        if (pEl) pEl.value = main ? String(main.province || '') : '';
-        if (cEl) cEl.value = main ? String(main.city || '') : '';
+        // 必须先重建级联选项、再回写值。旧实现先赋值后重建，而省份/城市的 option
+        // 列表在重建前是空的（城市还要按省份过滤），主来源的 city 根本赋不上；
+        // 下一次字段变更 applyEditorSourceFields 读回空值就把 city 覆写掉
+        // —— 实测打开挂过「哈尔滨市」的来源再保存，城市就静默丢了。
         if (pEl && (window._regionsTree || []).length && pEl.options.length <= 1) {
-            fillEditorSrcProvince();
-        } else {
-            fillEditorSrcCity();
+            fillEditorSrcProvince();      // 内部会连着重建城市与学校
         }
+        if (pEl) setSelectWithFallback(pEl, main ? main.province : '');
+        fillEditorSrcCity();
+        if (cEl) setSelectWithFallback(cEl, main ? main.city : '');
         fillEditorSrcSchoolSelect();
         if (main) setSelectWithFallback(rEl, main.region);
     }
+    // 折叠起来的省市/学期里有值时必须自动展开，否则用户以为数据丢了
+    if (main && (main.province || main.city || main.semester)) toggleEditorSourceMore(true);
+    refreshEditorSourceMoreButton();
+}
+
+function toggleEditorSourceMore(force) {
+    const wrap = document.getElementById('editorSrcMoreFields');
+    if (!wrap) return;
+    wrap.hidden = typeof force === 'boolean' ? !force : !wrap.hidden;
+    refreshEditorSourceMoreButton();
+}
+
+// 收起状态下里面若已有值，按钮上点一颗标，免得看起来像「填了又消失」
+function refreshEditorSourceMoreButton() {
+    const btn = document.getElementById('editorSrcMoreBtn');
+    const wrap = document.getElementById('editorSrcMoreFields');
+    if (!btn || !wrap) return;
+    const filled = ['editSrcProvince', 'editSrcCity', 'editSrcSemester'].some(function (id) {
+        const el = document.getElementById(id);
+        return el && String(el.value || '').trim();
+    });
+    btn.textContent = (wrap.hidden ? '＋ 省市·学期' : '－ 省市·学期') + (wrap.hidden && filled ? ' ·' : '');
+    btn.setAttribute('aria-expanded', wrap.hidden ? 'false' : 'true');
 }
 
 // 选项表里查不到的存量值必须就地补一个选项：学校不在词库（导入题、查重并入的
@@ -3426,13 +3452,21 @@ function editorSourceChipsHost() {
     const existing = document.getElementById('editorSourceChips');
     if (existing) return existing;
     const yearEl = document.getElementById('editSrcYear');
-    const row = yearEl ? yearEl.closest('div') : null;
-    if (!row || !row.parentNode) return null;
+    if (!yearEl) return null;
     const host = document.createElement('div');
     host.id = 'editorSourceChips';
     host.className = 'editor-source-chips';
     host.setAttribute('role', 'list');
     host.setAttribute('aria-label', '这道题已挂的来源');
+    // 录入区把来源放在 .editor-meta-col 里（字段行在上、chips 在下）；
+    // 找不到就退回「跟在来源那一行后面」，拆卷卡片等其它宿主仍可用。
+    const col = yearEl.closest('.editor-meta-col');
+    if (col) {
+        col.appendChild(host);
+        return host;
+    }
+    const row = yearEl.closest('div');
+    if (!row || !row.parentNode) return null;
     row.parentNode.insertBefore(host, row.nextSibling);
     return host;
 }
