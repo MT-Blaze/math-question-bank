@@ -170,3 +170,58 @@ def test_save_draft_writes_series_into_config():
     src = _read(LECTURE_JS)
     for field in ("series", "drawer", "year"):
         assert re.search(field + r"\s*:", src), f"config 缺少 {field} 写入"
+
+
+# ============ 知识块修订稿拼接 ============
+
+
+def test_note_key_has_single_builder():
+    """修订稿键必须只由 noteKey() 一处构造并与后端 note_key 同口径：
+    散落的字符串拼接曾因 topic_id 为 undefined 拼出「...:undefined」而读不回内容。"""
+    src = _read(LECTURE_JS)
+    assert "function noteKey(" in src
+    assert src.count("function noteKey(") == 1
+    # 旧的裸拼接口径不得残留
+    assert "':' + topicCfg.topic_id" not in src
+    assert "'knowledge:' + compulsory" not in src
+    # 转义用字符串拆分，不得引入后行断言
+    assert "(?<!" not in src
+
+
+def test_missing_topic_id_cannot_reach_or_silently_overwrite():
+    """考点标识缺失时：编辑入口拒绝、预览如实标注，而不是渲染成「待补充」诱使用户重写。"""
+    src = _read(LECTURE_JS)
+    assert "该考向缺少考点标识" in src
+    assert "if (!topicCfg.topic_id)" in src
+    assert "topicCfg.topic_id || ''" in src
+
+
+def test_unparsable_mindmap_does_not_leak_source():
+    """@mindmap 前缀的内容解析失败时不得回落到把原始 JSON 当正文渲染。"""
+    src = _read(LECTURE_JS)
+    assert "src.indexOf('@mindmap') === 0" in src
+    assert "思维导图数据无法解析" in src
+
+
+def test_preview_warns_when_section_missing():
+    """后端 section_found=False 时前端必须可见警示（与 missing_ids 同一口径）。"""
+    src = _read(LECTURE_JS)
+    assert "section_found" in src
+    assert "当前教材树中未找到该小节" in src
+
+
+def test_note_save_checks_http_status():
+    """修订稿 PUT 的 4xx/5xx 错误体同样是合法 JSON，必须先看 r.ok 再谈成功。"""
+    src = _read(LECTURE_JS)
+    assert "function putNote(" in src
+    # 保存路径不得再用裸 fetch + r.json()
+    assert "if (!ST.noteTarget.topic_id) payload.topic_id" not in src
+    assert "修订稿未读取成功" in src
+
+
+def test_topic_number_follows_outline():
+    """讲义正文与答案册的考向编号跟随大纲 t.no，与考向地图/选题面板同一口径。"""
+    src = _read(LECTURE_JS)
+    assert "function buildTopicNoMap(" in src
+    assert "topicNoById" in src
+    assert "'考向' + (idx + 1)" not in src

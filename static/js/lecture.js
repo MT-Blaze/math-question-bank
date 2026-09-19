@@ -20,7 +20,8 @@
     previewData: null,
     view: 'yuan',        // 当前打印视图：yuan 学生版 / jiexi 教师版 / daan 答案册
     yearFilter: '',      // 顶部届次筛选：'' 为全部（只显示最新架子）
-    knowledgeMind: null, // 当前小节思维导图知识梳理 {key,data,raw}
+    knowledgeMind: null, // 当前小节思维导图知识梳理 {data,raw}
+    topicNoById: {},     // 大纲考向 topic_id → 编号，讲义正文与考向地图同一口径
   };
 
   var ROLE_LABELS = { example: '例题', variant: '变式', practice: '趁热打铁', homework: '实战演练' };
@@ -258,12 +259,29 @@
       '</div>';
   }
 
+  /* 知识块修订稿键：必须与 mathbank/lecture_helper.note_key 逐字符同口径，
+     否则前端算出的键在 notes 里永远查不到。 */
+  function noteKey(type, compulsory, chapter, knowledge, topicId) {
+    var parts = [type, compulsory, chapter, knowledge];
+    if (topicId) parts.push(topicId);
+    return parts.map(function (p) {
+      var s = String(p == null ? '' : p);
+      if (s.indexOf(':') < 0 && s.indexOf('\\') < 0) return s;
+      return s.split('\\').join('\\\\').split(':').join('\\:');
+    }).join(':');
+  }
+
   function buildKnowledge(notes, compulsory, chapter, knowledge) {
-    var key = 'knowledge:' + compulsory + ':' + chapter + ':' + knowledge;
+    var key = noteKey('knowledge', compulsory, chapter, knowledge);
     var src = notes[key] || '';
-    var mm = parseMindmap(src);
-    if (mm) {
-      return buildMindmapSheets(mm, key, compulsory, chapter, knowledge, src);
+    if (src.indexOf('@mindmap') === 0) {
+      var mm = parseMindmap(src);
+      if (!mm) {
+        return '<div class="sheet" id="page-knowledge"><div class="chapter-info">' + esc(cleanChapterTitle(chapter)) + ' · ' + esc(knowledge) + '</div>' +
+          '<div class="section-title">知识梳理</div><div class="knowledge"><div class="kn-empty">' +
+          '（思维导图数据无法解析，已停止输出原始源码；请在工具栏「知识梳理」中修复后重新保存）</div></div></div>';
+      }
+      return buildMindmapSheets(mm, compulsory, chapter, knowledge, src);
     }
     var body = src || '<div class="kn-empty">（尚未编写知识梳理，点击工具栏「知识梳理」开始编辑）</div>';
     return '<div class="sheet" id="page-knowledge"><div class="chapter-info">' + esc(cleanChapterTitle(chapter)) + ' · ' + esc(knowledge) + '</div>' +
@@ -365,8 +383,8 @@
     return html;
   }
 
-  function buildMindmapSheets(data, key, compulsory, chapter, knowledge, raw) {
-    ST.knowledgeMind = { key: key, data: data, raw: raw };
+  function buildMindmapSheets(data, compulsory, chapter, knowledge, raw) {
+    ST.knowledgeMind = { data: data, raw: raw };
     var PAGE_BUDGET = 220;
     var pages = [];
     var cur = { branches: [], height: 0 };
@@ -513,16 +531,17 @@
       '<div class="q-body">' + content + '</div>' + ans + '</div>';
   }
 
-  function buildTopicSheet(topicCfg, idx, notes, compulsory, chapter, knowledge, sectionNo) {
-    var pitKey = 'pit:' + compulsory + ':' + chapter + ':' + knowledge + ':' + topicCfg.topic_id;
-    var methodKey = 'method:' + compulsory + ':' + chapter + ':' + knowledge + ':' + topicCfg.topic_id;
-    var pit = notes[pitKey];
-    var method = notes[methodKey];
+  function buildTopicSheet(topicCfg, idx, notes, compulsory, chapter, knowledge, topicNo) {
+    var tid = topicCfg.topic_id || '';
+    var pit = tid ? notes[noteKey('pit', compulsory, chapter, knowledge, tid)] : '';
+    var method = tid ? notes[noteKey('method', compulsory, chapter, knowledge, tid)] : '';
+    var pitEmpty = tid ? '<span class="km-empty">（待补充）</span>'
+      : '<span class="km-empty">（该考向缺少考点标识，修订稿无法定位，请重新加载小节后再编辑）</span>';
     var html = '<div class="sheet" data-answer-page="true"><div class="page-head"><span class="ph-title">' + esc(cleanChapterTitle(chapter)) + ' · ' + esc(knowledge) + '</span><span class="ph-quote"></span></div>';
-    html += '<div class="subsection-title">考向' + (idx + 1) + '　' + esc(topicCfg.name) + '</div>';
+    html += '<div class="subsection-title">考向' + (topicNo || (idx + 1)) + '　' + esc(topicCfg.name) + '</div>';
     html += '<div class="km-box">';
-    html += '<div class="km-item km-pit"><span class="km-label">易错点</span>' + (pit || '<span class="km-empty">（待补充）</span>') + '</div>';
-    html += '<div class="km-item km-method"><span class="km-label">解题方法</span>' + (method || '<span class="km-empty">（待补充）</span>') + '</div>';
+    html += '<div class="km-item km-pit"><span class="km-label">易错点</span>' + (pit || pitEmpty) + '</div>';
+    html += '<div class="km-item km-method"><span class="km-label">解题方法</span>' + (method || pitEmpty) + '</div>';
     html += '</div>';
     var ex = 0, practice = 0;
     var variantGroup = [];
@@ -548,7 +567,7 @@
     return html;
   }
 
-  function buildHomework(sectionNo) {
+  function buildHomework() {
     var items = ST.previewData.extra_ids || [];
     var html = '<div class="sheet" data-answer-page="true"><div class="page-head"><span class="ph-title">实战演练</span><span class="ph-quote"></span></div>';
     html += '<div class="subsection-title">实战演练</div>';
@@ -574,7 +593,7 @@
         for (var k = 0; k < ST.previewData.questions.length; k++) { if (ST.previewData.questions[k].id === item.question_id) { q = ST.previewData.questions[k]; break; } }
         if (!q) return;
         count++;
-        var label = '考向' + (idx + 1) + ' ' + roleVal(item.role) + ' ' + (item.role === 'example' ? '例' + count : item.role === 'variant' ? '变式' + count : item.role === 'practice' ? '趁热打铁' + count : '实战' + count);
+        var label = '考向' + topicNoOf(ST.topicNoById || {}, topicCfg, idx) + ' ' + roleVal(item.role) + ' ' + (item.role === 'example' ? '例' + count : item.role === 'variant' ? '变式' + count : item.role === 'practice' ? '趁热打铁' + count : '实战' + count);
         var ans = q.answer ? (window.parseMarkdownWithMath ? window.parseMarkdownWithMath(q.answer) : esc(q.answer)) : '';
         html += '<div class="ans-item"><span class="ans-tag">' + esc(label) + '</span>' + (ans || '<span class="text-slate-400">（暂无答案）</span>') + '</div>';
       });
@@ -590,18 +609,32 @@
     return html;
   }
 
+  /* 考向编号以大纲 t.no 为准，与「考向地图」和选题面板同一口径 */
+  function buildTopicNoMap(section) {
+    var map = {};
+    ((section && section.topics) || []).forEach(function (t, i) {
+      if (t && t.id) map[t.id] = t.no || (i + 1);
+    });
+    return map;
+  }
+
+  function topicNoOf(topicNoById, topicCfg, idx) {
+    return topicNoById[topicCfg.topic_id] || (idx + 1);
+  }
+
   function buildLectureHtml(data) {
     ST.previewData = data;
     var settings = data.settings || {};
     var section = data.section || {};
     var notes = data.notes || {};
+    ST.topicNoById = buildTopicNoMap(section);
     var title = settings.cover_title || cleanChapterTitle(section.chapter) || section.knowledge || '讲义';
     var body = '';
     body += buildCover(settings, title, '学生版');
     body += buildKnowledge(notes, section.compulsory, section.chapter, section.knowledge);
     body += buildMap(section);
     ST.topics.forEach(function (t, i) {
-      body += buildTopicSheet(t, i, notes, section.compulsory, section.chapter, section.knowledge, i + 1);
+      body += buildTopicSheet(t, i, notes, section.compulsory, section.chapter, section.knowledge, topicNoOf(ST.topicNoById, t, i));
     });
     body += buildHomework();
     body += buildAnswerBook();
@@ -755,6 +788,9 @@
         var missing = data.missing_ids || [];
         if (missing.length) {
           toast('有 ' + missing.length + ' 道编排题目已删除（#' + missing.join('、#') + '），请检查选题', 'error');
+        }
+        if (data.section_found === false) {
+          toast('当前教材树中未找到该小节，考向地图与易错点/解题方法会不完整，请检查活跃大纲', 'error');
         }
         var html = buildLectureHtml(data);
         var iframe = $('lecturePreview');
@@ -1114,28 +1150,36 @@
   }
 
   /* ---------------- 知识块编辑 ---------------- */
+  /* 弹窗回填失败不得静默：空 textarea + 保存 = 用空内容覆盖已存修订稿 */
+  function loadNoteIntoModal(query) {
+    fetch('/api/lecture/notes?' + query)
+      .then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      })
+      .then(function (rows) {
+        var ta = $('lectureNoteContent');
+        if (ta && rows && rows.length) ta.value = rows[0].content || '';
+      })
+      .catch(function (e) {
+        if (ST.noteTarget) ST.noteTarget.noteLoadFailed = true;
+        toast('读取已存修订稿失败（' + e.message + '），请勿直接清空保存', 'error');
+      });
+  }
+
   function editNote(type, topicIdx) {
     var cfg = collectConfig();
     if (!cfg.compulsory || !cfg.chapter || !cfg.knowledge) { toast('请先选择小节'); return; }
     var topicCfg = ST.topics[topicIdx];
     if (!topicCfg) { toast('该考向尚未初始化'); return; }
+    if (!topicCfg.topic_id) { toast('该考向缺少考点标识，请先重新加载小节后再编辑'); return; }
     ST.noteTarget = { type: type, topic_idx: topicIdx, topic_id: topicCfg.topic_id, name: topicCfg.name };
     var titleEl = $('lectureNoteModalTitle');
     if (titleEl) titleEl.textContent = '编辑' + (type === 'pit' ? '易错点' : '解题方法') + '：考向' + (topicIdx + 1) + ' ' + topicCfg.name;
     var ta = $('lectureNoteContent');
     if (ta) ta.value = '';
     // 读取已保存
-    var key = type + ':' + cfg.compulsory + ':' + cfg.chapter + ':' + cfg.knowledge + ':' + topicCfg.topic_id;
-    var body = { note_type: type, compulsory: cfg.compulsory, chapter: cfg.chapter, knowledge: cfg.knowledge, topic_id: topicCfg.topic_id };
-    fetch('/api/lecture/notes?note_type=' + type + '&compulsory=' + encodeURIComponent(cfg.compulsory) + '&chapter=' + encodeURIComponent(cfg.chapter) + '&knowledge=' + encodeURIComponent(cfg.knowledge) + '&topic_id=' + encodeURIComponent(topicCfg.topic_id))
-      .then(function (r) { return r.json(); })
-      .then(function (rows) {
-        if (rows && rows.length) {
-          var ta2 = $('lectureNoteContent');
-          if (ta2) ta2.value = rows[0].content || '';
-        }
-      })
-      .catch(function () {});
+    loadNoteIntoModal('note_type=' + type + '&compulsory=' + encodeURIComponent(cfg.compulsory) + '&chapter=' + encodeURIComponent(cfg.chapter) + '&knowledge=' + encodeURIComponent(cfg.knowledge) + '&topic_id=' + encodeURIComponent(topicCfg.topic_id));
     var modal = $('lectureNoteModal');
     if (modal) { modal.classList.remove('hidden'); modal.classList.add('flex'); }
     if (ta) ta.focus();
@@ -1149,24 +1193,36 @@
     if (titleEl) titleEl.textContent = '编辑知识梳理：' + cfg.chapter + ' · ' + cfg.knowledge;
     var ta = $('lectureNoteContent');
     if (ta) ta.value = '';
-    fetch('/api/lecture/notes?note_type=knowledge&compulsory=' + encodeURIComponent(cfg.compulsory) + '&chapter=' + encodeURIComponent(cfg.chapter) + '&knowledge=' + encodeURIComponent(cfg.knowledge))
-      .then(function (r) { return r.json(); })
-      .then(function (rows) {
-        if (rows && rows.length) {
-          var ta2 = $('lectureNoteContent');
-          if (ta2) ta2.value = rows[0].content || '';
-        }
-      })
-      .catch(function () {});
+    loadNoteIntoModal('note_type=knowledge&compulsory=' + encodeURIComponent(cfg.compulsory) + '&chapter=' + encodeURIComponent(cfg.chapter) + '&knowledge=' + encodeURIComponent(cfg.knowledge));
     var modal = $('lectureNoteModal');
     if (modal) { modal.classList.remove('hidden'); modal.classList.add('flex'); }
     if (ta) ta.focus();
+  }
+
+  /* 修订稿写入：4xx/5xx 的错误体也是合法 JSON，不看 r.ok 会把「保存被拒」
+     当成功并提示「下次生成自动复用」。 */
+  function putNote(payload) {
+    return fetch('/api/lecture/notes', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }).then(function (r) {
+      if (!r.ok) {
+        return r.json().catch(function () { return {}; }).then(function (b) {
+          throw new Error((b && b.detail) || ('HTTP ' + r.status));
+        });
+      }
+      return r.json();
+    });
   }
 
   function saveNote() {
     if (!ST.noteTarget) return;
     var cfg = collectConfig();
     var content = $('lectureNoteContent') ? $('lectureNoteContent').value : '';
+    if (ST.noteTarget.noteLoadFailed && !String(content).trim()) {
+      toast('修订稿未读取成功，不能保存空内容覆盖已存版本', 'error');
+      return;
+    }
     if (ST.noteTarget.type === 'mind-node') {
       if (!ST.knowledgeMind || !ST.knowledgeMind.data) { closeNoteModal(); return; }
       var node = mindNodeAt(ST.knowledgeMind.data, ST.noteTarget.mindPath);
@@ -1175,19 +1231,17 @@
       else node.ref[node.prop] = content;
       var serialized = '@mindmap\n' + JSON.stringify(ST.knowledgeMind.data, null, 1);
       ST.knowledgeMind.raw = serialized;
-      var payload = {
+      putNote({
         note_type: 'knowledge',
         compulsory: cfg.compulsory, chapter: cfg.chapter, knowledge: cfg.knowledge,
         content: serialized
-      };
-      fetch('/api/lecture/notes', {
-        method: 'PUT', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
       })
-        .then(function () { refreshPreview(); })
-        .catch(function (e) { toast('保存失败：' + e.message); });
-      closeNoteModal();
-      toast('知识块已保存，下次生成自动复用', 'success');
+        .then(function () {
+          closeNoteModal();
+          toast('知识块已保存，下次生成自动复用', 'success');
+          refreshPreview();
+        })
+        .catch(function (e) { toast('保存失败：' + e.message, 'error'); });
       return;
     }
     var payload = {
@@ -1195,12 +1249,8 @@
       compulsory: cfg.compulsory, chapter: cfg.chapter, knowledge: cfg.knowledge,
       content: content,
     };
-    if (ST.noteTarget.topic_id) payload.topic_id = ST.noteTarget.topic_id;
-    fetch('/api/lecture/notes', {
-      method: 'PUT', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    })
-      .then(function (r) { return r.json(); })
+    if (ST.noteTarget.type !== 'knowledge') payload.topic_id = ST.noteTarget.topic_id || '';
+    putNote(payload)
       .then(function () {
         closeNoteModal();
         toast('知识块已保存，下次生成自动复用', 'success');

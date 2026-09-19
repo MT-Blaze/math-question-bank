@@ -24,7 +24,7 @@ from main import (
 )
 
 from mathbank.math_markdown import compact_solution_markdown, normalize_question_math_markdown
-from mathbank.latex_normalize import normalize_content_for_latex_storage
+from mathbank.latex_normalize import normalize_for_storage
 
 # 一道题挂到这么多张配图基本可以断定归属出了偏差，导入后提请人工核对。
 _IMAGE_COUNT_REVIEW_THRESHOLD = 3
@@ -561,18 +561,21 @@ def post_process_pdf_parsed_questions(parsed_questions: list, paper_title: str, 
     else:
         print("[配图自检] 全部题目的配图归属未发现异常。")
 
-    # 8. 入库前 LaTeX 归一化（结构层一致）：三条录入路线（MinerU / 原生 / 视觉 OCR）
+    # 8. 入库前 LaTeX 归一化（结构层 + 字符层一致）：三条录入路线（MinerU / 原生 / 视觉 OCR）
     #    在这里把各自风格的原料统一成同一种 LaTeX 风味源码——图片 \\includegraphics{文件名}、
-    #    表格 tabular、选项 \\begin{choices}、加粗 \\textbf。此时图片收集/剥离（基于 URL
-    #    形态）已完成，image_paths 资源清单已生成，正文里只剩未归属内联图（含选项图）。
-    #    只动结构层，不动字符层（公式写法/空格/措辞），因为三条引擎本质看到的东西不同。
+    #    表格 tabular、选项 \\begin{choices}、加粗 \\textbf、填空 \\fillin，再补数学定界符
+    #    与压缩多余空行。此时图片收集/剥离（基于 URL 形态）已完成，image_paths 资源清单
+    #    已生成，正文里只剩未归属内联图（含选项图）。
+    #    必须与写库边界跑同一条链（normalize_for_storage，而非只做结构层）：拆卷卡片里
+    #    用户会手改文字，保存时边界再把同一条幂等链跑一遍，所以卡片预览必须等于入库结果；
+    #    否则同一次导入里「未改动的题」与「改过一个字的题」格式就不一致。
     for q in parsed_questions:
         q_type = q.get("question_type") or ""
         if q.get("content"):
-            q["content"] = normalize_content_for_latex_storage(q["content"], q_type)
+            q["content"] = normalize_for_storage(q["content"], q_type)
         if q.get("answer_markdown"):
             # 解析（answer）不是选项，不传 question_type，避免把解析里的「A．」误转选项。
-            q["answer_markdown"] = normalize_content_for_latex_storage(q["answer_markdown"])
+            q["answer_markdown"] = normalize_for_storage(q["answer_markdown"], is_answer=True)
 
     return parsed_questions
 
@@ -674,18 +677,8 @@ def parse_paper_text_internal(
         else:
             q["answer_markdown"] = ans.replace("[EXTRACTED_ORIGINAL]", "").strip()
 
-        # 后置清洗：模型偶尔漏写数学定界符，这里保守地给高置信度的裸公式补上 $...$。
-        # 必须在静默净化之后跑，避免改写被抹平的答案；已有定界符、锁定 id、
-        # 插图标记、表格/choices 环境与结构命令一律原样保留。
-        for field in ("content", "answer_markdown"):
-            value = q.get(field, "")
-            if isinstance(value, str) and value:
-                q[field] = normalize_question_math_markdown(value)
-
-        # 解析排版紧凑化：把单行 $$...$$ 降级为行内 $...$，避免前端把每个
-        # 推导式子渲染成居中独立行；题干（content）的独立公式是合理的，不动。
-        answer_value = q.get("answer_markdown", "")
-        if isinstance(answer_value, str) and answer_value:
-            q["answer_markdown"] = compact_solution_markdown(answer_value)
-
+    # ⚠️ 这里**不再**单独跑字符层补定界符与解析紧凑化：那两步已经并入
+    # normalize_for_storage，由紧随其后的 post_process 第 8 步与写库边界统一执行。
+    # 拆题阶段先跑字符层、写库时又只跑结构层，正是「同一写法两种入库源码」和
+    # 「管道表格被 $ 包死后丢行」的根因；模型漏掉的定界符由那条链负责补齐。
     return parsed_questions

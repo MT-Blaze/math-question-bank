@@ -19,6 +19,7 @@ from mathbank.lecture_helper import (
     load_cover_bg,
     load_quotes,
     note_key,
+    split_note_key,
 )
 
 router = APIRouter(tags=["lecture"])
@@ -85,8 +86,8 @@ def get_notes(
         return [row.to_dict() for row in rows]
 
     def _segment_matches(row: LectureNote) -> bool:
-        # note_key 格式：type:compulsory:chapter:knowledge[:topic_id]
-        parts = str(row.note_key).split(":", 4)
+        # note_key 格式：type:compulsory:chapter:knowledge[:topic_id]，段内分隔符已转义
+        parts = split_note_key(row.note_key)
         if compulsory and (len(parts) < 2 or parts[1] != compulsory):
             return False
         if chapter and (len(parts) < 3 or parts[2] != chapter):
@@ -116,6 +117,9 @@ def save_note(
     if not (compulsory and chapter and knowledge):
         raise HTTPException(status_code=400, detail="请先选择册次 / 章节 / 小节")
     topic_id = str(payload.get("topic_id") or "").strip()
+    if note_type != "knowledge" and not topic_id:
+        # 没有考向 ID 时键会退化成 4 段，多个考向将共写同一行并互相覆盖
+        raise HTTPException(status_code=400, detail="易错点/解题方法必须挂在具体考向下，请先重新加载小节")
     key = note_key(note_type, compulsory, chapter, knowledge, topic_id)
     content = str(payload.get("content") or "")
     row = db.query(LectureNote).filter(LectureNote.note_key == key).first()

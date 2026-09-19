@@ -157,7 +157,7 @@ from mathbank.latex_diagnostics import (
     merge_ai_latex_diagnostic,
 )
 
-from mathbank.math_markdown import normalize_question_math_markdown
+from mathbank import math_markdown as _math_markdown_mod
 
 
 from mathbank.ai_json import parse_ai_json
@@ -810,18 +810,13 @@ def upload_image(file: UploadFile = File(...)):
 
 
 def normalize_fillin_macro(text: str) -> str:
-    """将题干中的任何下划线格式（\\underline{...}、\\fillin[...]、连续划线 ___）一律统一规范化为最纯粹的 \\fillin 宏"""
-    if not text or not isinstance(text, str):
-        return text or ""
-    # 1. 替换连续下划线 ___ (3个及以上) 为 \fillin
-    text = re.sub(r'_{3,}', r'\\fillin', text)
-    # 2. 替换任何带参数的 \fillin[...] 为纯净的 \fillin
-    text = re.sub(r'\\fillin\s*\[[^\]]*?\](?:\[[^\]]*?\])?', r'\\fillin', text)
-    # 3. 替换任何形式的 \underline{...} 为纯净的 \fillin
-    text = re.sub(r'\\underline\s*\{[^}]*?\}', r'\\fillin', text)
-    # 4. 清理可能残留的额外右花括号 }
-    text = re.sub(r'\\fillin\}', r'\\fillin', text)
-    return text
+    """薄包装：实现已归位到 `mathbank.math_markdown`（入库归一化链的唯一来源）。
+
+    保留本名是为了 `scripts/migrate_fillin.py` 与既有 `from main import ...`
+    接缝继续生效；新代码请直接使用 `mathbank.latex_normalize.normalize_for_storage`。
+    """
+    return _math_markdown_mod.normalize_fillin_macro(text)
+
 
 
 load_or_init_metadata()

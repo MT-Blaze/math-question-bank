@@ -40,6 +40,14 @@ _PAGE_MARKER_RE = re.compile(
     r"<![^\n]{0,8}?MATHBANK_PDF_PAGE[^\n]{0,48}?-->[ \t]*\$?",
     re.IGNORECASE,
 )
+# 字面「反斜杠 + n」= AI/OCR 常把换行写成两个字符。判据用 `(?![a-z])`：LaTeX 以
+# `\n` 开头的真命令（`\nabla`、`\neq`、`\nu`、`\newline`、`\not`、`\nmid`）一律
+# 小写，必须原样保留；后面跟大写字母/数字/标点/空白时不可能是控制词，按换行还原。
+_LITERAL_NEWLINE_RE = re.compile(r"\\n(?![a-z])")
+# 管道表格整行判据必须与 latex_normalize._is_pipe_row 完全一致，否则「补定界符」会
+# 把 `| 数量 | 160 | x_1 |` 包成 `$| 数量 | 160 | x_1 |$`，让结构层再也认不出这是
+# 表格行 —— 表格会当场丢行（三列比较表尤甚）。
+_MD_PIPE_ROW_RE = re.compile(r"^\s*\|.*\|\s*$", re.MULTILINE)
 _NON_MATH_COMMANDS = {
     "begin",
     "bottomrule",
@@ -189,7 +197,11 @@ def _protect_non_candidates(value: str) -> tuple[str, Callable[[str], str]]:
     #    `\neq`、`\nu`、`\newline`、`\not`、`\nmid`）**一律小写**，所以「反斜杠+n+小写字母」
     #    才可能是真命令，必须原样保留；后面跟大写字母 / 数字 / 标点 / 空白时绝无可能是
     #    控制词，一律按换行还原。
-    protected = re.sub(r"\\n(?![a-z])", "\n", protected)
+    protected = _LITERAL_NEWLINE_RE.sub("\n", protected)
+    # 逐行保护管道表格行：必须在还原字面换行**之后**，否则字面 `\n` 拼成的多行表格会被
+    # 当成一整行吞掉；这些行的 `|` 是表格分隔符而不是绝对值，交给数学补定界符就会毁掉
+    # 结构层判据（表格丢行）。
+    protected = _replace_with_placeholders(protected, _MD_PIPE_ROW_RE, placeholders)
 
     def save(original: str) -> str:
         marker = f"\ue000{len(placeholders)}\ue001"
@@ -347,6 +359,87 @@ def _strip_page_markers(value: str) -> str:
     return cleaned
 
 
+def strip_page_markers(value: str) -> str:
+    """Public entry used by the storage chain: 页标必须在结构层之前就清掉。"""
+    return _strip_page_markers(value)
+
+
+def restore_literal_newlines(value: str) -> str:
+    """Public entry used by the storage chain: 字面「反斜杠 + n」还原成真换行。"""
+    return _LITERAL_NEWLINE_RE.sub("\n", value)
+
+
+def _strip_underline_group(text: str) -> str:
+    r"""把 \underline{...} 整体换成 \fillin，含嵌套花括号。
+
+    填空占位最常见的写法就是 ``\underline{\hspace{2em}}`` 这种带内层花括号的形态；
+    早先用 ``[^}]*?`` 只吃到第一个 ``}``，会在 \fillin 后面留下一个游离的 ``}``，
+    于是「手敲 \underline{\hspace{2em}}」与「直接写 \fillin」入库源码不一致。
+    """
+    out: list[str] = []
+    i = 0
+    token = "\\underline"
+    n = len(text)
+    while i < n:
+        if text.startswith(token, i):
+            j = i + len(token)
+            while j < n and text[j] in " \t":
+                j += 1
+            if j < n and text[j] == "{":
+                depth = 0
+                k = j
+                while k < n:
+                    if text[k] == "{":
+                        depth += 1
+                    elif text[k] == "}":
+                        depth -= 1
+                        if depth == 0:
+                            break
+                    k += 1
+                if k < n:
+                    out.append("\\fillin")
+                    i = k + 1
+                    continue
+        out.append(text[i])
+        i += 1
+    return "".join(out)
+
+
+def normalize_fillin_macro(text: str) -> str:
+    """将题干中的任何下划线格式（\\underline{...}、\\fillin[...]、连续划线 ___）一律统一规范化为最纯粹的 \\fillin 宏"""
+    if not text or not isinstance(text, str):
+        return text or ""
+    # 1. 替换连续下划线 ___ (3个及以上) 为 \fillin
+    text = _FILLIN_UNDERSCORE_RE.sub(r"\\fillin", text)
+    # 2. 替换任何带参数的 \fillin[...] 为纯净的 \fillin
+    text = re.sub(r'\\fillin\s*\[[^\]]*?\](?:\[[^\]]*?\])?', r'\\fillin', text)
+    # 3. 替换任何形式的 \underline{...} 为纯净的 \fillin
+    text = _strip_underline_group(text)
+    # 4. 清理可能残留的额外右花括号 }
+    text = re.sub(r'\\fillin\}', r'\\fillin', text)
+    return text
+
+
+def _canonicalize_fillin_outside_math(value: str) -> str:
+    """只在数学态之外执行 ``normalize_fillin_macro``。
+
+    已有 ``$...$`` / ``$$...$$`` / ``\\(...\\)`` 片段整体藏成占位符再原样还原，
+    从而保住「``$a_1 + a_{23} = ___$`` 一个字都不许动」这条既有约定。
+    """
+    hidden: list[tuple[str, str]] = []
+
+    def hide(span: str) -> str:
+        marker = f"\ue002{len(hidden)}\ue003"
+        hidden.append((marker, span))
+        return marker
+
+    scaffold = _replace_delimited_math(value, hide)
+    scaffold = normalize_fillin_macro(scaffold)
+    for marker, span in reversed(hidden):
+        scaffold = scaffold.replace(marker, span)
+    return scaffold
+
+
 def normalize_question_math_markdown(value: str) -> str:
     """Wrap high-confidence naked LaTeX/math runs in inline delimiters.
 
@@ -363,10 +456,14 @@ def normalize_question_math_markdown(value: str) -> str:
     # （提示词 4.1 明确要求「不得出现在输出题干中」，但模型偶尔照抄）。
     # 在补定界符**之前**清掉，否则注释里的连字符会被包成 `$-$`（见 _protect_non_candidates）。
     value = _strip_page_markers(value)
+    # 先把数学态**之外**的填空占位统一成 \fillin，再做保护与补定界符。
+    # ⚠️ 必须绕过已有 $...$ 片段（里面的 `___` 是数学下标，历史上就约定不动它），
+    # 又必须早于 _protect_non_candidates：\fillin 是受保护的结构命令，而 "____"、
+    # "\underline{...}" 当时还算普通数学字符。放晚会让「输入已有 \fillin」与
+    # 「输入是 ____」走出两条不同的补定界符判定（实测 `则 a*b = ____` 一处被包成
+    # $a\cdot b = \fillin$、另一处整段留在文本态），三条录入路径的入库源码永远对不齐。
+    value = _canonicalize_fillin_outside_math(value)
     protected, restore = _protect_non_candidates(value)
-    # 把 OCR/Word 里常见的 "____" 连续下划线统一成标准填空宏 \fillin，
-    # 避免前端把下划线当成普通文本渲染成 "_ _ _ _"。
-    protected = _FILLIN_UNDERSCORE_RE.sub(r"\\fillin", protected)
     repaired_lines = [
         _MATH_RUN_RE.sub(_wrap_math_run, line)
         for line in protected.splitlines(keepends=True)

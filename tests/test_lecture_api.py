@@ -467,3 +467,99 @@ def test_source_suggestions(client, db_session):
     assert set(body["exam_types"]) == {"三模", "期末", "高考"}
     # 卷名去重
     assert body["paper_titles"] == ["2026届哈三中高三三模"]
+
+
+# ============ 知识块修订稿拼接回归 ============
+
+_CH = "第一章 集合与常用逻辑用语"
+_KN = "1.1 集合的概念"
+
+
+def _pin_curriculum(monkeypatch):
+    """把活跃大纲钉成一个小节，考点 ID 可控，避免依赖真实元数据内容。"""
+    tree = {"必修一": {_CH: [{"name": _KN, "topics": [
+        {"id": "k_tree000001", "name": "集合判断", "no": 1},
+        {"id": "k_tree000002", "name": "元素与集合的关系", "no": 3},
+    ]}]}}
+    monkeypatch.setattr("mathbank.lecture_helper.get_current_curriculum", lambda: tree)
+
+
+def test_preview_collects_notes_for_outline_and_config_topic_ids(client, db_session, monkeypatch):
+    """草稿 config 里的 topic_id 是编排当时的快照，可能已不在当前大纲中；
+    修订稿收集必须覆盖 大纲 ∪ 编排，否则库里已有的内容会渲染成「待补充」。"""
+    _pin_curriculum(monkeypatch)
+    base = {"compulsory": "必修一", "chapter": _CH, "knowledge": _KN}
+    for tid in ("k_tree000001", "k_ghost00999"):
+        r = client.put("/api/lecture/notes", headers=_headers(),
+                       json={**base, "note_type": "pit", "topic_id": tid, "content": "<p>%s</p>" % tid})
+        assert r.status_code == 200
+
+    r = client.post("/api/lecture/preview", headers=_headers(), json={
+        **base, "topics": [{"topic_id": "k_ghost00999", "name": "已改名考点", "items": []}],
+        "extra_ids": [],
+    })
+    assert r.status_code == 200
+    body = r.json()
+    assert body["section_found"] is True
+    notes = body["notes"]
+    assert notes["pit:必修一:%s:%s:k_ghost00999" % (_CH, _KN)] == "<p>k_ghost00999</p>"
+    assert notes["pit:必修一:%s:%s:k_tree000001" % (_CH, _KN)] == "<p>k_tree000001</p>"
+
+
+def test_preview_marks_section_not_found(client, db_session, monkeypatch):
+    """小节在当前教材树里解析不到时如实返回 section_found=False，
+    让前端警示，而不是静默出一份易错点全空的讲义。"""
+    _pin_curriculum(monkeypatch)
+    r = client.post("/api/lecture/preview", headers=_headers(), json={
+        "compulsory": "选修二", "chapter": "没这门课", "knowledge": "没这节",
+        "topics": [], "extra_ids": [],
+    })
+    assert r.status_code == 200
+    assert r.json()["section_found"] is False
+
+
+def test_pit_and_method_notes_require_topic_id(client, db_session):
+    """易错点/解题方法缺考点 ID 时会退化成 4 段键，多个考向共写一行互相覆盖，必须拒写。"""
+    base = {"compulsory": "必修一", "chapter": _CH, "knowledge": _KN, "content": "<p>x</p>"}
+    for note_type in ("pit", "method"):
+        r = client.put("/api/lecture/notes", headers=_headers(), json={**base, "note_type": note_type})
+        assert r.status_code == 400, note_type
+        assert "考向" in r.json()["detail"]
+    # 知识梳理挂小节，本就不需要考点 ID
+    assert client.put("/api/lecture/notes", headers=_headers(),
+                      json={**base, "note_type": "knowledge"}).status_code == 200
+
+
+def test_note_key_escapes_colon_in_segments(client, db_session):
+    """段内出现分隔符时不得跨键误命中，也不得因此取不回自己的修订稿。"""
+    base = {"compulsory": "必修一", "chapter": "比与比例", "note_type": "knowledge"}
+    for knowledge in ("比", "a:b"):
+        r = client.put("/api/lecture/notes", headers=_headers(),
+                       json={**base, "knowledge": knowledge, "content": "<p>%s</p>" % knowledge})
+        assert r.status_code == 200, knowledge
+
+    r = client.get("/api/lecture/notes", params={**base, "chapter": "比与比例", "knowledge": "a"})
+    assert r.json() == []  # 半截前缀不得命中 "a:b"
+
+    r = client.get("/api/lecture/notes", params={**base, "chapter": "比与比例", "knowledge": "a:b"})
+    assert r.status_code == 200
+    assert [row["note_key"] for row in r.json()] == [r"knowledge:必修一:比与比例:a\:b"]
+
+    r = client.post("/api/lecture/preview", headers=_headers(), json={
+        "compulsory": "必修一", "chapter": "比与比例", "knowledge": "a:b",
+        "topics": [], "extra_ids": [],
+    })
+    assert r.json()["notes"][r"knowledge:必修一:比与比例:a\:b"] == "<p>a:b</p>"
+
+
+def test_preview_quote_pool_prefers_saved_settings(client, db_session):
+    """设置里保存的名言池必须真正生效，资源文件池只作首次播种与兜底。"""
+    r = client.put("/api/lecture/settings", headers=_headers(),
+                   json={"quote_pool": ["自定义名言 A", "自定义名言 B"]})
+    assert r.status_code == 200
+    r = client.post("/api/lecture/preview", headers=_headers(), json={
+        "compulsory": "必修一", "chapter": _CH, "knowledge": _KN,
+        "topics": [], "extra_ids": [],
+    })
+    assert r.status_code == 200
+    assert r.json()["quote_pool"] == ["自定义名言 A", "自定义名言 B"]

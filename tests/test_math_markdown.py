@@ -157,8 +157,13 @@ def test_converts_underscore_blank_to_fillin():
 # 2. 批量拆题落库前的接线
 # --------------------------------------------------------------------------
 
-def test_parse_paper_text_internal_repairs_naked_math():
-    """静默净化之后必须跑一次定界符修补，content 与 answer_markdown 都要覆盖。"""
+def test_parse_paper_text_internal_defers_repair_to_the_storage_chain():
+    """拆题阶段只做静默净化；补定界符由入库归一化链唯一负责。
+
+    历史上这里先跑字符层、写库时只跑结构层，导致「手敲题」与「拆卷题」的同一种
+    写法进库变成两种源码，并且字符层先跑会把管道表格行包成 `$| a | b |$` 让结构层
+    认不出表格而丢行。现在这条链只在真正落地时跑一次（post_process 末段 + 写库边界）。
+    """
     payload = {
         "questions": [
             {
@@ -167,33 +172,22 @@ def test_parse_paper_text_internal_repairs_naked_math():
             }
         ]
     }
-    response = MagicMock()
-    response.json.return_value = {
-        "choices": [{"message": {"content": json.dumps(payload, ensure_ascii=False)}}]
-    }
-    provider = SimpleNamespace(
-        api_key="test-key",
-        api_base="https://example.invalid",
-        model_name="mock-model",
-        provider_label="Mock",
-        credential_label="Mock Key",
-        reasoning_effort=None,
-        provider_code="mock",
-    )
-
-    with patch.object(parsing_pipeline, "resolve_text_provider", return_value=provider), \
-         patch.object(parsing_pipeline, "post_chat_completion", return_value=response), \
-         patch.object(parsing_pipeline, "get_metadata_cache", return_value={}), \
-         patch.object(parsing_pipeline, "get_current_curriculum", return_value={}), \
-         patch.object(parsing_pipeline, "build_pdf_parse_system_prompt", return_value="sys"):
-        result = parsing_pipeline.parse_paper_text_internal("原始试卷文本", True)
+    result = _parse_with_mock_payload(payload)
 
     assert len(result) == 1
-    assert "$x_1$" in result[0]["content"]
-    assert "$x_2$" in result[0]["content"]
-    # 静默净化先剥掉 [EXTRACTED_ORIGINAL]，再补定界符
+    # 静默净化仍然在这一层完成
     assert "[EXTRACTED_ORIGINAL]" not in result[0]["answer_markdown"]
-    assert "$\\alpha$" in result[0]["answer_markdown"]
+    # 但拆题阶段不再抢跑字符层
+    assert "$x_1$" not in result[0]["content"]
+    assert "$\\alpha$" not in result[0]["answer_markdown"]
+
+    # 落地时由唯一入口补齐：三条录入路径共用同一条链
+    from mathbank.latex_normalize import normalize_for_storage
+
+    stored_content = normalize_for_storage(result[0]["content"], "detailed_answer")
+    stored_answer = normalize_for_storage(result[0]["answer_markdown"], is_answer=True)
+    assert "$x_1$" in stored_content and "$x_2$" in stored_content
+    assert "$\\alpha$" in stored_answer
 
 
 def test_every_import_path_wires_the_repair_helper():
@@ -301,16 +295,8 @@ def test_every_import_path_wires_the_compaction_helper():
         assert hasattr(module, "compact_solution_markdown")
 
 
-def test_parse_paper_text_internal_compacts_answer_but_not_content():
-    """整卷导入后 answer_markdown 的 $$ 必须降级，而题干的独立公式保持原样。"""
-    payload = {
-        "questions": [
-            {
-                "content": "已知函数 $$f(x)=x^2$$ 的图像过原点",
-                "answer_markdown": "由 $$f'(x)=0$$ 得 $$x=0$$",
-            }
-        ]
-    }
+def _parse_with_mock_payload(payload):
+    """让 parse_paper_text_internal 返回指定 JSON，绕开真实模型调用。"""
     response = MagicMock()
     response.json.return_value = {
         "choices": [{"message": {"content": json.dumps(payload, ensure_ascii=False)}}]
@@ -324,21 +310,41 @@ def test_parse_paper_text_internal_compacts_answer_but_not_content():
         reasoning_effort=None,
         provider_code="mock",
     )
-
     with patch.object(parsing_pipeline, "resolve_text_provider", return_value=provider), \
          patch.object(parsing_pipeline, "post_chat_completion", return_value=response), \
          patch.object(parsing_pipeline, "get_metadata_cache", return_value={}), \
          patch.object(parsing_pipeline, "get_current_curriculum", return_value={}), \
          patch.object(parsing_pipeline, "build_pdf_parse_system_prompt", return_value="sys"):
-        result = parsing_pipeline.parse_paper_text_internal("原始试卷文本", True)
+        return parsing_pipeline.parse_paper_text_internal("原始试卷文本", True)
 
+
+def test_parse_paper_text_internal_compacts_answer_only_at_storage_time():
+    """整卷导入后 answer_markdown 的 $$ 必须降级，而题干的独立公式保持原样。
+
+    降级动作归属于入库归一化链（而不是拆题阶段），断言口径不变。
+    """
+    from mathbank.latex_normalize import normalize_for_storage
+
+    payload = {
+        "questions": [
+            {
+                "content": "已知函数 $$f(x)=x^2$$ 的图像过原点",
+                "answer_markdown": "由 $$f'(x)=0$$ 得 $$x=0$$",
+            }
+        ]
+    }
+    result = _parse_with_mock_payload(payload)
     assert len(result) == 1
+    # 拆题阶段原样交回，不抢跑
+    assert "$$f'(x)=0$$" in result[0]["answer_markdown"]
+
+    stored_content = normalize_for_storage(result[0]["content"], "detailed_answer")
+    stored_answer = normalize_for_storage(result[0]["answer_markdown"], is_answer=True)
     # 解析正文里的独立公式被降级为行内公式
-    assert "$f'(x)=0$" in result[0]["answer_markdown"]
-    assert "$x=0$" in result[0]["answer_markdown"]
-    assert "$$" not in result[0]["answer_markdown"]
+    assert "$f'(x)=0$" in stored_answer and "$x=0$" in stored_answer
+    assert "$$" not in stored_answer
     # 题干的独立公式属于正常排版，不得被降级
-    assert "$$f(x)=x^2$$" in result[0]["content"]
+    assert "$$f(x)=x^2$$" in stored_content
 
 
 def test_tikz_content_still_drops_duplicate_bitmap_images():

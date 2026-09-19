@@ -66,12 +66,46 @@ def load_cover_bg() -> dict:
     return _cover_bg_cache
 
 
+def _esc_key_seg(seg) -> str:
+    """转义键段里的分隔符，保证 ``split_note_key`` 能无损反解。
+
+    段内不含 ``:`` 与 ``\\`` 时原样返回，旧库里的键因此不受影响。
+    """
+    text = str(seg or "")
+    if ":" in text or "\\" in text:
+        text = text.replace("\\", "\\\\").replace(":", "\\:")
+    return text
+
+
 def note_key(note_type: str, compulsory: str, chapter: str, knowledge: str, topic_id: str = "") -> str:
     """知识块修订稿唯一键。知识梳理挂小节，易错点/解题方法挂考向。"""
     parts = [note_type, compulsory, chapter, knowledge]
     if topic_id:
         parts.append(topic_id)
-    return ":".join(parts)
+    return ":".join(_esc_key_seg(p) for p in parts)
+
+
+def split_note_key(key) -> list:
+    """把 ``note_key`` 反解回各段（``\\:`` → ``:``，``\\\\`` → ``\\``）。"""
+    parts: list[str] = []
+    buf: list[str] = []
+    text = str(key or "")
+    index = 0
+    while index < len(text):
+        ch = text[index]
+        if ch == "\\" and index + 1 < len(text):
+            buf.append(text[index + 1])
+            index += 2
+            continue
+        if ch == ":":
+            parts.append("".join(buf))
+            buf = []
+            index += 1
+            continue
+        buf.append(ch)
+        index += 1
+    parts.append("".join(buf))
+    return parts
 
 
 def get_or_create_settings(db: Session) -> LectureSetting:
@@ -109,12 +143,21 @@ def find_section(compulsory: str, chapter: str, knowledge: str) -> Optional[dict
 
 
 def collect_notes(db: Session, compulsory: str, chapter: str, knowledge: str, topic_ids: list) -> dict:
-    """批量取知识块修订稿：知识梳理 + 各考向的易错点/解题方法。"""
+    """批量取知识块修订稿：知识梳理 + 各考向的易错点/解题方法。
+
+    缺失或重复的 topic_id 在这里被剔除，避免拼出「...:None」这类永远
+    命中不了的键，也让同一考向只查一次。
+    """
     keys = [note_key("knowledge", compulsory, chapter, knowledge)]
-    for tid in topic_ids:
-        keys.append(note_key("pit", compulsory, chapter, knowledge, tid))
-        keys.append(note_key("method", compulsory, chapter, knowledge, tid))
-    rows = db.query(LectureNote).filter(LectureNote.note_key.in_(keys)).all() if keys else []
+    seen = set()
+    for tid in (topic_ids or []):
+        clean = str(tid or "").strip()
+        if not clean or clean in seen:
+            continue
+        seen.add(clean)
+        keys.append(note_key("pit", compulsory, chapter, knowledge, clean))
+        keys.append(note_key("method", compulsory, chapter, knowledge, clean))
+    rows = db.query(LectureNote).filter(LectureNote.note_key.in_(keys)).all()
     return {row.note_key: row.content for row in rows}
 
 
@@ -131,9 +174,29 @@ def build_preview(
     topics: 编排结果 [{topic_id, name, items:[{question_id, role}]}]
     extra_ids: 实战演练/跨考向题目 id 列表
     """
-    section = find_section(compulsory, chapter, knowledge) or {"name": knowledge, "topics": []}
-    all_topic_ids = [t.get("id") for t in (section.get("topics") or []) if isinstance(t, dict) and t.get("id")]
-    notes = collect_notes(db, compulsory, chapter, knowledge, all_topic_ids)
+    found = find_section(compulsory, chapter, knowledge)
+    # 小节在当前教材树里找不到时照常出稿，但必须把事实交给前端如实提示，
+    # 否则整份讲义的易错点/解题方法会静默变成「（待补充）」
+    section_found = found is not None
+    section = found or {"name": knowledge, "topics": []}
+    tree_topic_ids = [
+        t.get("id") for t in (section.get("topics") or [])
+        if isinstance(t, dict) and t.get("id")
+    ]
+    # 修订稿按 topic_id 定位，而草稿 config 里的 topic_id 是编排当时的快照：
+    # 换过教材树、考点被删除重建或移到别的小节之后，它与当前大纲不再相等。
+    # 只按大纲查会让库里已有的修订稿被当成没写过，因此取两者并集。
+    config_topic_ids = [
+        t.get("topic_id") for t in (topics or [])
+        if isinstance(t, dict) and t.get("topic_id")
+    ]
+    notes = collect_notes(
+        db,
+        compulsory,
+        chapter,
+        knowledge,
+        list(dict.fromkeys([*tree_topic_ids, *config_topic_ids])),
+    )
 
     # 题目详情
     qids = []
@@ -182,8 +245,9 @@ def build_preview(
                 "sources": sources_map.get(q.id, []),
             })
 
+    settings = get_or_create_settings(db).to_dict()
     return {
-        "settings": get_or_create_settings(db).to_dict(),
+        "settings": settings,
         "section": {
             "compulsory": compulsory,
             "chapter": chapter,
@@ -195,12 +259,15 @@ def build_preview(
                 if isinstance(t, dict)
             ],
         },
+        # 当前教材树里是否解析到该小节：False 时考向地图与易错点必然不完整
+        "section_found": section_found,
         "notes": notes,
         "topics": topics or [],
         "extra_ids": extra_ids or [],
         "questions": questions,
         # 编排/实战演练中引用但库中已不存在的题目 ID（前端据此提示）
         "missing_ids": missing_ids,
-        "quote_pool": load_quotes(),
+        # 用户在设置里改过的名言池优先，资源文件池只作兜底
+        "quote_pool": settings.get("quote_pool") or load_quotes(),
         "cover_bg": load_cover_bg(),
     }

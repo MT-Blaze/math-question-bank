@@ -1,13 +1,16 @@
-"""入库前 LaTeX 归一化（三条 PDF 录入路线的共享结构层）。
+"""入库前 LaTeX 归一化（三条录入路径的共享汇合点）。
 
-目的：让 MinerU / 原生文字公式提取 / 全图视觉 OCR 三条路线在「入库」这一步
-把各自风格的原料统一成同一种 LaTeX 风味的结构化源码，做到「源码一致」而非
-「渲染一致」。只动结构层（图片 / 表格 / 选项 / 加粗），不动字符层（公式写法、
-空格、措辞）——字符层三条引擎本质看到的东西不同，强制统一只会引入新误差。
+目的：让「编辑器手敲/单题 OCR」「试卷拆解导入（MinerU / 原生文字公式提取 / 全图
+视觉 OCR）」「二次编辑保存」这三条路径在**入库**这一步产出完全一致的 LaTeX 风味
+源码——做到「源码一致」而非「渲染一致」。统一入口是 ``normalize_for_storage``，
+它同时负责结构层（图片 / 表格 / 选项 / 加粗 / \\fillin）与字符层（补 ``$`` 定界符、
+``*`` -> ``\\cdot``、``$$`` 降级、多余空行压缩）。
 
 设计要点：
-- 本模块**只在 post_process 的最末尾调用**，彼时图片收集/剥离（基于 URL 形态）
-  已全部完成，image_paths 资源清单已生成，正文里只剩未归属的内联图（含选项图）。
+- 本模块的两个入口都在**图片收集/剥离之后**调用（``post_process`` 最末尾与写库
+  边界），彼时 image_paths 资源清单已生成，正文里只剩未归属的内联图（含选项图）。
+- ``normalize_for_storage`` 必须幂等：写库边界与 post_process 都会调用它，且题目
+  二次保存时会再走一遍，任何一次都必须字节不变，否则同一道题会被越改越走形。
 - 图片一律写成 ``\\includegraphics[选项]{文件名}``（只留 basename，不写路径）：
   路径由 questions.image_paths 资源清单决定，搬家也不怕断链。
 - 选项图必须保持内联（0.42\\linewidth），不能变成居中块，否则 exam-zh 横排废掉。
@@ -15,6 +18,14 @@
 import os
 import re
 from html.parser import HTMLParser
+
+from mathbank.math_markdown import (
+    compact_solution_markdown,
+    normalize_fillin_macro,
+    normalize_question_math_markdown,
+    restore_literal_newlines,
+    strip_page_markers,
+)
 
 # ---------------------------------------------------------------------------
 # 图片：Markdown / LaTeX 两种形态 -> \\includegraphics{文件名}
@@ -412,3 +423,45 @@ def normalize_content_for_latex_storage(md: str, question_type: str = "") -> str
     md = latexify_choices(md, question_type)  # 选项：纯文本/分行图 -> choices 环境
     md = latexify_bold(md)           # 加粗：**x** -> textbf
     return md
+
+
+# ---------------------------------------------------------------------------
+# 唯一入库归一化入口（三条录入路径在此汇合）
+# ---------------------------------------------------------------------------
+def normalize_for_storage(value: str, question_type: str = "", is_answer: bool = False) -> str:
+    """入库前对题干/解析执行的**唯一**完整归一化链，顺序即语义，不可调换。
+
+    三条录入路径（① 编辑器手敲/单题 OCR、② 试卷拆解卡片、③ 二次编辑保存）
+    都必须只经这一条链得到入库源码，因此要求它**幂等**：同一段文字无论是原始
+    形态还是已经被本函数处理过的形态，再过一遍都必须字节不变。这样卡片里手动
+    改过的一个字、草稿箱重新保存、或对已入库题目再保存，都不会让格式漂移。
+
+    顺序理由：
+    1. 字面「反斜杠 + n」与页标必须先还原/清除 —— 两者都会骗过后面的行级判据。
+    2. \\fillin 规范化必须先于字符层：字符层把 ``\\fillin`` 当成结构命令整体保护，
+       而 ``____`` 会被它就地换成 ``\\fillin`` 后再判断，两种输入形态因此必须先进到
+       同一形态，否则「手敲 ____」与「卡片里留 ____」会得到不同的 ``$`` 包裹结果。
+    3. **结构层必须先于字符层**：字符层给裸公式补 ``$`` 时若表格还是管道文本形态，
+       整行会被包成 ``$| a | b |$``，结构层就再也认不出这是表格行（表格丢行）。
+       字符层认识 tabular/choices/includegraphics 并整体保护它们。
+    4. ``$$..$$`` 降级与多余空行压缩只属于解析；题干的独立公式是合理的。
+
+    ⚠️ 本函数必须**只在真正要落地的时候跑**（``post_process`` 末段与写库边界），
+    任何录入路径都不许在它之前单独跑其中的某一步：这条链只对「自己的输出」幂等
+    （``T(T(x)) == T(x)``），并不对别人的半成品保证合流。历史上正是拆题阶段先跑了
+    字符层、写库时又只跑结构层，才让手敲题与拆卷题的同一种写法进了库变成两种源码。
+    """
+    if not value or not isinstance(value, str):
+        return value or ""
+    value = restore_literal_newlines(value)
+    value = strip_page_markers(value)
+    value = normalize_fillin_macro(value)
+    value = normalize_content_for_latex_storage(value, question_type)
+    value = normalize_question_math_markdown(value)
+    if is_answer:
+        value = compact_solution_markdown(value)
+    else:
+        # 题干与解析共用同一条空行口径：3 个以上换行 = 一个自然段，压回 \n\n。
+        value = re.sub(r"\n{3,}", "\n\n", value)
+    return value
+

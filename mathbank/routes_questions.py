@@ -86,7 +86,7 @@ from mathbank.question_metadata import (
     record_import_batch_question,
     record_tikz_versions,
 )
-from mathbank.latex_normalize import normalize_content_for_latex_storage
+from mathbank.latex_normalize import normalize_for_storage
 
 router = APIRouter()
 
@@ -1077,16 +1077,18 @@ def create_question(
             promotion_log=asset_promotions,
         )
 
-        # 结构归一化：手动录入 / 解析卡保存都经此统一成 LaTeX 风味源码
-        # （图片 \\includegraphics{文件名}、表格 tabular、选项 choices、加粗 textbf），
-        # 保证任何路线入库源码一致。该步骤幂等，解析卡经 post_process 已归一化的再走一遍也安全。
+        # 结构归一化：三条录入路径（编辑器手敲/单题 OCR、试卷拆解卡片、二次编辑保存）
+        # 在写库这一步统一走 normalize_for_storage —— 它同时负责结构层（图片 \\includegraphics、
+        # 表格 tabular、选项 choices、加粗 textbf、填空 \\fillin）与字符层（补 $ 定界符、
+        # * -> \\cdot、$$ 降级、多余空行压缩），且幂等，所以卡片里手改过的文字、草稿箱再保存
+        # 都不会让入库源码走形。解析卡在 post_process 里已经跑过同一条链，这里再过一遍是恒等。
         # 先用原文抽选项（options 字段认得「A．」行，不认 \\begin{choices}）。
         # content_for_options / answer_markdown_raw 是归一化前的原文，供查重指纹使用
         # （build_question_fingerprint 内部会再归一化做哈希；图片可见性判定也依赖原文）。
         content_for_options = content
         answer_markdown_raw = answer_markdown
-        content = normalize_content_for_latex_storage(content, question_type)
-        answer_markdown = normalize_content_for_latex_storage(answer_markdown)
+        content = normalize_for_storage(content, question_type)
+        answer_markdown = normalize_for_storage(answer_markdown, is_answer=True)
 
         # 1. Fallback if third level is empty, default to chapter
         if not category_knowledge and category_chapter:
@@ -1341,16 +1343,18 @@ def update_question(
             promotion_log=asset_promotions,
         )
 
-        # 结构归一化：手动录入 / 解析卡保存都经此统一成 LaTeX 风味源码
-        # （图片 \\includegraphics{文件名}、表格 tabular、选项 choices、加粗 textbf），
-        # 保证任何路线入库源码一致。该步骤幂等，解析卡经 post_process 已归一化的再走一遍也安全。
+        # 结构归一化：三条录入路径（编辑器手敲/单题 OCR、试卷拆解卡片、二次编辑保存）
+        # 在写库这一步统一走 normalize_for_storage —— 它同时负责结构层（图片 \\includegraphics、
+        # 表格 tabular、选项 choices、加粗 textbf、填空 \\fillin）与字符层（补 $ 定界符、
+        # * -> \\cdot、$$ 降级、多余空行压缩），且幂等，所以卡片里手改过的文字、草稿箱再保存
+        # 都不会让入库源码走形。解析卡在 post_process 里已经跑过同一条链，这里再过一遍是恒等。
         # 先用原文抽选项（options 字段认得「A．」行，不认 \\begin{choices}）。
         # content_for_options / answer_markdown_raw 是归一化前的原文，供查重指纹使用
         # （build_question_fingerprint 内部会再归一化做哈希；图片可见性判定也依赖原文）。
         content_for_options = content
         answer_markdown_raw = answer_markdown
-        content = normalize_content_for_latex_storage(content, question_type)
-        answer_markdown = normalize_content_for_latex_storage(answer_markdown)
+        content = normalize_for_storage(content, question_type)
+        answer_markdown = normalize_for_storage(answer_markdown, is_answer=True)
 
         # 1. Fallback if third level is empty, default to chapter
         if not category_knowledge and category_chapter:
