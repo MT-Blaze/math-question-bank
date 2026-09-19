@@ -25,6 +25,11 @@ def _run_node_script(script: str) -> subprocess.CompletedProcess:
     extracted JS payload to ``node -e`` fails with WinError 206 (filename or
     extension too long).  Writing the script to a temp file removes that limit
     without weakening the regression in any way.
+
+    ``encoding="utf-8"`` is not cosmetic: node prints UTF-8, and on a CP936
+    console the reader thread dies with UnicodeDecodeError, leaving
+    ``result.stdout`` as ``None`` — the assertion then reads like a broken test
+    instead of a broken frontend.
     """
 
     node = shutil.which("node")
@@ -39,6 +44,8 @@ def _run_node_script(script: str) -> subprocess.CompletedProcess:
             [node, handle.name],
             cwd=PROJECT_ROOT,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             capture_output=True,
             check=False,
         )
@@ -1813,3 +1820,174 @@ def test_preview_illustration_tikz_entry_is_dom_appended_not_sanitized_away():
     call_index = editor_source.index("decoratePreviewIllustrationButtons(container);")
     adapt_index = editor_source.index("adaptChoicesGridLayout(container);", decorator_end)
     assert adapt_index < call_index
+
+
+def test_editor_source_chips_render_and_delete_one_source():
+    """「已存来源」chips 必须真在 DOM 上可点，且删除后主来源跟着换。
+
+    内联七字段只能改写主来源，第 2..N 条此前既看不见也删不掉（多来源来自查重
+    「并入已有题」），删掉弹窗旧实现后更没有入口。本用例用最小 DOM 桩真跑一遍
+    渲染 + 删除，不用文本断言糊过去。
+    """
+
+    editor_source = _read(STATIC_JS_DIR / "editor.js")
+    start = editor_source.index("var EDITOR_GRADE_LABELS")
+    end = editor_source.index("window.applyEditorSourceFields = applyEditorSourceFields;", start)
+    source = editor_source[start:end]
+    for token in (
+        "function renderEditorSourceChips(",
+        "function buildEditorSourceChip(",
+        "function removeEditorSourceAt(",
+        "function setSelectWithFallback(",
+    ):
+        assert token in source, token
+    # 来源文本是用户可控内容：只能 createElement + textContent，不得走 innerHTML
+    chips_start = source.index("function editorSourceChipsHost(")
+    assert "innerHTML" not in source[chips_start:]
+
+    script = """
+class El {
+  constructor(tag, id) {
+    this.tagName = String(tag || 'DIV').toUpperCase();
+    this._id = ''; this.nodes = []; this._text = ''; this.attrs = {};
+    this.listeners = {}; this.hidden = false; this.parentNode = null;
+    this.className = ''; this.type = ''; this.title = ''; this._value = '';
+    if (id) this.id = id;
+  }
+  get id() { return this._id; }
+  set id(v) { this._id = v; if (v) registry[v] = this; }
+  get options() { return this.tagName === 'SELECT' ? this.nodes : undefined; }
+  get children() { return this.nodes; }
+  get firstChild() { return this.nodes[0] || null; }
+  get value() { return this._value; }
+  set value(v) {
+    const want = v === null || v === undefined ? '' : String(v);
+    if (this.tagName === 'SELECT') {
+      // 浏览器语义：值不在 option 列表里就回落成空 —— 静默丢数据正是从这里进来的
+      this._value = this.nodes.some(function (o) { return o.value === want; }) ? want : '';
+    } else { this._value = want; }
+  }
+  get textContent() {
+    return this.nodes.length ? this.nodes.map(function (n) { return n.textContent || ''; }).join('') : this._text;
+  }
+  set textContent(v) { this._text = String(v); this.nodes = []; }
+  set innerHTML(v) { throw new Error('来源 chips 不得使用 innerHTML'); }
+  appendChild(n) { this.nodes.push(n); n.parentNode = this; return n; }
+  insertBefore(n, ref) {
+    if (!n) return n;
+    const i = ref ? this.nodes.indexOf(ref) : -1;
+    if (i < 0) this.nodes.push(n); else this.nodes.splice(i, 0, n);
+    n.parentNode = this; return n;
+  }
+  setAttribute(k, v) { this.attrs[k] = String(v); }
+  getAttribute(k) { return k in this.attrs ? this.attrs[k] : null; }
+  addEventListener(t, fn) { (this.listeners[t] = this.listeners[t] || []).push(fn); }
+  dispatch(t) { (this.listeners[t] || []).forEach(function (fn) { fn(); }); }
+  click() { this.dispatch('click'); }
+  closest() { return this.parentNode; }
+}
+class Opt {
+  constructor(v, t) { this.value = v; this.textContent = t === undefined ? v : t; this.parentNode = null; }
+}
+const registry = {};
+function el(tag, id) { const e = new El(tag, id); if (id) registry[id] = e; return e; }
+function select(id, label, items, custom) {
+  const s = el('SELECT', id);
+  s.appendChild(new Opt('', label));
+  (items || []).forEach(function (v) { s.appendChild(new Opt(v, v)); });
+  if (custom) s.appendChild(new Opt('__custom__', '＋ 自定义…'));
+  return s;
+}
+const metaRow = el('DIV', 'metaFullRow');
+const row = el('DIV');
+metaRow.appendChild(row);
+[
+  select('editSrcYear', '年份', ['2023', '2024', '2025', '2026']),
+  select('editSrcSemester', '学段', ['上', '下']),
+  select('editSrcRegion', '学校', ['哈三中'], true),
+  select('editSrcExamType', '类型', ['高考', '期末']),
+  el('INPUT', 'editSrcPaperTitle'),
+  el('INPUT', 'editSource'),
+  select('editApplicableGrade', '年级', ['g1']),
+].forEach(function (n) { row.appendChild(n); });
+globalThis.document = {
+  getElementById: function (id) { return registry[id] || null; },
+  createElement: function (tag) { return tag === 'OPTION' ? new Opt('') : new El(tag); },
+};
+globalThis.window = globalThis;
+window.EditorSources = [];
+window.confirm = function () { return true; };
+function fillEditorSrcProvince() {}
+function fillEditorSrcCity() {}
+function fillEditorSrcSchoolSelect() {}
+function renderEditorPaperMeta() {}
+""" + source + """
+const out = {};
+const year = document.getElementById('editSrcYear');
+const region = document.getElementById('editSrcRegion');
+
+// —— 1) 主来源的学校不在词库里：同步后不得被回落成空
+window.EditorSources = [
+  { year: '2023', region: '哈三中', exam_type: '期末', paper_title: '2023哈三中期末' },
+  { year: '2016', region: '南溪一中', exam_type: '高考', paper_title: '2016宜宾期末' },
+];
+renderSourceChips();
+out.mainFieldsKept = year.value === '2016' && region.value === '南溪一中';
+out.tailOptions = region.options.map(function (o) { return o.value; }).slice(-2);
+
+const host = document.getElementById('editorSourceChips');
+out.hostInMetaRow = host.parentNode === metaRow;
+out.chipLabels = host.children.map(function (c) { return c.firstChild.textContent; });
+out.delAria = host.children.map(function (c) { return c.nodes[1].getAttribute('aria-label'); });
+out.mainBadge = host.children[0].className.indexOf('is-main') >= 0;
+
+// —— 2) 点 × 删掉主来源：剩下那条升为主来源，字段与隐藏域一起跟随
+host.children[0].nodes[1].click();
+out.yearsAfterDelete = window.EditorSources.map(function (s) { return s.year; });
+out.fieldsAfterDelete = year.value + '|' + region.value;
+out.hiddenAfterDelete = document.getElementById('editSource').value;
+out.labelsAfterDelete = document.getElementById('editorSourceChips').children.map(function (c) { return c.firstChild.textContent; });
+
+// —— 3) 取消确认时一条都不能少
+window.EditorSources = [
+  { year: '2023', region: '哈三中', exam_type: '三模' },
+  { year: '2024', region: '师大附中', exam_type: '期末' },
+];
+renderSourceChips();
+window.confirm = function () { return false; };
+document.getElementById('editorSourceChips').children[0].nodes[1].click();
+out.cancelledCount = window.EditorSources.length;
+
+// —— 4) 内容没变就不得重建 DOM（否则内联字段每敲一个字都会抢走焦点）
+window.confirm = function () { return true; };
+renderSourceChips();
+const before = document.getElementById('editorSourceChips').children[0];
+renderEditorSourceChips();
+out.rebuildSkipped = document.getElementById('editorSourceChips').children[0] === before;
+
+console.log(JSON.stringify(out));
+"""
+    result = _run_node_script(script)
+    assert result.returncode == 0, result.stderr
+
+    import json
+
+    out = json.loads(result.stdout.strip().splitlines()[-1])
+    assert out["mainFieldsKept"] is True, out
+    assert out["tailOptions"] == ["南溪一中", "__custom__"], out   # 补的选项插在「自定义」之前
+    assert out["hostInMetaRow"] is True, out
+    assert out["mainBadge"] is True, out
+    # 排序口径与后端一致：高考 > 模考 > 联考 > 校考/期末，同级别年份新在前
+    assert out["chipLabels"] == [
+        "主来源 · 2016年南溪一中高考",
+        "2023年哈三中期末",
+    ], out["chipLabels"]
+    assert out["delAria"][0].startswith("删除来源："), out["delAria"]
+
+    assert out["yearsAfterDelete"] == ["2023"], out
+    assert out["fieldsAfterDelete"] == "2023|哈三中", out
+    assert out["hiddenAfterDelete"] == "2023年哈三中期末", out
+    assert out["labelsAfterDelete"] == ["主来源 · 2023年哈三中期末"], out
+
+    assert out["cancelledCount"] == 2, out
+    assert out["rebuildSkipped"] is True, out

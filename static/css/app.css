@@ -1874,3 +1874,93 @@ main {
 .dark .md-table tbody tr:hover {
     background: rgba(51, 65, 85, 0.35);
 }
+
+
+/* ============ 录入区「已存来源」chips ============
+   内联七字段只能改写主来源，第 2..N 条靠这一行列出来并可单条删除。
+   节点全部由 editor.js 的 createElement + textContent 构建（来源文本用户可控），
+   样式集中在这里，不用内联 style。 */
+.editor-source-chips {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.35rem;
+    margin: 0.3rem 0 0.1rem;
+}
+
+.editor-source-chips[hidden] {
+    display: none;
+}
+
+.editor-source-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.15rem;
+    max-width: 100%;
+    padding: 0.1rem 0.2rem 0.1rem 0.55rem;
+    border: 1px solid #cbd5e1;
+    border-radius: 9999px;
+    background: rgba(241, 245, 249, 0.7);
+    font-size: 11px;
+    line-height: 1.6;
+    color: #475569;
+}
+
+.editor-source-chip.is-main {
+    border-color: rgba(124, 58, 237, 0.45);
+    background: rgba(124, 58, 237, 0.08);
+    color: #4c1d95;
+    font-weight: 600;
+}
+
+.editor-source-chip-text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 22rem;
+}
+
+.editor-source-chip-del {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 32px;
+    min-height: 32px;
+    margin: -8px -4px -8px 0;
+    border: 0;
+    border-radius: 9999px;
+    background: transparent;
+    color: #94a3b8;
+    font-size: 15px;
+    line-height: 1;
+    cursor: pointer;
+    transition: color 0.2s ease, background-color 0.2s ease;
+}
+
+.editor-source-chip-del:hover,
+.editor-source-chip-del:focus-visible {
+    color: #b91c1c;
+    background: rgba(239, 68, 68, 0.12);
+}
+
+.dark .editor-source-chip {
+    border-color: #475569;
+    background: rgba(30, 41, 59, 0.55);
+    color: #cbd5e1;
+}
+
+.dark .editor-source-chip.is-main {
+    border-color: rgba(167, 139, 250, 0.5);
+    background: rgba(124, 58, 237, 0.22);
+    color: #ede9fe;
+}
+
+.dark .editor-source-chip-del {
+    color: #64748b;
+}
+
+.dark .editor-source-chip-del:hover,
+.dark .editor-source-chip-del:focus-visible {
+    color: #fca5a5;
+    background: rgba(239, 68, 68, 0.18);
+}

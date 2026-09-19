@@ -3326,6 +3326,7 @@ function editorMainSource(arr) {
 
 function renderSourceChips() {
     syncEditorSourceFields();
+    renderEditorSourceChips();
 }
 
 // 单题来源 = 整卷式五字段（年份/省份/城市/学校/考试类型），无弹窗。
@@ -3343,10 +3344,10 @@ function syncEditorSourceFields() {
     const tEl = document.getElementById('editSrcExamType');
     const sEl = document.getElementById('editSrcSemester');
     const ptEl = document.getElementById('editSrcPaperTitle');
-    if (yEl) yEl.value = main ? String(main.year || '') : '';
-    if (rEl) rEl.value = main ? String(main.region || '') : '';
-    if (tEl) tEl.value = main ? String(main.exam_type || '') : '';
-    if (sEl) sEl.value = main ? String(main.semester || '') : '';
+    if (yEl) setSelectWithFallback(yEl, main ? main.year : '');
+    if (rEl) setSelectWithFallback(rEl, main ? main.region : '');
+    if (tEl) setSelectWithFallback(tEl, main ? main.exam_type : '');
+    if (sEl) setSelectWithFallback(sEl, main ? main.semester : '');
     if (ptEl) ptEl.value = main ? String(main.paper_title || '') : '';
     if (pEl || cEl) {
         if (pEl) pEl.value = main ? String(main.province || '') : '';
@@ -3357,7 +3358,27 @@ function syncEditorSourceFields() {
             fillEditorSrcCity();
         }
         fillEditorSrcSchoolSelect();
+        if (main) setSelectWithFallback(rEl, main.region);
     }
+}
+
+// 选项表里查不到的存量值必须就地补一个选项：学校不在词库（导入题、查重并入的
+// 来源、跨省市改名）、年份超出下拉范围、自定义考试类型都是这种。直接赋值的话
+// el.value 会变回空，而下一次字段变更就把这个键覆写成空 —— 静默丢数据。
+function setSelectWithFallback(sel, value) {
+    if (!sel) return;
+    const want = String(value || '').trim();
+    sel.value = want;
+    if (!want || sel.value === want) return;
+    const option = document.createElement('option');
+    option.value = want;
+    option.textContent = want;
+    let anchor = null;
+    for (let i = 0; i < sel.options.length; i += 1) {
+        if (sel.options[i].value === '__custom__') { anchor = sel.options[i]; break; }
+    }
+    sel.insertBefore(option, anchor);
+    sel.value = want;
 }
 
 function applyEditorSourceFields() {
@@ -3394,6 +3415,89 @@ function applyEditorSourceFields() {
     const hidden = document.getElementById('editSource');
     if (hidden) hidden.value = editorMainSource(arr);
     if (typeof renderEditorPaperMeta === 'function') renderEditorPaperMeta();
+    renderEditorSourceChips();
+}
+
+// ============ 已存来源列表（内联字段的投影，不是第二份数据）============
+// 内联七字段只能改写「主来源」，第 2..N 条此前在界面上完全看不见、也删不掉
+// （多来源来自查重「并入已有题」与旧弹窗）。这里按后端同一排序口径把它们列出来，
+// 每条给一个删除入口。数据源仍旧只有 window.EditorSources 一份。
+function editorSourceChipsHost() {
+    const existing = document.getElementById('editorSourceChips');
+    if (existing) return existing;
+    const yearEl = document.getElementById('editSrcYear');
+    const row = yearEl ? yearEl.closest('div') : null;
+    if (!row || !row.parentNode) return null;
+    const host = document.createElement('div');
+    host.id = 'editorSourceChips';
+    host.className = 'editor-source-chips';
+    host.setAttribute('role', 'list');
+    host.setAttribute('aria-label', '这道题已挂的来源');
+    row.parentNode.insertBefore(host, row.nextSibling);
+    return host;
+}
+
+function editorSourceChipText(src) {
+    return formatEditorSourceText(src) || String((src && src.paper_title) || '').trim() || '（未填写来源）';
+}
+
+function renderEditorSourceChips() {
+    const host = editorSourceChipsHost();
+    if (!host) return;
+    const sorted = sortEditorSources(Array.isArray(window.EditorSources) ? window.EditorSources : []);
+    const signature = sorted.map(editorSourceChipText).join('\u0001');
+    // 内联字段每敲一个字都会回来一次：内容没变就别重建 DOM，否则会抢走焦点
+    if (host.getAttribute('data-chips') === signature) return;
+    host.setAttribute('data-chips', signature);
+    host.textContent = '';
+    host.hidden = !sorted.length;
+    sorted.forEach(function (src, idx) {
+        host.appendChild(buildEditorSourceChip(src, idx));
+    });
+}
+
+function buildEditorSourceChip(src, idx) {
+    const text = editorSourceChipText(src);
+    const chip = document.createElement('span');
+    chip.className = 'editor-source-chip' + (idx === 0 ? ' is-main' : '');
+    chip.setAttribute('role', 'listitem');
+
+    const label = document.createElement('span');
+    label.className = 'editor-source-chip-text';
+    // 来源文本是用户可控内容：一律走 textContent，不用字符串拼 HTML
+    label.textContent = idx === 0 ? ('主来源 · ' + text) : text;
+    chip.appendChild(label);
+
+    if (src && src.paper_title && formatEditorSourceText(src) !== String(src.paper_title).trim()) {
+        chip.title = '整卷出处：' + src.paper_title;
+    }
+
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'editor-source-chip-del';
+    del.textContent = '×';
+    del.title = '删除这条来源';
+    del.setAttribute('aria-label', '删除来源：' + text);
+    del.addEventListener('click', function () {
+        removeEditorSourceAt(idx, text);
+    });
+    chip.appendChild(del);
+    return chip;
+}
+
+function removeEditorSourceAt(index, shownText) {
+    const arr = Array.isArray(window.EditorSources) ? window.EditorSources.slice() : [];
+    const target = sortEditorSources(arr)[index];
+    if (!target) return;
+    const pos = arr.indexOf(target);
+    if (pos < 0) return;
+    if (!window.confirm('删除来源「' + (shownText || '') + '」？保存后这道题就不再挂这条出处。')) return;
+    arr.splice(pos, 1);
+    window.EditorSources = arr;
+    // 主来源换人时，内联字段与隐藏域必须跟着换成新的第一条
+    syncEditorSourceFields();
+    if (typeof renderEditorPaperMeta === 'function') renderEditorPaperMeta();
+    renderEditorSourceChips();
 }
 window.applyEditorSourceFields = applyEditorSourceFields;
 
