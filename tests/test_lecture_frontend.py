@@ -222,6 +222,267 @@ def test_note_save_checks_http_status():
 def test_topic_number_follows_outline():
     """讲义正文与答案册的考向编号跟随大纲 t.no，与考向地图/选题面板同一口径。"""
     src = _read(LECTURE_JS)
-    assert "function buildTopicNoMap(" in src
-    assert "topicNoById" in src
+    assert "function buildTopicMetaMap(" in src
+    assert "topicMetaById" in src
     assert "'考向' + (idx + 1)" not in src
+
+
+def test_outline_example_is_the_unrevised_default():
+    """LectureNote 一直承诺「无修订则用大纲默认」：example 必须作为解题方法默认值
+    渲染并标注未修订，且编辑弹窗以同一份内容为起点。"""
+    src = _read(LECTURE_JS)
+    assert "function outlineExampleOf(" in src
+    assert "大纲默认 · 未修订" in src
+    assert "method || methodDefault || pitEmpty" in src
+    assert "（起点：大纲默认）" in src
+    # example 是含 < 、∈ 等符号的纯文本，进 innerHTML 前必须转义
+    assert "esc(outlineExample)" in src
+
+
+# ============ 请求错误处理与草稿状态 ============
+
+
+def test_all_lecture_requests_share_one_http_checked_exit():
+    """讲义模块所有请求必须只走 apiCall 一个出口（apiJson / apiBlob 两个门面）：
+    后端 4xx/5xx 的错误体同样是合法 JSON，裸 fetch + r.json() 会把「请求被拒绝」
+    当成功继续往下执行。"""
+    src = _read(LECTURE_JS)
+    assert "function apiCall(" in src
+    assert "function apiJson(" in src and "function apiBlob(" in src
+    assert src.count("fetch(") == 1, "除 apiCall 内部不得再有裸 fetch"
+    assert src.count("return r.json();") == 1
+    assert "err.status = r.status" in src
+
+
+def test_export_pdf_compiles_via_pipeline_and_reports_degradations():
+    """导出 PDF 走组卷引擎（十秒级编译）：必须互斥防连点、置 aria-busy，
+    且后端经响应头回传的排版降级要可见，不得只说「成功」。"""
+    src = _read(LECTURE_JS)
+    html = _read(INDEX_HTML)
+    assert "LectureManager.exportPdf()" in html
+    assert "X-MathBank-Export-Notes" in src
+    assert "排版降级" in src
+    assert "aria-busy" in src
+    assert "ST.exporting" in src
+
+
+def test_print_and_latex_export_are_two_distinct_exits():
+    """浏览器打印与 exam-zh 高清 PDF 是两条出口，按钮要分得清。"""
+    html = _read(INDEX_HTML)
+    assert "浏览器打印" in html
+    assert "导出 PDF" in html
+    assert "打印 / PDF" not in html
+
+
+def test_delete_draft_goes_through_checked_exit():
+    """删除失败（Token 过期/已不存在）时不得清空编辑区。"""
+    src = _read(LECTURE_JS)
+    assert "apiJson('/api/lecture/drafts/' + id, { method: 'DELETE' })" in src
+    assert "fetch('/api/lecture/drafts/' + id, { method: 'DELETE' })" not in src
+
+
+def test_question_picker_does_not_silently_cap_at_100():
+    """后端 page_size 上限是 100，请求 200 会被静默裁剪成 100：
+    必须按 total 逐页取完，取不满时如实提示而不是假装这就是全部。"""
+    src = _read(LECTURE_JS)
+    assert "page_size=200" not in src
+    assert "Q_PAGE_SIZE = 100" in src
+    assert "first.total" in src
+    assert "仅载入前" in src
+
+
+def test_draft_title_not_rewritten_on_plain_save():
+    """标题只在首次创建、或小节/届次确实变化时重写；
+    【复制为新版】要生成新届次标题，而不是沿用旧版同名。"""
+    src = _read(LECTURE_JS)
+    assert "function draftTitle(" in src
+    assert "stamp !== ST.draftStamp" in src
+    assert re.search(r"body\.title\s*=\s*draftTitle", src)
+    assert "title: d.title" not in src
+
+
+def test_draft_load_cascades_without_timers():
+    """载入草稿不得再用 setTimeout 等 DOM 级联刷新——慢机器上会加载到错误小节。"""
+    src = _read(LECTURE_JS)
+    assert re.search(r"setTimeout\(", src) is None
+    assert "function selectHasValue(" in src
+    assert "已不在当前教材树" in src
+
+
+# ============ 批次 2：注入面、未保存编排、共享助手 ============
+
+
+def test_year_bar_uses_delegation_not_inline_handlers():
+    """届次取自草稿 config.year，拼进内联 onclick 或裸插值属性都是注入点。"""
+    src = _read(LECTURE_JS)
+    assert 'onclick="LectureManager.setYearFilter' not in src
+    assert r"setYearFilter(\'" not in src
+    assert "function bindYearBar(" in src
+    assert "hasAttribute('data-year')" in src
+    assert 'data-year="\' + esc(y) + \'"' in src
+
+
+def test_orchestration_marks_dirty_and_snapshots_locally():
+    """编排变更必须标脏并落本地快照：过去全部留在内存里，刷新即丢且毫无提示。"""
+    src = _read(LECTURE_JS)
+    assert "function commitOrchestration(" in src
+    assert src.count("commitOrchestration();") >= 5, "五个编排入口都要收敛"
+    assert "mathbank_lecture_autosave" in src
+    assert "beforeunload" in src
+    assert src.count("ST.dirty = false;") >= 3  # 保存/新建/载入/丢弃 后清脏
+
+
+def test_autosave_bar_never_uses_innerhtml():
+    """快照提示条只改 textContent 与类名：小节名等来自草稿 JSON，不得拼进 HTML。"""
+    src = _read(LECTURE_JS)
+    start = src.index("function renderAutosaveBar(")
+    body = src[start:start + src[start:].index("\n  }")]
+    assert "innerHTML" not in body
+    assert "textContent" in body
+
+
+def test_note_modal_exposes_restore_default():
+    """已保存的修订稿必须能删掉回到默认，且只在库里确有内容时才给这个入口。"""
+    src = _read(LECTURE_JS)
+    html = _read(INDEX_HTML)
+    assert 'id="lectureNoteDelete"' in html
+    assert "function deleteNote(" in src
+    assert "setNoteDeleteVisible(!!String(content).trim())" in src
+
+
+def test_escape_helper_delegates_to_shared_source():
+    """转义唯一来源是 api.js 的 window.escapeHtml，讲义不得再自带第二套实现。"""
+    src = _read(LECTURE_JS)
+    assert "function esc(s) { return window.escapeHtml(s); }" in src
+    assert "replace(/&/g, '&amp;')" not in src
+
+
+def _extract_js_function(src: str, name: str) -> str:
+    start = src.index("function " + name + "(")
+    return src[start:start + src[start:].index("\n  }")]
+
+
+def test_topic_configs_are_materialized_not_invented_per_card():
+    """考向配置必须落进 ST.topics：面板把下标直接传给 addItem/editNote，
+    只在渲染时临时造对象会让新建讲义的选题与易错点入口静默失效。"""
+    src = _read(LECTURE_JS)
+    assert "function ensureTopicConfigs(" in src
+    panel = _extract_js_function(src, "renderTopicPanel")
+    assert "ensureTopicConfigs();" in panel
+    assert "ST.topics[idx] || {" not in src, "不得再就地伪造考向配置"
+
+
+
+def _run_extracted_lecture_js(names: tuple[str, ...], st_literal: str, body: str) -> None:
+    """把 lecture.js 里的若干函数抽出来在 node 里真跑一遍。
+
+    抽取的函数必须包进闭包：顶层 `function foo(){}` 会在模块作用域重新绑定同名符号，
+    把外层预置的桩（如 commitOrchestration）遮掉，桩就白写了。
+    """
+    import shutil
+    import subprocess
+    import tempfile
+
+    node = shutil.which("node")
+    assert node, "Node.js is required for the frontend executable regression"
+    src = _read(LECTURE_JS)
+    script = "".join((
+        "var commits = 0;\n",
+        "function commitOrchestration() { commits++; }\n",
+        "var ST = ", st_literal, ";\n",
+        "var api = (function () {\n",
+        *(_extract_js_function(src, name) + "\n  }\n" for name in names),
+        "return {", *(n + ":" + n + "," for n in names), "};\n",
+        "})();\n",
+        "function eq(a, b, msg) { if (JSON.stringify(a) !== JSON.stringify(b))"
+        " throw new Error(msg + ': ' + JSON.stringify(a)); }\n",
+        body,
+    ))
+    handle = tempfile.NamedTemporaryFile("w", suffix=".js", delete=False, encoding="utf-8")
+    with handle:
+        handle.write(script)
+    try:
+        done = subprocess.run([node, handle.name], capture_output=True, text=True, check=False)
+    finally:
+        Path(handle.name).unlink()
+    assert done.returncode == 0, (done.stdout or "") + (done.stderr or "")
+
+
+def test_ensure_topic_configs_keeps_orchestration_and_order():
+    """真跑 reconcile：对齐小节顺序、保留已选题、不丢大纲里已消失的旧编排。"""
+    _run_extracted_lecture_js(
+        ("ensureTopicConfigs",),
+        "{ section: { topics: [{id:'k_a',name:'A'},{id:'k_b',name:'B'},{id:'k_c',name:'C'}] },"
+        " topics: [{topic_id:'k_z',name:'旧考向Z',items:[{question_id:7,role:'example'}]},"
+        "{topic_id:'k_b',name:'B旧',items:[{question_id:3,role:'variant'}]}] }",
+        "".join((
+            "api.ensureTopicConfigs();\n",
+            "eq(ST.topics.map(function (t) { return t.topic_id; }),"
+            " ['k_a','k_b','k_c','k_z'], '顺序或保留错误');\n",
+            "eq(ST.topics[1].items, [{question_id:3, role:'variant'}], '已选题目被丢弃');\n",
+            "eq(ST.topics[3].items, [{question_id:7, role:'example'}], '旧编排丢失');\n",
+            "eq(ST.topics[0].items, [], '空槽未初始化');\n",
+            "if (ST.topics[0].name !== 'A') throw new Error('考向名未跟随大纲');\n",
+            "api.ensureTopicConfigs();\n",
+            "eq(ST.topics.length, 4, '重复调用不幂等');\n",
+            "console.log('OK');\n",
+        )),
+    )
+
+
+def test_orchestration_edits_land_on_the_selected_topic_only():
+    """选题/改角色/移除必须落在传入的考向下标上。
+
+    本机题库只有一道未分类题，浏览器里点不到真实选题，所以把函数抽出来真跑，
+    补上「0 题可选」时验不到的那一半。
+    """
+    _run_extracted_lecture_js(
+        ("ensureTopicConfigs", "addItem", "setRole", "removeItem", "addExtra", "removeExtra"),
+        "{ section: { topics: [{id:'k_a',name:'A'},{id:'k_b',name:'B'}] },"
+        " topics: [], extraIds: [], questions: [] }",
+        "".join((
+            "api.ensureTopicConfigs();\n",
+            "eq(ST.topics.map(function (t) { return t.topic_id; }), ['k_a','k_b'], '未对齐');\n",
+            "api.addItem(1, 42);\n",
+            "eq(ST.topics[1].items, [{question_id:42, role:'example'}], '选题落错考向');\n",
+            "eq(ST.topics[0].items, [], '题目串到了别的考向');\n",
+            "if (commits !== 1) throw new Error('编排未提交: ' + commits);\n",
+            "api.addItem(1, 42);\n",
+            "eq(ST.topics[1].items.length, 1, '重复选题未去重');\n",
+            "if (commits !== 1) throw new Error('重复选题还标脏: ' + commits);\n",
+            "api.setRole(1, 0, 'variant');\n",
+            "eq(ST.topics[1].items[0].role, 'variant', '改角色无效');\n",
+            "api.removeItem(1, 0);\n",
+            "eq(ST.topics[1].items, [], '移除无效');\n",
+            "if (commits !== 3) throw new Error('提交次数不对: ' + commits);\n",
+            "api.addExtra(7); api.addExtra(7);\n",
+            "eq(ST.extraIds, [7], '实战演练去重失败');\n",
+            "api.removeExtra(0);\n",
+            "eq(ST.extraIds, [], '实战演练移除失败');\n",
+            "console.log('OK');\n",
+        )),
+    )
+
+
+def test_autosave_guard_counts_questions_not_topic_slots():
+    """小节一加载就有空考向槽，快照判空必须数题，否则每次加载都写快照。"""
+    src = _read(LECTURE_JS)
+    body = _extract_js_function(src, "snapshotOrchestration")
+    assert "snapshotCount(" in body
+    assert "if (!ST.topics.length" not in body
+
+
+def test_orphan_notes_have_a_visible_list_and_explicit_delete():
+    """孤儿修订稿必须看得见、逐条删得掉：只报告，绝不自动清理。"""
+    src = _read(LECTURE_JS)
+    html = _read(INDEX_HTML)
+    for element in ('id="lectureOrphanModal"', 'id="lectureOrphanList"', 'id="lectureOrphanCount"'):
+        assert element in html
+    assert "LectureManager.openOrphans()" in _lecture_toolbar_section()
+    assert "/api/lecture/orphan-notes" in src
+    assert "{ method: 'DELETE' }" in src
+    assert "createElement" in _extract_js_function(src, "orphanLine")
+    for name in ("orphanCard", "renderOrphanList", "deleteOrphan"):
+        body = _extract_js_function(src, name)
+        assert "innerHTML" not in body, name + "：行内容来自 note_key，不得拼进 HTML"
+    assert "addEventListener" in _extract_js_function(src, "orphanCard")

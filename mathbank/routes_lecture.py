@@ -7,14 +7,22 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
+from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException
+import main as _main  # noqa: E402  测试接缝：延迟绑定，编译与上传目录一律运行时查找
+
+from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from mathbank.auth import require_local_token
 from mathbank.database import LectureDraft, LectureNote, get_db
+from mathbank.latex_diagnostics import build_local_latex_diagnostic
+from mathbank.lecture_export import build_lecture_latex, collect_lecture_images
 from mathbank.lecture_helper import (
     build_preview,
+    find_orphan_notes,
     get_or_create_settings,
     load_cover_bg,
     load_quotes,
@@ -153,6 +161,17 @@ def delete_note(
     return {"ok": True}
 
 
+@router.get("/api/lecture/orphan-notes")
+def get_orphan_notes(db: Session = Depends(get_db)):
+    """列出定位不到的修订稿。
+
+    考向树重建会换掉 topic_id、小节改名会换掉坐标，旧 note_key 从此永远查不
+    回来——界面上既看不见也删不掉。本接口只报告，删除仍由用户逐条走
+    DELETE /api/lecture/notes。
+    """
+    return {"items": find_orphan_notes(db)}
+
+
 @router.post("/api/lecture/preview")
 def lecture_preview(
     payload: dict,
@@ -172,6 +191,56 @@ def lecture_preview(
         topics=payload.get("topics"),
         extra_ids=payload.get("extra_ids"),
     )
+
+
+@router.post("/api/lecture/export/pdf")
+def export_lecture_pdf(payload: dict, db: Session = Depends(get_db)):
+    """把当前讲义编排交给组卷引擎（exam-zh + XeLaTeX）编译 PDF。
+
+    知识块存的是 HTML / @mindmap JSON，按保守规则转换；转换不了的部分经
+    ``X-MathBank-Export-Notes`` 响应头回传（URL 编码、分号分隔），前端必须
+    显示而不是静默吞掉。编译失败返回本地 LaTeX 诊断，不触碰任何付费模型。
+    """
+    compulsory = str(payload.get("compulsory") or "").strip()
+    chapter = str(payload.get("chapter") or "").strip()
+    knowledge = str(payload.get("knowledge") or "").strip()
+    if not (compulsory and chapter and knowledge):
+        raise HTTPException(status_code=400, detail="请先选择册次 / 章节 / 小节")
+    view = str(payload.get("view") or "jiexi")
+    if view not in ("yuan", "jiexi", "daan"):
+        raise HTTPException(status_code=400, detail="view 仅支持 yuan / jiexi / daan")
+
+    preview = payload.get("preview") or build_preview(
+        db,
+        compulsory,
+        chapter,
+        knowledge,
+        topics=payload.get("topics"),
+        extra_ids=payload.get("extra_ids"),
+    )
+    tex_content, degradations = build_lecture_latex(preview, view=view)
+    image_paths = collect_lecture_images(
+        preview.get("questions") or [], _main.UPLOAD_DIR, _main.UPLOAD_DIR_REL
+    )
+    pdf_bytes, log_or_err = _main.compile_tex_to_pdf(tex_content, image_paths)
+    if not pdf_bytes:
+        diagnostic = build_local_latex_diagnostic(str(log_or_err or ""), tex_content)
+        return JSONResponse(
+            status_code=400,
+            content={
+                "status": "error",
+                "message": diagnostic.get("summary") or "讲义 PDF 编译失败",
+                "diagnostic": diagnostic,
+                "degradations": degradations,
+            },
+        )
+    headers = {
+        "Content-Disposition": 'inline; filename="lecture_%s_%s.pdf"'
+        % (view, datetime.now().strftime("%Y%m%d_%H%M%S")),
+    }
+    if degradations:
+        headers["X-MathBank-Export-Notes"] = quote("；".join(degradations))
+    return Response(content=pdf_bytes, media_type="application/pdf", headers=headers)
 
 
 @router.get("/api/lecture/drafts")

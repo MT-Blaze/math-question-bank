@@ -464,25 +464,14 @@ def clean_content_for_latex(
 
     return text
 
-def build_latex_document(
-    title: str,
-    subtitle: str,
-    paper_type: str,
-    questions_data: list,
-    include_answers: bool = False,
-    show_secret: bool = True,
-    show_notice: bool = True
-) -> str:
-    """
-    Generate LaTeX source code based on exam-zh document class matching 试卷类模板.tex.
-    questions_data: list of dicts with keys 'question' (Question dict) and 'score' (int).
+def build_exam_preamble(include_answers: bool = False, title: str = "") -> list:
+    r"""exam-zh 导言区（不含 ``\begin{document}``）。
+
+    组卷与讲义共用同一份宏包清单：任何一侧单独再抄一份 \usepackage，
+    两边的公式与图片排版就会静默分叉。调用方可在返回列表末尾追加
+    自己需要的导言区内容（仍在 ``\begin{document}`` 之前）。
     """
     paper_title = title.strip() or "2025 年普通高等学校招生全国统一考试(模拟卷)"
-    sub_title = subtitle.strip()
-    
-    total_q_count = len(questions_data)
-    total_score_sum = sum(q.get("score", 5) for q in questions_data)
-    
     lines = []
     lines.append(r"\let\stop\empty")
     # Fandol ships with TeX Live and avoids platform-specific ctex font names
@@ -535,6 +524,29 @@ def build_latex_document(
     lines.append(f"\\title{{{paper_title}}}")
     lines.append(r"\subject{数学}")
     lines.append("")
+    return lines
+
+
+def build_latex_document(
+    title: str,
+    subtitle: str,
+    paper_type: str,
+    questions_data: list,
+    include_answers: bool = False,
+    show_secret: bool = True,
+    show_notice: bool = True
+) -> str:
+    """
+    Generate LaTeX source code based on exam-zh document class matching 试卷类模板.tex.
+    questions_data: list of dicts with keys 'question' (Question dict) and 'score' (int).
+    """
+    paper_title = title.strip() or "2025 年普通高等学校招生全国统一考试(模拟卷)"
+    sub_title = subtitle.strip()
+    
+    total_q_count = len(questions_data)
+    total_score_sum = sum(q.get("score", 5) for q in questions_data)
+    
+    lines = build_exam_preamble(include_answers=include_answers, title=paper_title)
     lines.append(r"\begin{document}")
     lines.append(r"\raggedbottom")
     lines.append("")

@@ -199,18 +199,34 @@ def build_preview(
     )
 
     # 题目详情
-    qids = []
-    role_map = {}  # question_id -> [roles]
+    qids: list[int] = []
+    invalid_ids: list[str] = []
+
+    def _as_question_id(value) -> Optional[int]:
+        """编排快照里的 ID 可能来自外部脚本或手改的 config，非数字要容错而不是 500。"""
+        try:
+            return int(str(value).strip())
+        except (TypeError, ValueError):
+            return None
+
     if topics:
         for t in topics:
+            if not isinstance(t, dict):
+                continue
             for item in (t.get("items") or []):
-                qid = item.get("question_id")
-                if qid:
-                    qids.append(int(qid))
-                    role_map.setdefault(int(qid), []).append(item.get("role") or "example")
+                if not isinstance(item, dict) or not item.get("question_id"):
+                    continue
+                parsed = _as_question_id(item.get("question_id"))
+                if parsed is None:
+                    invalid_ids.append(str(item.get("question_id")))
+                    continue
+                qids.append(parsed)
     for qid in (extra_ids or []):
-        qids.append(int(qid))
-        role_map.setdefault(int(qid), []).append("homework")
+        parsed = _as_question_id(qid)
+        if parsed is None:
+            invalid_ids.append(str(qid))
+        else:
+            qids.append(parsed)
 
     from mathbank.database import Question
     from mathbank.sources_helper import load_question_sources
@@ -240,7 +256,6 @@ def build_preview(
                 "source": q.source or "",
                 "paper_category": q.paper_category or "",
                 "answer": q.answer_markdown or "",
-                "roles": role_map.get(q.id, []),
                 # 一题多来源：按 高考>模考>联考>校考 + 年份新在前 排序后的列表
                 "sources": sources_map.get(q.id, []),
             })
@@ -254,7 +269,9 @@ def build_preview(
             "knowledge": knowledge,
             "name": section.get("name") or knowledge,
             "topics": [
-                {"id": t.get("id"), "name": t.get("name"), "no": t.get("no"), "level": t.get("level")}
+                {"id": t.get("id"), "name": t.get("name"), "no": t.get("no"), "level": t.get("level"),
+                 # 大纲自带的例题说明：无修订稿时作为「解题方法」的默认内容
+                 "example": str(t.get("example") or "").strip()}
                 for t in (section.get("topics") or [])
                 if isinstance(t, dict)
             ],
@@ -267,7 +284,89 @@ def build_preview(
         "questions": questions,
         # 编排/实战演练中引用但库中已不存在的题目 ID（前端据此提示）
         "missing_ids": missing_ids,
+        # 无法解析成题目 ID 的编排引用（手改/外部写入的 config），与「已删除」分开报
+        "invalid_ids": invalid_ids,
         # 用户在设置里改过的名言池优先，资源文件池只作兜底
         "quote_pool": settings.get("quote_pool") or load_quotes(),
         "cover_bg": load_cover_bg(),
     }
+
+
+NOTE_TYPES = ("knowledge", "pit", "method")
+
+
+def _all_curriculum_trees() -> list:
+    """四套教材预设树 + 当前活跃树。
+
+    lecture_notes 没有版本列，坐标只活在 note_key 里；只按当前活跃树判存活，
+    会把另一套教材下写好的修订稿误报成孤儿。
+    """
+    from mathbank.curriculums import CURRICULUM_NAMES, load_curriculum
+
+    trees = [get_current_curriculum() or {}]
+    for code in CURRICULUM_NAMES:
+        try:
+            trees.append(load_curriculum(code))
+        except Exception:  # 预设资源损坏时不得拖垮整个清单
+            continue
+    return [tree for tree in trees if isinstance(tree, dict) and tree]
+
+
+def _topic_ids_of_section(tree: dict, compulsory: str, chapter: str, knowledge: str):
+    """该小节在这棵树里的考向 ID 集合；小节解析不到时返回 None。"""
+    for section in ((tree.get(compulsory) or {}).get(chapter) or []):
+        if isinstance(section, str):
+            if section == knowledge:
+                return set()
+            continue
+        if str(section.get("name") or "") == knowledge:
+            return {
+                str(topic["id"])
+                for topic in (section.get("topics") or [])
+                if isinstance(topic, dict) and topic.get("id")
+            }
+    return None
+
+
+def find_orphan_notes(db: Session) -> list:
+    """列出在任何教材版本里都定位不到的修订稿。
+
+    考向树重建（换 ID）或改名小节后，旧 note_key 永远查不回来，用户在界面上
+    既看不见也删不掉。本函数只报告，删除仍走显式的 DELETE /api/lecture/notes。
+    """
+    trees = _all_curriculum_trees()
+    orphans = []
+    for row in db.query(LectureNote).order_by(LectureNote.note_key).all():
+        segments = split_note_key(row.note_key)
+        segments += [""] * (4 - len(segments))
+        note_type, compulsory, chapter, knowledge = segments[:4]
+        topic_id = segments[4] if len(segments) > 4 else ""
+        topic_ids: set = set()
+        section_found = False
+        for tree in trees:
+            found = _topic_ids_of_section(tree, compulsory, chapter, knowledge)
+            if found is not None:
+                section_found = True
+                topic_ids |= found
+        if not section_found:
+            reason = "section_missing"
+        elif note_type not in NOTE_TYPES:
+            reason = "unknown_type"
+        elif note_type == "knowledge":
+            continue
+        elif topic_id and topic_id in topic_ids:
+            continue
+        else:
+            reason = "topic_missing"
+        orphans.append({
+            "note_key": row.note_key,
+            "note_type": note_type,
+            "compulsory": compulsory,
+            "chapter": chapter,
+            "knowledge": knowledge,
+            "topic_id": topic_id,
+            "reason": reason,
+            "content_chars": len(row.content or ""),
+            "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+        })
+    return orphans

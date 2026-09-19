@@ -16,12 +16,16 @@
     settings: null,      // 讲义设置
     noteTarget: null,    // 当前编辑的知识块目标
     draftId: null,       // 当前草稿 id
+    draftStamp: '',      // 上次落库时的 抽屉|小节|届次，用于判断标题是否需要重写
     coverBg: {},         // 封面背景库
     previewData: null,
     view: 'yuan',        // 当前打印视图：yuan 学生版 / jiexi 教师版 / daan 答案册
     yearFilter: '',      // 顶部届次筛选：'' 为全部（只显示最新架子）
     knowledgeMind: null, // 当前小节思维导图知识梳理 {data,raw}
-    topicNoById: {},     // 大纲考向 topic_id → 编号，讲义正文与考向地图同一口径
+    topicMetaById: {},   // 大纲考向 topic_id → {no, example}，编号与默认内容同一口径
+    dirty: false,        // 编排改过但还没写入草稿
+    autosaveBlocked: false, // LocalStorage 写不进（配额/隐私模式），只提示一次
+    autosaveBound: false,
   };
 
   var ROLE_LABELS = { example: '例题', variant: '变式', practice: '趁热打铁', homework: '实战演练' };
@@ -33,13 +37,33 @@
     alert(msg);
   }
 
-  function esc(s) {
-    return String(s == null ? '' : s)
-      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-  }
+  /* 转义的唯一来源是 api.js 的 window.escapeHtml（MathBankSafe.escapeText），
+     这里只留模块内短名，不再自带第二套实现。 */
+  function esc(s) { return window.escapeHtml(s); }
 
   function roleVal(role) { return ROLE_LABELS[role] || ROLE_LABELS.example; }
+
+  /* 讲义模块唯一的请求出口：后端 4xx/5xx 的错误体同样是合法 JSON，
+     裸 fetch + r.json() 会把「请求被拒绝」当成功，继续执行删除/清空等下游动作。 */
+  function apiCall(url, options, asBlob) {
+    return fetch(url, options).then(function (r) {
+      if (!r.ok) {
+        return r.json().catch(function () { return {}; }).then(function (body) {
+          var err = new Error((body && (body.detail || body.message)) || ('HTTP ' + r.status));
+          err.status = r.status;
+          err.body = body;
+          throw err;
+        });
+      }
+      if (!asBlob) return r.json();
+      var notes = r.headers.get('X-MathBank-Export-Notes') || '';
+      try { notes = notes ? decodeURIComponent(notes) : ''; } catch (e) { notes = ''; }
+      return r.blob().then(function (b) { return { blob: b, notes: notes }; });
+    });
+  }
+
+  function apiJson(url, options) { return apiCall(url, options, false); }
+  function apiBlob(url, options) { return apiCall(url, options, true); }
 
   /* ---------------- 级联选择 ---------------- */
   function metaCur() {
@@ -116,29 +140,69 @@
   }
 
   /* ---------------- 题目加载（按小节拉题） ---------------- */
+  // 后端 page_size 上限是 100（routes_questions 的 max(1, min(page_size, 100))），
+  // 传 200 会被静默裁成 100：小节题量一大就少题且毫无提示。
+  var Q_PAGE_SIZE = 100;
+  var Q_MAX_PAGES = 10;
+
   function loadQuestions() {
     var comp = $('lectureCompulsory') ? $('lectureCompulsory').value : '';
     var chap = $('lectureChapter') ? $('lectureChapter').value : '';
     var know = $('lectureKnowledge') ? $('lectureKnowledge').value : '';
-    var qs = [];
-    qs.push('compulsory=' + encodeURIComponent(comp));
-    qs.push('chapter=' + encodeURIComponent(chap));
-    qs.push('knowledge=' + encodeURIComponent(know));
-    qs.push('page=1&page_size=200&sort=asc');
-    return fetch('/api/questions?' + qs.join('&'))
-      .then(function (r) { return r.json(); })
-      .then(function (data) {
-        var items = data.items || data || [];
-        ST.questions = items;
-        return items;
-      });
+    var base = 'compulsory=' + encodeURIComponent(comp) +
+      '&chapter=' + encodeURIComponent(chap) +
+      '&knowledge=' + encodeURIComponent(know) +
+      '&page_size=' + Q_PAGE_SIZE + '&sort=asc';
+    var page = function (n) { return apiJson('/api/questions?' + base + '&page=' + n); };
+    var rows = function (data) { return (data && data.items) || (Array.isArray(data) ? data : []); };
+    var total = 0;
+    return page(1).then(function (first) {
+      var acc = rows(first).slice();
+      total = (first && first.total) || acc.length;
+      var pages = Math.min(Math.ceil(total / Q_PAGE_SIZE) || 1, Q_MAX_PAGES);
+      var next = function (n) {
+        if (n > pages) return Promise.resolve(acc);
+        return page(n).then(function (d) { acc = acc.concat(rows(d)); return next(n + 1); });
+      };
+      return next(2);
+    }).then(function (all) {
+      // 取完仍不足 total = 撞到 Q_MAX_PAGES 上限，必须说出来而不是假装这就是全部
+      if (total > all.length) {
+        toast('本小节共 ' + total + ' 题，仅载入前 ' + all.length + ' 题，其余题目未参与选题', 'error');
+      }
+      ST.questions = all;
+      return all;
+    });
   }
 
   /* ---------------- 考向面板 ---------------- */
+  /* ST.topics 必须与 ST.section.topics 按下标对齐：面板把 idx 直接传给
+     addItem / setRole / removeItem / editNote，错位就会改到别的考向。
+     旧写法只在渲染时临时造一个 { topic_id, items: [] } 而不落进 ST.topics，
+     于是新建讲义（config.topics 为空）点选题和易错点全部静默失效，
+     考向页也整段不进预览。 */
+  function ensureTopicConfigs() {
+    var topics = (ST.section && ST.section.topics) || [];
+    var byId = {};
+    ST.topics.forEach(function (t) {
+      if (t && t.topic_id && !byId[t.topic_id]) byId[t.topic_id] = t;
+    });
+    var out = [];
+    topics.forEach(function (t) {
+      var cfg = byId[t.id];
+      if (cfg) { cfg.name = t.name || cfg.name; cfg.items = cfg.items || []; out.push(cfg); return; }
+      out.push({ topic_id: t.id, name: t.name, items: [] });
+    });
+    // 大纲里已不存在的旧编排留在末尾：换教材树后静默丢弃用户选题是不可接受的
+    ST.topics.forEach(function (t) { if (t && out.indexOf(t) < 0) out.push(t); });
+    ST.topics = out;
+  }
+
   function renderTopicPanel(section, questions) {
     var panel = $('lectureTopicPanel');
     if (!panel) return;
     var topics = section.topics || [];
+    ensureTopicConfigs();
     if (!topics.length) {
       panel.innerHTML = '<div class="text-sm text-slate-400 p-4">该小节暂无考向，请先在「自定义维度配置」中添加考向。</div>';
       return;
@@ -151,7 +215,7 @@
     });
     topics.forEach(function (t, idx) {
       var tq = qByTopic[t.id] || [];
-      var cfg = ST.topics[idx] || { topic_id: t.id, name: t.name, items: [] };
+      var cfg = ST.topics[idx];
       html += '<div class="rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 p-3">';
       html += '<div class="flex items-center justify-between mb-2">';
       html += '<div class="font-bold text-sm text-slate-700 dark:text-slate-200">考向' + (t.no || idx + 1) + '　' + esc(t.name) + '</div>';
@@ -445,6 +509,8 @@
     var node = mindNodeAt(ST.knowledgeMind.data, path);
     if (!node) return;
     ST.noteTarget = { type: 'mind-node', mindPath: path, name: node.name };
+    // 单节点编辑器不允许整块删除思维导图
+    setNoteDeleteVisible(false);
     var titleEl = $('lectureNoteModalTitle');
     if (titleEl) titleEl.textContent = '编辑知识梳理 · ' + node.name;
     var ta = $('lectureNoteContent');
@@ -472,16 +538,13 @@
     var clean = String(text || '').trim().slice(0, 200);
     if (ST.settings && (ST.settings.cover_title || '') === clean) return;
     var attempt = function (retries) {
-      return fetch('/api/lecture/settings', {
+      return apiJson('/api/lecture/settings', {
         method: 'PUT', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ cover_title: clean }),
-      }).then(function (r) {
-        if (!r.ok) {
-          // 偶发 5xx 自动重试一次，仍失败必须报错而不是静默吞
-          if (retries > 0) return attempt(retries - 1);
-          throw new Error('HTTP ' + r.status);
-        }
-        return r.json();
+      }).catch(function (e) {
+        // 偶发 5xx 自动重试一次，仍失败必须报错而不是静默吞
+        if (retries > 0) return attempt(retries - 1);
+        throw e;
       });
     };
     ST._coverSave = attempt(1)
@@ -531,17 +594,21 @@
       '<div class="q-body">' + content + '</div>' + ans + '</div>';
   }
 
-  function buildTopicSheet(topicCfg, idx, notes, compulsory, chapter, knowledge, topicNo) {
+  function buildTopicSheet(topicCfg, idx, notes, compulsory, chapter, knowledge, topicNo, outlineExample) {
     var tid = topicCfg.topic_id || '';
     var pit = tid ? notes[noteKey('pit', compulsory, chapter, knowledge, tid)] : '';
     var method = tid ? notes[noteKey('method', compulsory, chapter, knowledge, tid)] : '';
     var pitEmpty = tid ? '<span class="km-empty">（待补充）</span>'
       : '<span class="km-empty">（该考向缺少考点标识，修订稿无法定位，请重新加载小节后再编辑）</span>';
+    // 无修订稿时回落到大纲自带的例题说明，并显式标注未修订——
+    // LectureNote 一直承诺「无修订则用大纲默认」，此前从没实现
+    var methodDefault = (tid && outlineExample)
+      ? '<span class="km-default">大纲默认 · 未修订</span>' + esc(outlineExample) : '';
     var html = '<div class="sheet" data-answer-page="true"><div class="page-head"><span class="ph-title">' + esc(cleanChapterTitle(chapter)) + ' · ' + esc(knowledge) + '</span><span class="ph-quote"></span></div>';
     html += '<div class="subsection-title">考向' + (topicNo || (idx + 1)) + '　' + esc(topicCfg.name) + '</div>';
     html += '<div class="km-box">';
     html += '<div class="km-item km-pit"><span class="km-label">易错点</span>' + (pit || pitEmpty) + '</div>';
-    html += '<div class="km-item km-method"><span class="km-label">解题方法</span>' + (method || pitEmpty) + '</div>';
+    html += '<div class="km-item km-method"><span class="km-label">解题方法</span>' + (method || methodDefault || pitEmpty) + '</div>';
     html += '</div>';
     var ex = 0, practice = 0;
     var variantGroup = [];
@@ -593,7 +660,7 @@
         for (var k = 0; k < ST.previewData.questions.length; k++) { if (ST.previewData.questions[k].id === item.question_id) { q = ST.previewData.questions[k]; break; } }
         if (!q) return;
         count++;
-        var label = '考向' + topicNoOf(ST.topicNoById || {}, topicCfg, idx) + ' ' + roleVal(item.role) + ' ' + (item.role === 'example' ? '例' + count : item.role === 'variant' ? '变式' + count : item.role === 'practice' ? '趁热打铁' + count : '实战' + count);
+        var label = '考向' + topicNoOf(ST.topicMetaById || {}, topicCfg, idx) + ' ' + roleVal(item.role) + ' ' + (item.role === 'example' ? '例' + count : item.role === 'variant' ? '变式' + count : item.role === 'practice' ? '趁热打铁' + count : '实战' + count);
         var ans = q.answer ? (window.parseMarkdownWithMath ? window.parseMarkdownWithMath(q.answer) : esc(q.answer)) : '';
         html += '<div class="ans-item"><span class="ans-tag">' + esc(label) + '</span>' + (ans || '<span class="text-slate-400">（暂无答案）</span>') + '</div>';
       });
@@ -609,17 +676,24 @@
     return html;
   }
 
-  /* 考向编号以大纲 t.no 为准，与「考向地图」和选题面板同一口径 */
-  function buildTopicNoMap(section) {
+  /* 考向编号与大纲默认内容都取自 section.topics，
+     与「考向地图」和选题面板同一口径 */
+  function buildTopicMetaMap(section) {
     var map = {};
     ((section && section.topics) || []).forEach(function (t, i) {
-      if (t && t.id) map[t.id] = t.no || (i + 1);
+      if (t && t.id) map[t.id] = { no: t.no || (i + 1), example: String(t.example || '') };
     });
     return map;
   }
 
-  function topicNoOf(topicNoById, topicCfg, idx) {
-    return topicNoById[topicCfg.topic_id] || (idx + 1);
+  function topicNoOf(topicMetaById, topicCfg, idx) {
+    var meta = topicMetaById[topicCfg.topic_id];
+    return (meta && meta.no) || (idx + 1);
+  }
+
+  function outlineExampleOf(topicMetaById, topicCfg) {
+    var meta = topicMetaById[topicCfg.topic_id];
+    return (meta && meta.example) || '';
   }
 
   function buildLectureHtml(data) {
@@ -627,14 +701,15 @@
     var settings = data.settings || {};
     var section = data.section || {};
     var notes = data.notes || {};
-    ST.topicNoById = buildTopicNoMap(section);
+    ST.topicMetaById = buildTopicMetaMap(section);
     var title = settings.cover_title || cleanChapterTitle(section.chapter) || section.knowledge || '讲义';
     var body = '';
     body += buildCover(settings, title, '学生版');
     body += buildKnowledge(notes, section.compulsory, section.chapter, section.knowledge);
     body += buildMap(section);
     ST.topics.forEach(function (t, i) {
-      body += buildTopicSheet(t, i, notes, section.compulsory, section.chapter, section.knowledge, topicNoOf(ST.topicNoById, t, i));
+      body += buildTopicSheet(t, i, notes, section.compulsory, section.chapter, section.knowledge,
+        topicNoOf(ST.topicMetaById, t, i), outlineExampleOf(ST.topicMetaById, t));
     });
     body += buildHomework();
     body += buildAnswerBook();
@@ -712,6 +787,7 @@
       '.km-label{font-weight:700;margin-right:2mm}',
       '.km-pit .km-label{color:#b45309}.km-method .km-label{color:#1d4ed8}',
       '.km-empty{color:#94a3b8}',
+      '.km-default{display:inline-block;font-size:11.5px;color:#475569;background:#e2e8f0;border-radius:1mm;padding:0 1.5mm;margin-right:2mm;vertical-align:1px}',
       '.qa{margin-bottom:6mm}',
       '.q-src{font-size:12px;color:#64748b;margin-bottom:1mm;line-height:1.5}',
       'body.view-yuan .q-src-all{display:none}',
@@ -777,11 +853,10 @@
     if (!cfg.compulsory || !cfg.chapter || !cfg.knowledge) { toast('请先选择册次 / 章节 / 小节'); return; }
     // 封面标题的 PUT 尚未落库时先等它完成，否则重建的预览会复活旧标题
     (ST._coverSave || Promise.resolve()).then(function () {
-    fetch('/api/lecture/preview', {
+    apiJson('/api/lecture/preview', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ compulsory: cfg.compulsory, chapter: cfg.chapter, knowledge: cfg.knowledge, topics: ST.topics, extra_ids: ST.extraIds }),
     })
-      .then(function (r) { return r.json(); })
       .then(function (data) {
         ST.settings = data.settings;
         ST.coverBg = data.cover_bg || ST.coverBg;
@@ -791,6 +866,10 @@
         }
         if (data.section_found === false) {
           toast('当前教材树中未找到该小节，考向地图与易错点/解题方法会不完整，请检查活跃大纲', 'error');
+        }
+        var invalid = data.invalid_ids || [];
+        if (invalid.length) {
+          toast('有 ' + invalid.length + ' 处选题引用不是有效题目 ID，已跳过', 'error');
         }
         var html = buildLectureHtml(data);
         var iframe = $('lecturePreview');
@@ -819,6 +898,39 @@
     if (!iframe || !iframe.contentWindow) { toast('请先加载讲义小节'); return; }
     iframe.contentWindow.focus();
     iframe.contentWindow.print();
+  }
+
+  var VIEW_LABELS = { yuan: '学生版', jiexi: '教师版', daan: '答案册' };
+
+  /* 高清 PDF 走组卷引擎编译（十秒级），期间禁用按钮并置 aria-busy，
+     否则用户会连点触发多次 XeLaTeX 编译。降级说明经响应头回传，必须说出来。 */
+  function exportPdf() {
+    var cfg = collectConfig();
+    if (!cfg.compulsory || !cfg.chapter || !cfg.knowledge) { toast('请先加载讲义小节'); return; }
+    if (ST.exporting) { toast('已有讲义 PDF 在编译，请稍候'); return; }
+    var view = ST.view || 'yuan';
+    var button = $('lectureExportPdf');
+    if (button) { button.disabled = true; button.setAttribute('aria-busy', 'true'); }
+    ST.exporting = true;
+    var tab = window.open('', '_blank');
+    apiBlob('/api/lecture/export/pdf', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        compulsory: cfg.compulsory, chapter: cfg.chapter, knowledge: cfg.knowledge,
+        topics: ST.topics, extra_ids: ST.extraIds, view: view,
+      }),
+    }).then(function (result) {
+      var url = URL.createObjectURL(result.blob);
+      if (tab && !tab.closed) tab.location.href = url; else window.location.href = url;
+      if (result.notes) toast('排版降级：' + result.notes, 'error');
+      else toast((VIEW_LABELS[view] || view) + ' PDF 已生成', 'success');
+    }).catch(function (e) {
+      if (tab && !tab.closed) tab.close();
+      toast('导出失败：' + e.message, 'error');
+    }).then(function () {
+      ST.exporting = false;
+      if (button) { button.disabled = false; button.removeAttribute('aria-busy'); }
+    });
   }
 
   /* ---------------- 草稿树（两级：系列 → 抽屉）+ 届次筛选 ---------------- */
@@ -885,15 +997,35 @@
     return Object.keys(set).sort().reverse();
   }
 
+  /* 届次条走事件委托：年份来自草稿 config.year，拼进内联 onclick 或属性里都是注入点。 */
   function renderYearBar(drafts) {
     var bar = $('lectureYearBar');
     if (!bar) return;
-    var years = collectYears(drafts);
-    var html = '<button data-year="" class="rounded-full px-2 py-0.5 border ' + (!ST.yearFilter ? 'border-blue-500 bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-300 font-bold' : 'border-slate-300 dark:border-slate-700 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800') + '" onclick="LectureManager.setYearFilter(\'\')">全部</button>';
-    years.forEach(function (y) {
-      html += '<button data-year="' + y + '" class="rounded-full px-2 py-0.5 border ' + (ST.yearFilter === y ? 'border-blue-500 bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-300 font-bold' : 'border-slate-300 dark:border-slate-700 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800') + '" onclick="LectureManager.setYearFilter(\'' + y + '\')">' + y + '</button>';
+    bindYearBar();
+    var chipClass = function (active) {
+      return 'rounded-full px-2 py-0.5 border ' + (active
+        ? 'border-blue-500 bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-300 font-bold'
+        : 'border-slate-300 dark:border-slate-700 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800');
+    };
+    var html = '<button type="button" data-year="" class="' + chipClass(!ST.yearFilter) + '">全部</button>';
+    collectYears(drafts).forEach(function (y) {
+      html += '<button type="button" data-year="' + esc(y) + '" class="' + chipClass(ST.yearFilter === y) + '">' + esc(y) + '</button>';
     });
     bar.innerHTML = html;
+  }
+
+  var _yearBarBound = false;
+  function bindYearBar() {
+    if (_yearBarBound) return;
+    _yearBarBound = true;
+    var bar = $('lectureYearBar');
+    if (!bar) return;
+    bar.addEventListener('click', function (e) {
+      var el = e.target;
+      while (el && el !== bar && !(el.hasAttribute && el.hasAttribute('data-year'))) el = el.parentNode;
+      if (!el || el === bar) return;
+      setYearFilter(el.getAttribute('data-year'));
+    });
   }
 
   function draftCardHtml(d, meta) {
@@ -913,8 +1045,7 @@
   function renderDraftTree() {
     var box = $('lectureDraftTree');
     if (!box) return;
-    fetch('/api/lecture/drafts')
-      .then(function (r) { return r.json(); })
+    apiJson('/api/lecture/drafts')
       .then(function (list) {
         renderYearBar(list);
         if (!list.length) { box.innerHTML = '<div class="text-xs text-slate-400 p-2">暂无讲义，点击「新建讲义」开始。</div>'; return; }
@@ -959,16 +1090,26 @@
         }
         box.innerHTML = html;
       })
-      .catch(function () { box.innerHTML = '<div class="text-xs text-slate-400 p-2">草稿加载失败</div>'; });
+      .catch(function (e) { box.innerHTML = '<div class="text-xs text-slate-400 p-2">草稿列表加载失败：' + esc(e.message) + '</div>'; });
   }
 
   function setYearFilter(y) { ST.yearFilter = y || ''; renderDraftTree(); }
 
+  /* 草稿标题：首次创建时生成，之后只有小节或届次真的变了才重写。
+     旧写法每次保存都按 chapter+knowledge 重拼，届次后缀会被冲掉，
+     【复制为新版】出来的新草稿也和旧版同名。 */
+  function draftTitle(drawer, knowledge, year) {
+    return (drawer || '未归类') + ' ' + (knowledge || '') + ' 讲义（' + (year || currentYear()) + '届）';
+  }
+
+  function draftStamp(drawer, knowledge, year) {
+    return [drawer || '', knowledge || '', year || ''].join('|');
+  }
+
   function cloneDraft(id) {
     var targetYear = collectTreeControls().year || String(currentYear());
     if (!confirm('复制为 ' + targetYear + ' 届新版？当前版本将收进「历史版本」。')) return;
-    fetch('/api/lecture/drafts/' + id)
-      .then(function (r) { return r.json(); })
+    apiJson('/api/lecture/drafts/' + id)
       .then(function (d) {
         var meta = draftMeta(d);
         var cfg = d.config || {};
@@ -976,37 +1117,45 @@
           topics: cfg.topics || [], extra_ids: cfg.extra_ids || [],
           series: meta.series, drawer: meta.drawer, year: targetYear, cloned_from: id,
         };
-        return fetch('/api/lecture/drafts', {
+        var compulsory = meta.series === 'sync' ? meta.drawer : d.compulsory;
+        return apiJson('/api/lecture/drafts', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            title: d.title, grade: d.grade,
-            compulsory: meta.series === 'sync' ? meta.drawer : d.compulsory,
+            title: draftTitle(meta.drawer, d.knowledge, targetYear), grade: d.grade,
+            compulsory: compulsory,
             chapter: d.chapter, knowledge: d.knowledge, config: newCfg,
           }),
-        }).then(function (r2) { return r2.json(); });
-      })
-      .then(function () {
-        return fetch('/api/lecture/drafts/' + id, {
-          method: 'PUT', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ status: "archived" }),
         });
       })
-      .then(function () { toast('已复制为 ' + targetYear + ' 届新版，旧版已收起', 'success'); renderDraftTree(); })
+      .then(function (created) {
+        return apiJson('/api/lecture/drafts/' + id, {
+          method: 'PUT', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: "archived" }),
+        }).then(function () {
+          toast('已复制为 ' + targetYear + ' 届新版，旧版已收起', 'success');
+        }).catch(function (e) {
+          // 新行已经落库、只有归档这步失败：必须说清是哪一步，
+          // 否则用户以为没成功会再复制一次，树上多出重复讲义
+          toast('新版已创建（#' + created.id + '），但旧版未能收起：' + e.message, 'error');
+        }).then(function () { renderDraftTree(); });
+      })
       .catch(function (e) { toast('复制失败：' + e.message); });
   }
 
   function restoreDraft(id) {
-    fetch('/api/lecture/drafts/' + id, {
+    apiJson('/api/lecture/drafts/' + id, {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ status: "draft" }),
     })
-      .then(function (r) { return r.json(); })
       .then(function () { toast('已恢复为当前版本', 'success'); renderDraftTree(); })
       .catch(function (e) { toast('恢复失败：' + e.message); });
   }
 
   function newDraft() {
-    ST.draftId = null; ST.topics = []; ST.extraIds = []; ST.questions = [];
+    ST.draftId = null; ST.draftStamp = ''; ST.topics = []; ST.extraIds = []; ST.questions = [];
+    ST.dirty = false;
+    clearAutosave();
+    renderAutosaveBar();
     var panel = $('lectureTopicPanel');
     if (panel) panel.innerHTML = '<div class="text-sm text-slate-400 p-4">选择册次 / 章节 / 小节后点击「加载小节」。</div>';
     var iframe = $('lecturePreview');
@@ -1017,35 +1166,47 @@
     renderDraftTree();
   }
 
+  function selectHasValue(sel, value) {
+    if (!sel || !value) return false;
+    for (var i = 0; i < sel.options.length; i++) { if (sel.options[i].value === value) return true; }
+    return false;
+  }
+
+  /* 把册次/章节/小节落到 ST 再同步跑级联（级联只会把不在候选里的值改写成首项）。
+     返回无法在当前教材树里定位的那一段，供调用方如实提示。 */
+  function applySelection(compulsory, chapter, knowledge) {
+    ST.compulsory = compulsory; ST.chapter = chapter; ST.knowledge = knowledge;
+    renderCompulsory();
+    return !selectHasValue($('lectureCompulsory'), compulsory) ? compulsory
+      : !selectHasValue($('lectureChapter'), chapter) ? chapter
+        : !selectHasValue($('lectureKnowledge'), knowledge) ? knowledge : '';
+  }
+
   function loadDraft(id) {
-    fetch('/api/lecture/drafts/' + id)
-      .then(function (r) { return r.json(); })
+    apiJson('/api/lecture/drafts/' + id)
       .then(function (d) {
         ST.draftId = d.id;
-        ST.compulsory = d.compulsory; ST.chapter = d.chapter; ST.knowledge = d.knowledge;
-        ST.grade = d.grade || 'g1';
         var cfg = d.config || {};
+        var meta = draftMeta(d);
+        ST.grade = d.grade || 'g1';
         ST.topics = cfg.topics || [];
         ST.extraIds = cfg.extra_ids || [];
-        // 同步下拉 + 归入控件
-        if ($('lectureGrade')) $('lectureGrade').value = ST.grade;
-        if ($('lectureCompulsory')) $('lectureCompulsory').value = ST.compulsory;
-        renderChapter();
-        var meta = draftMeta(d);
+        ST.draftStamp = draftStamp(meta.drawer, d.knowledge, meta.year);
+        renderGrade();
         if ($('lectureSeries')) $('lectureSeries').value = meta.series;
         renderDrawerOptions();
         renderYearOptions();
         if ($('lectureDrawer') && meta.drawer) $('lectureDrawer').value = meta.drawer;
         if ($('lectureYearSelect') && meta.year) $('lectureYearSelect').value = meta.year;
-        setTimeout(function () {
-          if ($('lectureChapter')) $('lectureChapter').value = d.chapter;
-          renderKnowledge();
-          setTimeout(function () {
-            if ($('lectureKnowledge')) $('lectureKnowledge').value = d.knowledge;
-            loadSection();
-          }, 50);
-        }, 50);
+        // 不用定时器延时等 DOM：旧写法在慢机器上会加载到错误的小节
+        var stale = applySelection(d.compulsory, d.chapter, d.knowledge);
+        ST.dirty = false;
         renderDraftTree();
+        renderAutosaveBar();
+        if (stale) {
+          toast('草稿的小节「' + stale + '」已不在当前教材树，请先切换教材版本或重选小节', 'error');
+        }
+        loadSection();
       })
       .catch(function (e) { toast('载入草稿失败：' + e.message); });
   }
@@ -1055,29 +1216,30 @@
     if (!cfg.compulsory || !cfg.chapter || !cfg.knowledge) { toast('请先选择册次 / 章节 / 小节'); return; }
     var tree = collectTreeControls();
     var drawer = tree.drawer || cfg.compulsory;
-    if (!ST.draftId) {
-      var today = new Date();
-      var title = drawer + ' ' + cfg.knowledge + ' 讲义（' + today.getFullYear() + '届）';
-    } else {
-      title = cfg.chapter + ' ' + cfg.knowledge + ' 讲义';
-    }
     var url = ST.draftId ? '/api/lecture/drafts/' + ST.draftId : '/api/lecture/drafts';
     var method = ST.draftId ? 'PUT' : 'POST';
     var body = {
-      title: title, grade: cfg.grade, compulsory: cfg.compulsory,
+      grade: cfg.grade, compulsory: cfg.compulsory,
       chapter: cfg.chapter, knowledge: cfg.knowledge,
       config: {
         topics: ST.topics, extra_ids: ST.extraIds,
         series: tree.series, drawer: drawer, year: tree.year,
       },
     };
-    fetch(url, {
+    // 标题只在首次创建、或小节/届次确实变化时重写；其余情况不带 title
+    // （后端 patch 语义未传字段不动），避免每次保存都把届次后缀冲掉
+    var stamp = draftStamp(drawer, cfg.knowledge, tree.year);
+    if (!ST.draftId || stamp !== ST.draftStamp) body.title = draftTitle(drawer, cfg.knowledge, tree.year);
+    apiJson(url, {
       method: method, headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     })
-      .then(function (r) { return r.json(); })
       .then(function (d) {
         ST.draftId = d.id;
+        ST.draftStamp = stamp;
+        ST.dirty = false;
+        clearAutosave();
+        renderAutosaveBar();
         toast('讲义已保存', 'success');
         renderDraftTree();
       })
@@ -1086,42 +1248,152 @@
 
   function deleteDraft(id) {
     if (!confirm('确定删除该讲义草稿？')) return;
-    fetch('/api/lecture/drafts/' + id, { method: 'DELETE' })
-      .then(function (r) { return r.json(); })
+    apiJson('/api/lecture/drafts/' + id, { method: 'DELETE' })
       .then(function () {
+        // 只有真删成功才动界面：后端拒绝时过去也会走到这里把编辑区清空
         if (ST.draftId === id) newDraft();
         else renderDraftTree();
       })
       .catch(function (e) { toast('删除失败：' + e.message); });
   }
 
+  /* ---------------- 编排本地快照与未保存提示 ---------------- */
+  var AUTOSAVE_KEY = 'mathbank_lecture_autosave';
+
+  function snapshotCount(snap) {
+    var n = (snap.extra_ids || []).length;
+    (snap.topics || []).forEach(function (t) { n += ((t && t.items) || []).length; });
+    return n;
+  }
+
+  function readAutosave() {
+    try {
+      var raw = localStorage.getItem(AUTOSAVE_KEY);
+      if (!raw) return null;
+      var snap = JSON.parse(raw);
+      return (snap && Array.isArray(snap.topics)) ? snap : null;
+    } catch (e) { return null; }
+  }
+
+  function clearAutosave() {
+    try { localStorage.removeItem(AUTOSAVE_KEY); } catch (e) { /* 隐私模式下读也失败，忽略 */ }
+  }
+
+  /* 每次编排变更都同步写快照：LocalStorage 写不进（配额/隐私模式）必须说一声，
+     否则用户会以为刷新后还有保险。 */
+  function snapshotOrchestration() {
+    // 只看真正编排了几道题：小节一加载 ST.topics 就有 5 个空槽，按长度判会天天写快照
+    if (!snapshotCount({ topics: ST.topics, extra_ids: ST.extraIds })) { clearAutosave(); return; }
+    var cfg = collectConfig();
+    var snap = {
+      saved_at: Date.now(), draft_id: ST.draftId,
+      compulsory: cfg.compulsory, chapter: cfg.chapter, knowledge: cfg.knowledge,
+      topics: ST.topics, extra_ids: ST.extraIds,
+    };
+    try {
+      localStorage.setItem(AUTOSAVE_KEY, JSON.stringify(snap));
+      ST.autosaveBlocked = false;
+    } catch (e) {
+      if (!ST.autosaveBlocked) toast('本地自动快照不可用，编排只能靠「保存讲义」留存', 'error');
+      ST.autosaveBlocked = true;
+    }
+  }
+
+  function renderAutosaveBar() {
+    var bar = $('lectureAutosaveBar');
+    if (!bar) return;
+    var snap = readAutosave();
+    var count = snap ? snapshotCount(snap) : 0;
+    var text = $('lectureAutosaveText');
+    var restore = $('lectureAutosaveRestore');
+    if (!snap || !count) { bar.classList.add('hidden'); return; }
+    if (text) {
+      text.textContent = ST.dirty
+        ? '当前编排有改动未写入草稿（共 ' + count + ' 题，本地已留快照）'
+        : '上次有编排未保存：' + (snap.knowledge || '未知小节') + ' · ' + count + ' 题';
+    }
+    if (restore) restore.classList.toggle('hidden', !!ST.dirty);
+    bar.classList.remove('hidden');
+  }
+
+  function restoreAutosave() {
+    var snap = readAutosave();
+    if (!snap || !snapshotCount(snap)) return;
+    var stale = applySelection(snap.compulsory, snap.chapter, snap.knowledge);
+    if (stale) {
+      toast('快照里的小节「' + stale + '」已不在当前教材树，无法恢复', 'error');
+      return;
+    }
+    ST.draftId = snap.draft_id || null;
+    ST.topics = snap.topics || [];
+    ST.extraIds = snap.extra_ids || [];
+    ST.draftStamp = '';
+    ST.dirty = true;
+    toast('已恢复本地快照，请点「保存讲义」写入草稿', 'success');
+    renderAutosaveBar();
+    renderDraftTree();
+    loadSection();
+  }
+
+  function discardAutosave() {
+    clearAutosave();
+    ST.dirty = false;
+    renderAutosaveBar();
+    toast('已丢弃本地快照', 'success');
+  }
+
+  function bindAutosave() {
+    if (ST.autosaveBound) return;
+    ST.autosaveBound = true;
+    var restore = $('lectureAutosaveRestore');
+    var discard = $('lectureAutosaveDiscard');
+    if (restore) restore.addEventListener('click', restoreAutosave);
+    if (discard) discard.addEventListener('click', discardAutosave);
+    window.addEventListener('beforeunload', function (e) {
+      if (!ST.dirty) return;
+      e.preventDefault();
+      e.returnValue = '';
+    });
+  }
+
   /* ---------------- 编排操作 ---------------- */
+  function commitOrchestration() {
+    ST.dirty = true;
+    snapshotOrchestration();
+    renderTopicPanelFromState();
+    renderAutosaveBar();
+  }
+
   function addItem(topicIdx, qid) {
     if (!ST.topics[topicIdx]) return;
     if (ST.topics[topicIdx].items.some(function (it) { return it.question_id === qid; })) return;
     ST.topics[topicIdx].items.push({ question_id: qid, role: 'example' });
-    renderTopicPanelFromState();
+    commitOrchestration();
   }
 
   function setRole(topicIdx, itemIdx, role) {
     if (ST.topics[topicIdx] && ST.topics[topicIdx].items[itemIdx]) {
       ST.topics[topicIdx].items[itemIdx].role = role;
-      renderTopicPanelFromState();
+      commitOrchestration();
     }
   }
 
   function removeItem(topicIdx, itemIdx) {
-    if (ST.topics[topicIdx]) ST.topics[topicIdx].items.splice(itemIdx, 1);
-    renderTopicPanelFromState();
+    if (!ST.topics[topicIdx]) return;
+    ST.topics[topicIdx].items.splice(itemIdx, 1);
+    commitOrchestration();
   }
 
   function addExtra(qid) {
     if (ST.extraIds.indexOf(qid) >= 0) return;
     ST.extraIds.push(qid);
-    renderTopicPanelFromState();
+    commitOrchestration();
   }
 
-  function removeExtra(i) { ST.extraIds.splice(i, 1); renderTopicPanelFromState(); }
+  function removeExtra(i) {
+    ST.extraIds.splice(i, 1);
+    commitOrchestration();
+  }
 
   function renderTopicPanelFromState() {
     // 用已加载的 section 重绘（section 缓存于 ST.section）
@@ -1132,11 +1404,7 @@
     var cfg = collectConfig();
     if (!cfg.compulsory || !cfg.chapter || !cfg.knowledge) { toast('请先选择册次 / 章节 / 小节'); return; }
     toast('加载小节…');
-    fetch('/api/lesson-plans/section-topics?compulsory=' + encodeURIComponent(cfg.compulsory) + '&chapter=' + encodeURIComponent(cfg.chapter) + '&knowledge=' + encodeURIComponent(cfg.knowledge))
-      .then(function (r) {
-        if (!r.ok) throw new Error('大纲中未找到该小节（HTTP ' + r.status + '）');
-        return r.json();
-      })
+    apiJson('/api/lesson-plans/section-topics?compulsory=' + encodeURIComponent(cfg.compulsory) + '&chapter=' + encodeURIComponent(cfg.chapter) + '&knowledge=' + encodeURIComponent(cfg.knowledge))
       .then(function (built) {
         ST.section = { compulsory: cfg.compulsory, chapter: cfg.chapter, knowledge: cfg.knowledge, name: cfg.knowledge, topics: (built.blocks || []).map(function (b) { return { id: b.topic_id, name: b.title, no: b.no }; }) };
         return loadQuestions();
@@ -1150,21 +1418,54 @@
   }
 
   /* ---------------- 知识块编辑 ---------------- */
-  /* 弹窗回填失败不得静默：空 textarea + 保存 = 用空内容覆盖已存修订稿 */
-  function loadNoteIntoModal(query) {
-    fetch('/api/lecture/notes?' + query)
-      .then(function (r) {
-        if (!r.ok) throw new Error('HTTP ' + r.status);
-        return r.json();
-      })
+  function setNoteDeleteVisible(on) {
+    var btn = $('lectureNoteDelete');
+    if (!btn) return;
+    btn.classList.toggle('hidden', !on);
+    btn.disabled = !on;
+  }
+
+  /* 弹窗回填失败不得静默：空 textarea + 保存 = 用空内容覆盖已存修订稿。
+     fallbackText 是该考向在大纲里的默认内容（仅无修订稿时预载）。 */
+  function loadNoteIntoModal(query, fallbackText) {
+    setNoteDeleteVisible(false);
+    apiJson('/api/lecture/notes?' + query)
       .then(function (rows) {
         var ta = $('lectureNoteContent');
-        if (ta && rows && rows.length) ta.value = rows[0].content || '';
+        var found = !!(rows && rows.length);
+        var content = (found && rows[0].content) || '';
+        if (ta) ta.value = found ? content : (fallbackText || '');
+        // 只有库里确实有内容时才有「恢复默认」可点
+        setNoteDeleteVisible(!!String(content).trim());
       })
       .catch(function (e) {
         if (ST.noteTarget) ST.noteTarget.noteLoadFailed = true;
         toast('读取已存修订稿失败（' + e.message + '），请勿直接清空保存', 'error');
       });
+  }
+
+  /* 删除该条修订稿 = 回退到无修订稿状态（知识梳理清空、易错点/方法回到待补充） */
+  function deleteNote() {
+    var target = ST.noteTarget;
+    if (!target) return;
+    if (target.type === 'mind-node') { toast('思维导图整块删除请先用工具栏「知识梳理」打开源码'); return; }
+    var cfg = collectConfig();
+    if (!cfg.compulsory || !cfg.chapter || !cfg.knowledge) { toast('请先选择小节'); return; }
+    if (!confirm('删除这条已保存的修订稿？删除后回到默认内容，不可撤销。')) return;
+    var q = 'note_type=' + encodeURIComponent(target.type) +
+      '&compulsory=' + encodeURIComponent(cfg.compulsory) +
+      '&chapter=' + encodeURIComponent(cfg.chapter) +
+      '&knowledge=' + encodeURIComponent(cfg.knowledge) +
+      (target.topic_id ? '&topic_id=' + encodeURIComponent(target.topic_id) : '');
+    apiJson('/api/lecture/notes?' + q, { method: 'DELETE' })
+      .then(function () {
+        var ta = $('lectureNoteContent');
+        if (ta) ta.value = '';
+        closeNoteModal();
+        toast('已删除该修订稿', 'success');
+        refreshPreview();
+      })
+      .catch(function (e) { toast('删除失败：' + e.message, 'error'); });
   }
 
   function editNote(type, topicIdx) {
@@ -1174,12 +1475,18 @@
     if (!topicCfg) { toast('该考向尚未初始化'); return; }
     if (!topicCfg.topic_id) { toast('该考向缺少考点标识，请先重新加载小节后再编辑'); return; }
     ST.noteTarget = { type: type, topic_idx: topicIdx, topic_id: topicCfg.topic_id, name: topicCfg.name };
+    // 无修订稿时「解题方法」以大纲例题为起点，与预览里渲染的默认内容同一份
+    var fallback = (type === 'method') ? outlineExampleOf(ST.topicMetaById || {}, topicCfg) : '';
     var titleEl = $('lectureNoteModalTitle');
-    if (titleEl) titleEl.textContent = '编辑' + (type === 'pit' ? '易错点' : '解题方法') + '：考向' + (topicIdx + 1) + ' ' + topicCfg.name;
+    if (titleEl) {
+      titleEl.textContent = '编辑' + (type === 'pit' ? '易错点' : '解题方法') + '：考向'
+        + topicNoOf(ST.topicMetaById || {}, topicCfg, topicIdx) + ' ' + topicCfg.name
+        + (fallback ? '（起点：大纲默认）' : '');
+    }
     var ta = $('lectureNoteContent');
     if (ta) ta.value = '';
     // 读取已保存
-    loadNoteIntoModal('note_type=' + type + '&compulsory=' + encodeURIComponent(cfg.compulsory) + '&chapter=' + encodeURIComponent(cfg.chapter) + '&knowledge=' + encodeURIComponent(cfg.knowledge) + '&topic_id=' + encodeURIComponent(topicCfg.topic_id));
+    loadNoteIntoModal('note_type=' + type + '&compulsory=' + encodeURIComponent(cfg.compulsory) + '&chapter=' + encodeURIComponent(cfg.chapter) + '&knowledge=' + encodeURIComponent(cfg.knowledge) + '&topic_id=' + encodeURIComponent(topicCfg.topic_id), fallback);
     var modal = $('lectureNoteModal');
     if (modal) { modal.classList.remove('hidden'); modal.classList.add('flex'); }
     if (ta) ta.focus();
@@ -1199,19 +1506,12 @@
     if (ta) ta.focus();
   }
 
-  /* 修订稿写入：4xx/5xx 的错误体也是合法 JSON，不看 r.ok 会把「保存被拒」
-     当成功并提示「下次生成自动复用」。 */
+  /* 修订稿写入：被 400 拒绝（如缺考点标识）时必须报错，
+     而不是提示「下次生成自动复用」。 */
   function putNote(payload) {
-    return fetch('/api/lecture/notes', {
+    return apiJson('/api/lecture/notes', {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
-    }).then(function (r) {
-      if (!r.ok) {
-        return r.json().catch(function () { return {}; }).then(function (b) {
-          throw new Error((b && b.detail) || ('HTTP ' + r.status));
-        });
-      }
-      return r.json();
     });
   }
 
@@ -1265,6 +1565,95 @@
     ST.noteTarget = null;
   }
 
+  /* ---------------- 孤儿修订稿清单 ---------------- */
+  /* 考向树重建会换掉 topic_id、小节改名会换掉坐标：note_key 从此取不回来，
+     这些修订稿既不进讲义也没有任何界面能看到。这里只报告，删除必须逐条显式点。 */
+  var ORPHAN_REASONS = {
+    section_missing: '小节在当前教材树里已定位不到',
+    topic_missing: '考向已重建或改名，考点标识对不上',
+    unknown_type: '未知的知识块类型',
+  };
+  var ORPHAN_TYPE_LABELS = { knowledge: '知识梳理', pit: '易错点', method: '解题方法' };
+
+  function openOrphans() {
+    var modal = $('lectureOrphanModal');
+    if (modal) { modal.classList.remove('hidden'); modal.classList.add('flex'); }
+    loadOrphans();
+  }
+
+  function closeOrphans() {
+    var modal = $('lectureOrphanModal');
+    if (modal) { modal.classList.add('hidden'); modal.classList.remove('flex'); }
+  }
+
+  function loadOrphans() {
+    return apiJson('/api/lecture/orphan-notes').then(function (data) {
+      renderOrphanList((data && data.items) || []);
+    }).catch(function (e) {
+      toast('读取孤儿修订稿失败：' + e.message, 'error');
+    });
+  }
+
+  function renderOrphanList(items) {
+    var badge = $('lectureOrphanCount');
+    if (badge) {
+      badge.textContent = String(items.length);
+      badge.classList.toggle('hidden', !items.length);
+    }
+    var list = $('lectureOrphanList');
+    if (!list) return;
+    while (list.firstChild) list.removeChild(list.firstChild);
+    if (!items.length) {
+      list.appendChild(orphanLine('div', '没有发现无法定位的修订稿。', 'text-sm text-slate-400'));
+      return;
+    }
+    items.forEach(function (row) { list.appendChild(orphanCard(row)); });
+  }
+
+  function orphanLine(tag, text, cls) {
+    var el = document.createElement(tag);
+    el.textContent = text;
+    if (cls) el.className = cls;
+    return el;
+  }
+
+  function orphanCard(row) {
+    var card = orphanLine('div', '', 'rounded-xl border border-slate-200 dark:border-slate-700 p-3 flex items-start gap-3');
+    var body = orphanLine('div', '', 'flex-1 min-w-0');
+    var where = [row.compulsory, row.chapter, row.knowledge];
+    if (row.topic_id) where.push(row.topic_id);
+    body.appendChild(orphanLine('div',
+      (ORPHAN_TYPE_LABELS[row.note_type] || row.note_type) + '　' + where.filter(Boolean).join(' / '),
+      'text-sm font-bold text-slate-700 dark:text-slate-200 break-all'));
+    body.appendChild(orphanLine('div',
+      ORPHAN_REASONS[row.reason] || row.reason,
+      'text-xs text-amber-600 dark:text-amber-400 mt-0.5'));
+    body.appendChild(orphanLine('div',
+      row.content_chars + ' 字 · 最后修改 ' + (row.updated_at ? String(row.updated_at).slice(0, 10) : '未知'),
+      'text-xs text-slate-400 mt-0.5'));
+    var del = orphanLine('button', '删除', 'shrink-0 rounded-lg border border-red-300 dark:border-red-800 px-3 py-1 text-xs text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20');
+    del.type = 'button';
+    del.addEventListener('click', function () { deleteOrphan(row, del); });
+    card.appendChild(body);
+    card.appendChild(del);
+    return card;
+  }
+
+  function deleteOrphan(row, button) {
+    button.disabled = true;
+    button.setAttribute('aria-busy', 'true');
+    var qs = ['note_type', 'compulsory', 'chapter', 'knowledge', 'topic_id'].map(function (key) {
+      return key + '=' + encodeURIComponent(row[key] || '');
+    }).join('&');
+    apiJson('/api/lecture/notes?' + qs, { method: 'DELETE' })
+      .then(loadOrphans)
+      .catch(function (e) {
+        button.disabled = false;
+        button.removeAttribute('aria-busy');
+        toast('删除失败：' + e.message, 'error');
+      });
+  }
+
   /* ---------------- 对外 ---------------- */
   var _bound = false;
   function bindSelectors() {
@@ -1287,18 +1676,22 @@
     refresh: function () {
       bindSelectors();
       bindMindEdit();
+      bindAutosave();
       renderGrade(); renderCompulsory(); renderChapter(); renderKnowledge();
       renderDrawerOptions(); renderYearOptions();
       renderDraftTree();
+      renderAutosaveBar();
+      loadOrphans();
       if (window.systemMetadata) refreshPreview();
     },
     newDraft: newDraft, loadDraft: loadDraft, saveDraft: saveDraft, deleteDraft: deleteDraft,
     cloneDraft: cloneDraft, restoreDraft: restoreDraft, setYearFilter: setYearFilter,
     loadSection: loadSection, refreshPreview: refreshPreview,
-    switchView: switchView, printLecture: printLecture,
+    switchView: switchView, printLecture: printLecture, exportPdf: exportPdf,
     addItem: addItem, setRole: setRole, removeItem: removeItem,
     addExtra: addExtra, removeExtra: removeExtra,
     editNote: editNote, editKnowledge: editKnowledge, saveNote: saveNote, closeNoteModal: closeNoteModal,
-    editMindNode: editMindNode,
+    deleteNote: deleteNote, editMindNode: editMindNode,
+    openOrphans: openOrphans, closeOrphans: closeOrphans,
   };
 })();

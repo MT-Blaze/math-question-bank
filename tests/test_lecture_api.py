@@ -563,3 +563,114 @@ def test_preview_quote_pool_prefers_saved_settings(client, db_session):
     })
     assert r.status_code == 200
     assert r.json()["quote_pool"] == ["自定义名言 A", "自定义名言 B"]
+
+
+def test_preview_survives_non_numeric_question_ids(client, db_session):
+    """编排 config 被外部脚本或手改污染时 preview 不能 500：跳过并如实分开回报。"""
+    r = client.post("/api/lecture/preview", headers=_headers(), json={
+        "compulsory": "必修一", "chapter": _CH, "knowledge": _KN,
+        "topics": [{"topic_id": "k_x", "name": "n", "items": [
+            {"question_id": "abc", "role": "example"},
+            {"question_id": None, "role": "example"},
+            {"question_id": 999999, "role": "example"},
+        ]}],
+        "extra_ids": ["not-a-number"],
+    })
+    assert r.status_code == 200
+    body = r.json()
+    assert body["questions"] == []
+    assert sorted(body["invalid_ids"]) == sorted(["abc", "not-a-number"])
+    assert body["missing_ids"] == [999999]
+
+
+def test_preview_question_payload_carries_no_dead_roles(client, db_session):
+    """roles 是零消费方的派生字段：曾由 role_map 算好塞进响应却无人读取，已删除。"""
+    ids = [q.id for q in _seed(db_session)]
+    r = client.post("/api/lecture/preview", headers=_headers(), json={
+        "compulsory": "必修一", "chapter": _CH, "knowledge": _KN,
+        "topics": [{"topic_id": "k_x", "name": "n", "items": [
+            {"question_id": ids[0], "role": "example"},
+            {"question_id": ids[0], "role": "practice"},
+        ]}],
+        "extra_ids": [],
+    })
+    assert r.status_code == 200
+    body = r.json()
+    assert len(body["questions"]) == 1
+    assert "roles" not in body["questions"][0]
+    # 派生它的那段计算也已移除，不得再长回来
+    from pathlib import Path
+    helper = Path(__file__).resolve().parents[1] / "mathbank" / "lecture_helper.py"
+    assert "role_map" not in helper.read_text(encoding="utf-8")
+
+
+def test_preview_exposes_outline_example_for_unrevised_topics(client, db_session, monkeypatch):
+    """无修订稿的考向要靠大纲 example 兜底，preview 必须把默认内容带出来。"""
+    monkeypatch.setattr("mathbank.lecture_helper.get_current_curriculum", lambda: {
+        "必修一": {_CH: [{"name": _KN, "topics": [
+            {"id": "k_e1", "name": "集合判断", "no": 1, "example": "例：判断小于5的自然数能否构成集合。"},
+            {"id": "k_e2", "name": "无示例考向", "no": 2},
+        ]}]}
+    })
+    r = client.post("/api/lecture/preview", headers=_headers(), json={
+        "compulsory": "必修一", "chapter": _CH, "knowledge": _KN, "topics": [], "extra_ids": [],
+    })
+    assert r.status_code == 200
+    topics = r.json()["section"]["topics"]
+    assert topics[0]["example"].startswith("例：")
+    assert topics[1]["example"] == ""
+
+
+def test_orphan_notes_lists_only_unreachable_revisions(client, db_session, monkeypatch):
+    """考向树重建 / 小节改名后留下的修订稿必须列得出来，且能按列出的坐标删掉。
+
+    这类行此前在界面上完全隐身：note_key 永远查不回来，用户既看不到也删不掉。
+    """
+    _pin_curriculum(monkeypatch)
+    base = {"compulsory": "必修一", "chapter": _CH, "knowledge": _KN}
+    alive_knowledge = "knowledge:必修一:%s:%s" % (_CH, _KN)
+    seed = [
+        {**base, "note_type": "knowledge", "content": "<p>活：知识梳理</p>"},
+        {**base, "note_type": "pit", "topic_id": "k_tree000001", "content": "<p>活：在册考向</p>"},
+        {**base, "note_type": "method", "topic_id": "k_gone00001", "content": "<p>考向已重建</p>"},
+        {**base, "note_type": "pit", "topic_id": "undefined", "content": "<p>旧脏键</p>"},
+        {"compulsory": "必修一", "chapter": "第九章 已被删掉的章", "knowledge": _KN,
+         "note_type": "knowledge", "content": "<p>小节没了</p>"},
+    ]
+    for row in seed:
+        assert client.put("/api/lecture/notes", headers=_headers(), json=row).status_code == 200
+
+    items = client.get("/api/lecture/orphan-notes").json()["items"]
+    by_key = {item["note_key"]: item for item in items}
+    assert alive_knowledge not in by_key
+    assert "pit:必修一:%s:%s:k_tree000001" % (_CH, _KN) not in by_key
+    dead_method = "method:必修一:%s:%s:k_gone00001" % (_CH, _KN)
+    assert by_key[dead_method]["reason"] == "topic_missing"
+    assert by_key[dead_method]["topic_id"] == "k_gone00001"
+    dirty_pit = "pit:必修一:%s:%s:undefined" % (_CH, _KN)
+    assert by_key[dirty_pit]["reason"] == "topic_missing"
+    gone_chapter = "knowledge:必修一:第九章 已被删掉的章:%s" % _KN
+    assert by_key[gone_chapter]["reason"] == "section_missing"
+    assert by_key[gone_chapter]["content_chars"] == len("<p>小节没了</p>")
+
+    # 列出来的东西必须删得掉：删除路由自己按同样的口径重拼 note_key
+    client.delete("/api/lecture/notes", headers=_headers(), params={
+        "note_type": "method", "compulsory": "必修一", "chapter": _CH,
+        "knowledge": _KN, "topic_id": "k_gone00001",
+    })
+    remaining = {item["note_key"] for item in client.get("/api/lecture/orphan-notes").json()["items"]}
+    assert dead_method not in remaining
+    assert dirty_pit in remaining
+
+
+def test_orphan_notes_accepts_revisions_from_inactive_textbook_versions(client, db_session, monkeypatch):
+    """lecture_notes 没有版本列：只按当前活跃树判存活，会把另一套教材写好的修订稿误报成孤儿。"""
+    _pin_curriculum(monkeypatch)   # 活跃树里只有 _CH/_KN 这一个小节
+    preset = {"compulsory": "必修一", "chapter": "1. 集合与常用逻辑用语", "knowledge": "1.1 集合的概念"}
+    assert client.put("/api/lecture/notes", headers=_headers(), json={
+        **preset, "note_type": "pit", "topic_id": "k_73cd5e2899",
+        "content": "<p>人教A 版预设里的真考向</p>",
+    }).status_code == 200
+
+    keys = [item["note_key"] for item in client.get("/api/lecture/orphan-notes").json()["items"]]
+    assert keys == []
