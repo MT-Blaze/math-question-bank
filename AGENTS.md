@@ -142,6 +142,7 @@
 ### 3.9 Word (.docx) 安全保真拆分与公式提取
 - **公式结构化转换**：`mathbank/omml_helper.py` 处理 OMML，`mathbank/mtef_helper.py` 解析 MathType/MTEF。统一经 `normalize_word_formula_latex` 规范化。未知私用字符保留 `[公式结构待核对]`；MTEF 节点拼接自动增加字母边界空格，防止控制词粘连。
 - **Word 语义保真**：解析 `word/numbering.xml` 恢复自动编号；普通段落上标、下标、下划线转化为 LaTeX/Markdown 表达；表格转为 `tabular`（支持合并单元格转义）；图片校验格式与大小。
+- **拆题输出侧数量守恒自检 (`mathbank/output_fidelity.py`)**：锁机制只保证公式**原文**不丢，管不到选项被合并、表格整张消失、`\fillin` 被吞、`[插图待补: 图N]` 编号对不上这几类同样致命却完全静默的改写（四选一变三选一在卷面上看不出问题）。`check_split_output_fidelity(questions, source_text)` 在 `post_process_pdf_parsed_questions` 归一化**之前**按题切片对账（那时 content 还是模型原样，与源文同口径），给异常题打 `_fidelity_review` 理由数组并打印 `[内容自检]` 摘要；三条录入路线都传各自喂给模型的源文（MinerU markdown / TeX 合并文本 / Word **加锁后**的 `locked_markdown_content`——占位符与 choices 会被锁包裹，只有同口径才不误报）。判据只用提示词强制要求的朴素语法（`choices`/`\item`/`tabular`/`\fillin`/占位符字面量），且**只报不阻断**：定位失败的题直接跳过（绝不拿整卷数字冒充单题），日志必须写明「N 题定位失败已跳过」，以免「全部正常」被误读成覆盖了一整卷。前端在拆题卡片配图角标旁追加「内容与原卷不符」红色角标，逐条理由进 `title`。⚠️ 这一类校验最容易犯的错是**计数器恒为 0**（行首锚点配 MULTILINE、或切片被剥掉反斜杠都会让特征数不出来），表现为永远没有告警；回归 `tests/test_output_fidelity.py::test_feature_counters_are_not_silently_zero` 直接对每个特征断言非零来钉住它。
 - **公式可见性锁定协议 (`lock_visible_math`)**：拆卷前用带唯一 ID 的 `<mathbank-math>` 锁定公式，模型只返回 ID 引用，提取完成后在解题前逐字恢复原公式，ID 异常立即中断报错。 ID 没写回但**公式原文一字不差地出现在输出里**时不算丢失（实测拆题模型有概率直接抄回 `<mathbank-math>` 里的公式），计入 `math_locks_implicit` 放行；仅当这条原文在整份输出里唯一、且没有其他锁共用同一原文时才这样判，同一条公式被两处引用仍然按丢失中断，不做猜测式归属。
 
 ### 3.10 组卷排版工作台

@@ -988,7 +988,7 @@ def run_mineru_pdf_parsing_task(
         # 它**不会**让插图兜底误挂图 —— 兜底只认 tmp 下的 pdf_crop_*，而 MinerU 的插图
         # 落在静态根目录，所以这里实际只会产出 _source_page。
         final_questions = _main.post_process_pdf_parsed_questions(
-            parsed_questions, paper_title, task_id, page_texts or None
+            parsed_questions, paper_title, task_id, page_texts or None, markdown
         )
         _main.DOCUMENT_TASKS.check_cancelled(task_id)
         # 云路线同样要对账：MinerU 抽了几幅图、模型把几幅挂到了题上。整卷口径
@@ -1290,6 +1290,7 @@ def run_pdf_parsing_task(
             paper_title,
             task_id,
             ocr_results,
+            full_latex_content,
         )
         _main.DOCUMENT_TASKS.check_cancelled(task_id)
         # 图形对账：逐页比较「PDF 里真实有几幅图形」与「有几幅归到了题目上」。
@@ -1542,7 +1543,9 @@ def run_docx_parsing_task(
         diagnostics.update(lock_report)
 
         _main.DOCUMENT_TASKS.check_cancelled(task_id)
-        final_questions = _main.post_process_pdf_parsed_questions(parsed_questions, paper_title, task_id, [full_markdown_content])
+        final_questions = _main.post_process_pdf_parsed_questions(
+            parsed_questions, paper_title, task_id, [full_markdown_content], locked_markdown_content
+        )
         _main.DOCUMENT_TASKS.check_cancelled(task_id)
         _main.DOCUMENT_TASKS.complete(
             task_id,

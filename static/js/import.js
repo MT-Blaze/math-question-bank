@@ -6202,6 +6202,17 @@
                 }
                 strip.appendChild(warn);
             }
+            // 内容守恒角标：本题正文/解析里的选项数、表格数、填空下划线数或插图占位符
+            // 与原卷对不上。这类改写不会报错、卷面也看着正常，只能靠后端数量对账发现。
+            const fidelityReasons = (q && Array.isArray(q._fidelity_review)) ? q._fidelity_review : [];
+            if (fidelityReasons.length) {
+                const mismatch = document.createElement('span');
+                mismatch.className = 'self-center rounded-md border border-rose-200 bg-rose-50 '
+                    + 'px-2 py-0.5 text-[10px] font-bold text-rose-700';
+                mismatch.textContent = '内容与原卷不符，请核对';
+                mismatch.title = fidelityReasons.join('；');
+                strip.appendChild(mismatch);
+            }
             // 转换进度小结：本题共几张图、其中几张已经是 TikZ 矢量图。
             // 只在「已经转过至少一张」时显示——否则会给每道题都挂一个无意义的 0/0 标签。
             const allSafePaths = q.image_paths

@@ -2191,3 +2191,33 @@ def test_mineru_cache_force_fresh_toggle_is_cloud_only():
     body = body[:body.index("\n        }")]
     assert "checkbox.checked = false" in body
     assert "addEventListener('change', sync)" in body
+
+
+def test_parsed_card_shows_content_fidelity_badge():
+    """拆题卡片必须显示「内容与原卷不符」角标，否则后端的对账结论没人看得见。
+
+    这条链路两端都会静默失效：后端不打 `_fidelity_review`（见
+    `tests/test_output_fidelity.py`），或前端不读它——两种情况下用户都只会以为
+    「系统检查过了、没问题」。所以这里同时钉住后端标记与前端渲染。
+    """
+
+    root = PROJECT_ROOT
+    import_js = (root / "static" / "js" / "import.js").read_text(encoding="utf-8")
+    pipeline = (root / "mathbank" / "parsing_pipeline.py").read_text(encoding="utf-8")
+
+    assert "_fidelity_review" in import_js
+    assert "内容与原卷不符" in import_js
+    # 理由逐条进 title，不能只给一个笼统的「请核对」
+    assert "fidelityReasons.join" in import_js
+    # 与配图角标并列而非互斥：两种异常要能同时呈现
+    strip = import_js[import_js.index("const reviewReasons"):import_js.index(
+        "const fidelityReasons"
+    )]
+    assert "_image_review" in strip or "reviewReasons" in strip
+
+    # 后端必须在归一化之前跑对账，并打印一行摘要
+    assert "check_split_output_fidelity(" in pipeline
+    assert "format_fidelity_log(" in pipeline
+    call_at = pipeline.index("check_split_output_fidelity(")
+    normalize_at = pipeline.index("return apply_storage_normalization(parsed_questions)")
+    assert call_at < normalize_at, "对账必须在入库归一化之前，否则口径已与源文不同"

@@ -24,6 +24,10 @@ from main import (
 )
 
 from mathbank.latex_normalize import normalize_for_storage, normalize_stem_for_storage
+from mathbank.output_fidelity import (
+    check_split_output_fidelity,
+    format_fidelity_log,
+)
 
 # 一道题挂到这么多张配图基本可以断定归属出了偏差，导入后提请人工核对。
 _IMAGE_COUNT_REVIEW_THRESHOLD = 3
@@ -295,9 +299,13 @@ def _tmp_upload_dir() -> str:
         return TMP_UPLOAD_DIR
 
 
-def post_process_pdf_parsed_questions(parsed_questions: list, paper_title: str, task_id: str = None, ocr_results: list = None) -> list:
+def post_process_pdf_parsed_questions(parsed_questions: list, paper_title: str, task_id: str = None, ocr_results: list = None, source_text: str = "") -> list:
     """PDF 专属解析卡片后处理：正则搜寻 /tmp/ 下的图片，以及将未解析的图n占位符智能映射回真实的裁剪插图图片，
-    最后将其灌入 image_paths 数组中，并在 content 中静默清除以配合布局展示。支持文本重合度兜底映射，防大模型删除路径！"""
+    最后将其灌入 image_paths 数组中，并在 content 中静默清除以配合布局展示。支持文本重合度兜底映射，防大模型删除路径！
+
+    ``source_text`` 是喂给拆题模型的整卷源文（MinerU markdown / Word markdown / TeX 源码），
+    供内容守恒自检按题切片对账；缺省时退回用 ``ocr_results[0]``，两者都没有则跳过对账。
+    """
     import re
     import os
     import glob
@@ -716,6 +724,15 @@ def post_process_pdf_parsed_questions(parsed_questions: list, paper_title: str, 
         print("[配图自检] 以下题目的配图建议人工核对：" + "；".join(review_notes))
     else:
         print("[配图自检] 全部题目的配图归属未发现异常。")
+
+    # 7.5 内容守恒自检：把每题输出与源文切片按可数量对账（选项数 / choices 环境 /
+    #     tabular / \fillin / [插图待补] 编号集）。公式原文由 lock_visible_math 负责，
+    #     这里补的是它管不到的结构性丢失——四选一变三选一是静默的，卷面却看着正常。
+    #     必须在归一化之前跑：那时 content 还是模型原样，与源文口径一致。
+    fidelity_report = check_split_output_fidelity(
+        parsed_questions, source_text or (ocr_results[0] if ocr_results else "")
+    )
+    print(format_fidelity_log(fidelity_report))
 
     # 8. 入库前 LaTeX 归一化：与 TeX / 批量图片路线共用同一个出口函数，
     #    保证「卡片预览 == 写库结果」只有一份实现。
