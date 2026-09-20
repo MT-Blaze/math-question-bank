@@ -393,3 +393,154 @@ def test_mineru_local_zip_import_is_removed():
     main_py = (root / "main.py").read_text(encoding="utf-8")
     assert "upload_mineru_local_task" not in main_py
     assert "run_mineru_local_parsing_task" not in main_py
+
+
+# ---------------------------------------------------------------------------
+# MinerU 装饰图过滤（水印/二维码/页眉条/公式碎片）
+# ---------------------------------------------------------------------------
+
+def _save_gray_image(tmp_path, name, width, height, draw_fn):
+    """生成一张按坐标回调上色的灰度图，用于精确构造像素特征。"""
+
+    from PIL import Image
+
+    path = tmp_path / name
+    image = Image.new("L", (width, height))
+    pixels = image.load()
+    for y in range(height):
+        for x in range(width):
+            pixels[x, y] = draw_fn(x, y)
+    image.save(path)
+    return path
+
+
+def _qr_like_image(tmp_path):
+    # 近正方形 + 深色模块占比高 + 边缘密集
+    return _save_gray_image(
+        tmp_path, "qr.png", 60, 60, lambda x, y: 0 if ((x // 6 + y // 6) % 2 == 0) else 255
+    )
+
+
+def _watermark_like_image(tmp_path):
+    # 大面积、几乎全白、边缘极少
+    return _save_gray_image(
+        tmp_path,
+        "wm.png",
+        500,
+        500,
+        lambda x, y: 248 if 240 <= y < 260 and 200 <= x < 300 else 252,
+    )
+
+
+def _formula_strip_image(tmp_path):
+    # 细长条：高度小、宽高比大、边缘丰富
+    return _save_gray_image(
+        tmp_path,
+        "strip.png",
+        400,
+        40,
+        lambda x, y: 0 if (x // 8 + y // 8) % 2 == 0 else 255,
+    )
+
+
+def _parabola_like_image(tmp_path):
+    """真实函数图像形态：白底、少量笔画、非细长——必须保留。"""
+
+    def paint(x, y):
+        if abs(y - 80) <= 1 or abs(x - 100) <= 1:
+            return 120
+        curve = int(80 + (x - 100) ** 2 / 120)
+        if abs(y - curve) <= 1:
+            return 0
+        return 255
+
+    return _save_gray_image(tmp_path, "para.png", 200, 160, paint)
+
+
+def _balance_like_image(tmp_path):
+    """天平示意图形态：低边缘 + 白底 + 近方形，容易被误判成水印——必须保留。"""
+
+    def paint(x, y):
+        if abs(y - 120) <= 2 and 30 <= x <= 170:
+            return 0
+        if abs(x - 100) <= 2 and 40 <= y <= 122:
+            return 0
+        if 60 <= y <= 70 and abs(x - 60) <= 3:
+            return 0
+        if 60 <= y <= 70 and abs(x - 140) <= 3:
+            return 0
+        return 255
+
+    return _save_gray_image(tmp_path, "bal.png", 200, 160, paint)
+
+
+def test_classify_rejects_qr_logo(tmp_path):
+    from mathbank.mineru_client import classify_mineru_decoration_image
+
+    assert classify_mineru_decoration_image(str(_qr_like_image(tmp_path))) == "二维码/Logo"
+
+
+def test_classify_rejects_watermark(tmp_path):
+    from mathbank.mineru_client import classify_mineru_decoration_image
+
+    assert classify_mineru_decoration_image(str(_watermark_like_image(tmp_path))) == "水印"
+
+
+def test_classify_rejects_formula_strip(tmp_path):
+    from mathbank.mineru_client import classify_mineru_decoration_image
+
+    reason = classify_mineru_decoration_image(str(_formula_strip_image(tmp_path)))
+    assert reason == "页眉页脚/公式条/表格"
+
+
+def test_classify_keeps_real_figures(tmp_path):
+    """抛物线与天平是合法配图：误杀它们比漏掉水印更糟（用户无从补图）。"""
+
+    from mathbank.mineru_client import classify_mineru_decoration_image
+
+    assert classify_mineru_decoration_image(str(_parabola_like_image(tmp_path))) == ""
+    assert classify_mineru_decoration_image(str(_balance_like_image(tmp_path))) == ""
+
+
+def test_classify_is_safe_for_balance_like_low_edge_figure(tmp_path):
+    """低边缘但面积不足水印阈值的图形不得被判成水印。
+
+    天平图 200x160=32000 px，低于 ``_WATERMARK_MIN_AREA``；若只按「白底 + 少边缘」
+    一刀切，这类图会被整批吃掉。
+    """
+
+    from mathbank.mineru_client import classify_mineru_decoration_image
+
+    path = _balance_like_image(tmp_path)
+    reason = classify_mineru_decoration_image(str(path))
+    assert reason == "", reason
+
+
+def test_filter_mineru_decoration_images_cleans_markdown_and_keeps_real(tmp_path):
+    from mathbank.mineru_client import filter_mineru_decoration_images
+
+    qr = _qr_like_image(tmp_path)
+    wm = _watermark_like_image(tmp_path)
+    para = _parabola_like_image(tmp_path)
+    markdown = (
+        "如图 ![](images/para.png) 所示。\n\n"
+        "![校徽](images/qr.png)\n\n"
+        "![](images/wm.png)\n\n\n正文继续。"
+    )
+    cleaned, kept = filter_mineru_decoration_images(
+        markdown, [str(para), str(qr), str(wm)]
+    )
+    assert [str(p) for p in kept] == [str(para)]
+    assert "images/para.png" in cleaned
+    assert "images/qr.png" not in cleaned
+    assert "images/wm.png" not in cleaned
+    # 清掉引用后不得留下三个连续空行（会打乱后续拆题分段）
+    assert "\n\n\n" not in cleaned
+
+
+def test_filter_mineru_decoration_images_empty_inputs():
+    from mathbank.mineru_client import filter_mineru_decoration_images
+
+    assert filter_mineru_decoration_images("", []) == ("", [])
+    md = "![](images/x.png)"
+    assert filter_mineru_decoration_images(md, []) == (md, [])

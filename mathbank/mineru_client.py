@@ -397,3 +397,164 @@ def replace_image_refs(markdown: str, mapping: dict) -> str:
         return match.group(0)
 
     return img_re.sub(_replace, markdown)
+
+
+# ---------------------------------------------------------------------------
+# MinerU 插图装饰过滤
+# ---------------------------------------------------------------------------
+# MinerU 会把页眉/页脚条、水印、二维码/Logo、公式行碎片也当成「figure」抽出，
+# 这些非内容图片一旦被大模型引用，就会挂到不相关的题目上（常见现象：末题吞掉
+# 整卷七八张图）。下面的分类器只依赖像素特征，在 stage 之前把明显是装饰的图
+# 丢掉，并同步清理 markdown 里的引用，避免留下死链。
+
+_QR_MAX_ASPECT = 1.4
+_QR_MIN_BLACK_RATIO = 0.10
+_QR_MIN_EDGE_RATIO = 0.18
+
+_WATERMARK_MAX_EDGE_RATIO = 0.015
+_WATERMARK_MIN_WHITE_RATIO = 0.80
+_WATERMARK_MAX_ASPECT = 1.5
+_WATERMARK_MIN_AREA = 120000
+
+_STRIP_MAX_HEIGHT = 130
+_STRIP_MIN_ASPECT = 7.0
+_STRIP_MIN_EDGE_RATIO = 0.08
+_STRIP_EXTREME_ASPECT = 10.0
+_STRIP_GRAY_PEAK = 245
+
+
+def _compute_mineru_image_features(path: str) -> dict | None:
+    """计算单张 MinerU 图片的像素特征，失败时返回 None（调用方应保留原图）。"""
+
+    try:
+        from PIL import Image
+    except Exception:  # pragma: no cover - Pillow 随应用分发
+        return None
+
+    try:
+        with Image.open(path) as im:
+            im = im.convert("L")
+            w, h = im.size
+            if w < 20 or h < 20:
+                return None
+            n = w * h
+            px = list(im.get_flattened_data())
+    except Exception:  # pragma: no cover - 坏图直接保留，不因此丢数据
+        return None
+
+    mean = sum(px) / n
+    white = sum(1 for p in px if p >= 240) / n
+    black = sum(1 for p in px if p <= 40) / n
+    hist = im.histogram()
+    peak = max(range(256), key=lambda i: hist[i])
+
+    edges = 0
+    for y in range(h):
+        row = y * w
+        for x in range(w - 1):
+            if abs(px[row + x] - px[row + x + 1]) > 30:
+                edges += 1
+    for y in range(h - 1):
+        row = y * w
+        for x in range(w):
+            if abs(px[row + x] - px[row + x + w]) > 30:
+                edges += 1
+    edge_ratio = edges / n
+
+    aspect = max(w, h) / max(min(w, h), 1)
+    area = w * h
+
+    return {
+        "width": w,
+        "height": h,
+        "mean": mean,
+        "white": white,
+        "black": black,
+        "edge_ratio": edge_ratio,
+        "aspect": aspect,
+        "area": area,
+        "peak": peak,
+    }
+
+
+def classify_mineru_decoration_image(path: str) -> str:
+    """判断 MinerU 抽出的单张图片是否像装饰/非内容图。
+
+    返回空字符串表示保留；否则返回原因（二维码/Logo、水印、页眉页脚/公式条/表格）。
+    阈值来自真实样本（大庆实验中学卷）：保留抛物线、天平、函数图，拒绝水印、
+    二维码、答案表格、公式行碎片。
+    """
+
+    feat = _compute_mineru_image_features(path)
+    if feat is None:
+        return ""
+
+    w, h = feat["width"], feat["height"]
+    aspect = feat["aspect"]
+    area = feat["area"]
+    white = feat["white"]
+    black = feat["black"]
+    edge = feat["edge_ratio"]
+    peak = feat["peak"]
+
+    # 1. 二维码 / Logo：近正方形、深色占比高、边缘密集
+    if aspect <= _QR_MAX_ASPECT and black >= _QR_MIN_BLACK_RATIO and edge >= _QR_MIN_EDGE_RATIO:
+        return "二维码/Logo"
+
+    # 2. 水印：大面积、近白色、边缘极少
+    if (
+        edge <= _WATERMARK_MAX_EDGE_RATIO
+        and white >= _WATERMARK_MIN_WHITE_RATIO
+        and aspect <= _WATERMARK_MAX_ASPECT
+        and area >= _WATERMARK_MIN_AREA
+    ):
+        return "水印"
+
+    # 3. 页眉页脚条 / 公式行碎片 / 答案表格：细长、边缘丰富、灰底或极宽
+    if (
+        h <= _STRIP_MAX_HEIGHT
+        and aspect >= _STRIP_MIN_ASPECT
+        and edge >= _STRIP_MIN_EDGE_RATIO
+        and (aspect >= _STRIP_EXTREME_ASPECT or peak <= _STRIP_GRAY_PEAK)
+    ):
+        return "页眉页脚/公式条/表格"
+
+    return ""
+
+
+def filter_mineru_decoration_images(
+    markdown: str, image_paths: list[str]
+) -> tuple[str, list[str]]:
+    """过滤 MinerU 输出中的装饰图，并清理 markdown 里指向它们的引用。
+
+    返回 ``(cleaned_markdown, kept_image_paths)``。被丢掉的图会打印日志，方便核对。
+    """
+
+    if not image_paths:
+        return markdown, []
+
+    kept: list[str] = []
+    rejected: set[str] = set()
+    for path in image_paths:
+        reason = classify_mineru_decoration_image(path)
+        if reason:
+            print(f"[MinerU] 已过滤疑似装饰图: {path} ({reason})", flush=True)
+            rejected.add(os.path.basename(path))
+        else:
+            kept.append(path)
+
+    if not rejected or not markdown:
+        return markdown, kept
+
+    img_re = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
+
+    def _remove(match: "re.Match") -> str:
+        target = match.group(2).strip()
+        if os.path.basename(target) in rejected:
+            return ""
+        return match.group(0)
+
+    cleaned = img_re.sub(_remove, markdown)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    cleaned = re.sub(r"[ \t]+\n", "\n", cleaned)
+    return cleaned.strip(), kept
