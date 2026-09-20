@@ -2158,3 +2158,36 @@ def test_editor_meta_group_styles_live_in_app_css():
     assert region.count('class="editor-meta-group"') == 3, region.count('class="editor-meta-group"')
 
 
+
+
+def test_mineru_cache_force_fresh_toggle_is_cloud_only():
+    """「忽略缓存」入口必须只在云端路线可见，且非云端时不得把 force_fresh 发出去。
+
+    后端默认复用缓存省钱；但用户看不出这次到底有没有花钱就会以为解析坏了。
+    同时这个开关若被带到原生/OCR 路线上没有任何语义，纯属噪声。
+    """
+
+    root = Path(__file__).resolve().parents[1]
+    html = (root / "static" / "index.html").read_text(encoding="utf-8")
+    import_js = (root / "static" / "js" / "import.js").read_text(encoding="utf-8")
+
+    assert 'id="mineruForceFresh"' in html
+    assert 'id="mineruForceFreshRow"' in html
+    # 初始收起：只有选中云端路线才展开
+    assert 'class="hidden mt-1.5 flex items-center' in html
+    assert "setupMineruCacheControls()" in import_js
+
+    # 提交侧：仅当策略为 mineru_cloud 且勾选时才带 force_fresh
+    gate = import_js[import_js.index("const mineruForceFresh"):import_js.index(
+        "const endpoint = '/api/upload/pdf-task'"
+    )]
+    assert "pdfStrategy === 'mineru_cloud'" in gate
+    assert "getElementById('mineruForceFresh')" in gate
+    assert "pdfFormData.append('force_fresh', 'true');" in import_js
+    assert import_js.count("pdfFormData.append('force_fresh'") == 1
+
+    # 切换离开云端路线时必须复位，避免残留勾选悄悄烧钱
+    body = import_js[import_js.index("function setupMineruCacheControls"):]
+    body = body[:body.index("\n        }")]
+    assert "checkbox.checked = false" in body
+    assert "addEventListener('change', sync)" in body

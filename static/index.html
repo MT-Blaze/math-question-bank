@@ -637,6 +637,13 @@
                                     <span class="text-[11px] font-bold text-slate-800 group-hover:text-brand-600">MinerU 云端解析</span>
                                 </label>
                             </div>
+
+                            <!-- 同一份 PDF 重传时后端会复用本机 MinerU 结果缓存（不烧云额度）；
+                                 只有明确要重跑云端时才勾选下面这项。 -->
+                            <label id="mineruForceFreshRow" class="hidden mt-1.5 flex items-center gap-1.5 text-[10px] font-medium text-slate-500 cursor-pointer select-none">
+                                <input type="checkbox" id="mineruForceFresh" class="w-3 h-3 rounded border-slate-300 text-brand-500 focus:ring-brand-500/20 shrink-0">
+                                <span>忽略缓存，重新调用 MinerU 云端</span>
+                            </label>
                         </div>
     
                         <!-- Step 4: Run AI Parse & Reset buttons -->

@@ -855,9 +855,14 @@ def run_mineru_pdf_parsing_task(
     filename: str,
     generate_answers: bool = False,
     paper_title: Optional[str] = None,
+    force_fresh: bool = False,
 ):
     """MinerU 云端解析分支：把 PDF 交给 MinerU 云端，拿回 Markdown 与插图，
-    插图落盘后原位替换引用，再复用既有大模型拆题流程。"""
+    插图落盘后原位替换引用，再复用既有大模型拆题流程。
+
+    ``force_fresh`` 跳过结果缓存（见 mathbank.mineru_cache），用于用户明确要
+    重跑云端的场景；默认命中缓存即不再消耗云额度。
+    """
 
     temp_assets: list[str] = []
     workdir = Path(_main.TMP_UPLOAD_DIR) / f"mineru_{task_id}"
@@ -906,7 +911,14 @@ def run_mineru_pdf_parsing_task(
             )
 
         def on_progress(state: str, item) -> None:
-            if state == "uploading":
+            if state == "cached":
+                _main.DOCUMENT_TASKS.update(
+                    task_id,
+                    progress=60,
+                    log="命中本机 MinerU 结果缓存，跳过云端解析（不消耗云额度）。",
+                    document_type="pdf",
+                )
+            elif state == "uploading":
                 _main.DOCUMENT_TASKS.update(
                     task_id,
                     progress=25,
@@ -922,10 +934,21 @@ def run_mineru_pdf_parsing_task(
                 )
 
         result = mineru_client.parse_pdf(
-            file_bytes, filename, workdir, on_progress=on_progress
+            file_bytes,
+            filename,
+            workdir,
+            on_progress=on_progress,
+            force=force_fresh,
         )
         markdown = result.get("markdown") or ""
         image_paths = result.get("image_paths") or []
+        cache_hit = bool(result.get("cache_hit"))
+
+        # 先过滤 MinerU 误抽的装饰图（水印/二维码/页眉条/公式碎片），避免它们被
+        # 大模型挂到题目上造成「末题吞掉整卷图」的现象。
+        markdown, image_paths = mineru_client.filter_mineru_decoration_images(
+            markdown, image_paths
+        )
 
         _main.DOCUMENT_TASKS.check_cancelled(task_id)
         _main.DOCUMENT_TASKS.update(
@@ -974,6 +997,10 @@ def run_mineru_pdf_parsing_task(
             file_bytes, None, final_questions
         )
         finish_log = "完成！MinerU 云端解析 + 大模型拆解全部题目卡片。"
+        if cache_hit:
+            finish_log = (
+                "完成！本次复用本机 MinerU 结果缓存（未消耗云额度）+ 大模型拆解全部题目卡片。"
+            )
         if figure_report.get("warnings"):
             finish_log += " 插图待核对：" + "；".join(figure_report["warnings"])
         _main.DOCUMENT_TASKS.complete(
@@ -1008,6 +1035,7 @@ def run_pdf_parsing_task(
     page_range: str = None,
     pdf_strategy: str = "native_preferred",
     paper_title: Optional[str] = None,
+    force_fresh: bool = False,
 ):
     """PDF parsing with bounded OCR concurrency and cooperative cancellation."""
 
@@ -1015,7 +1043,12 @@ def run_pdf_parsing_task(
     # 拿回 Markdown + 插图后灌入既有大模型拆题流程。
     if pdf_strategy == "mineru_cloud":
         run_mineru_pdf_parsing_task(
-            task_id, file_bytes, filename, generate_answers, paper_title
+            task_id,
+            file_bytes,
+            filename,
+            generate_answers,
+            paper_title,
+            force_fresh,
         )
         return
 
@@ -1346,6 +1379,7 @@ def upload_pdf_task(
     page_range: Optional[str] = Form(None),
     pdf_strategy: str = Form("native_preferred"),
     paper_title: Optional[str] = Form(None),
+    force_fresh: str = Form("false"),
 ):
     try:
         generate_answers_bool = generate_answers.lower() in ("true", "1", "yes")
@@ -1392,6 +1426,7 @@ def upload_pdf_task(
                 page_range,
                 pdf_strategy,
                 paper_title,
+                force_fresh.lower() in ("true", "1", "yes"),
             )
         except TaskQueueFull as exc:
             _main.DOCUMENT_TASKS.remove(task_id)

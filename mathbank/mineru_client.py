@@ -290,16 +290,36 @@ def collect_page_texts(target_dir: str | Path) -> list[str]:
     return pages
 
 
-def parse_pdf(file_bytes: bytes, filename: str, workdir: str | Path, on_progress=None) -> dict:
-    """一步到位：提交 → 轮询 → 下载解压。
+def parse_pdf(
+    file_bytes: bytes,
+    filename: str,
+    workdir: str | Path,
+    on_progress=None,
+    model_version: str = "",
+    force: bool = False,
+) -> dict:
+    """一步到位：查缓存 → 未命中才提交 → 轮询 → 下载解压 → 回填缓存。
 
     返回 ``{"markdown": str, "markdown_path": str, "image_paths": [str], "workdir": str}``。
     ``image_paths`` 是结果包内图片的**本地磁盘路径**，调用方负责复制到 uploads。
+    命中缓存时额外带 ``"cache_hit": True``，且**不会发起任何云端请求**。
     """
 
     if not file_bytes:
         raise MineruError("文件内容为空。")
-    batch_id, upload_url = create_batch(filename)
+
+    from mathbank import mineru_cache
+
+    selected_model = model_version or DEFAULT_MODEL
+    key = mineru_cache.cache_key(file_bytes, selected_model, get_api_base())
+    if not force:
+        cached = mineru_cache.load(key, workdir)
+        if cached is not None:
+            if on_progress:
+                on_progress("cached", {})
+            return cached
+
+    batch_id, upload_url = create_batch(filename, model_version)
     if on_progress:
         on_progress("uploading", {})
     upload_bytes(upload_url, file_bytes)
@@ -315,10 +335,16 @@ def parse_pdf(file_bytes: bytes, filename: str, workdir: str | Path, on_progress
     markdown = ""
     if markdown_path and markdown_path.exists():
         markdown = markdown_path.read_text(encoding="utf-8", errors="replace")
+    image_paths = [str(p) for p in collect_images(workdir)]
+    # 只在拿到内容时回填：空 Markdown 多半是云端异常，缓存下来会把异常固化成
+    # 「这份 PDF 永远解析不出文字」。整包归档（含 *_content_list.json），命中时
+    # 才能与本次真解析逐字段同构。
+    if markdown.strip():
+        mineru_cache.store(key, workdir, str(markdown_path or ""))
     return {
         "markdown": markdown,
         "markdown_path": str(markdown_path or ""),
-        "image_paths": [str(p) for p in collect_images(workdir)],
+        "image_paths": image_paths,
         "workdir": str(workdir),
     }
 

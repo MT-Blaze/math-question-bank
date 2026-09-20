@@ -2275,6 +2275,24 @@
             consoleDiv.scrollTop = consoleDiv.scrollHeight;
         }
 
+        // MinerU 结果缓存开关：默认复用本机缓存（不烧云额度），勾选后才强制重跑。
+        // 复用的是既有 pdfStrategy 单选组，不新增第二套状态来源。
+        function setupMineruCacheControls() {
+            const row = document.getElementById('mineruForceFreshRow');
+            const checkbox = document.getElementById('mineruForceFresh');
+            if (!row || !checkbox) return;
+            const sync = () => {
+                const radio = document.querySelector('input[name="pdfStrategy"]:checked');
+                const isCloud = !!radio && radio.value === 'mineru_cloud';
+                row.classList.toggle('hidden', !isCloud);
+                if (!isCloud) checkbox.checked = false;
+            };
+            document.querySelectorAll('input[name="pdfStrategy"]').forEach((input) => {
+                input.addEventListener('change', sync);
+            });
+            sync();
+        }
+
         function runAIPaperParse() {
             const titleInput = document.getElementById('importPaperTitle');
             const title = titleInput.value.trim();
@@ -2404,6 +2422,9 @@
 
                 const pdfStrategyRadio = document.querySelector('input[name="pdfStrategy"]:checked');
                 const pdfStrategy = pdfStrategyRadio ? pdfStrategyRadio.value : 'native_preferred';
+                // 只有云端路线有结果缓存可言；其余路线不发送 force_fresh。
+                const mineruForceFresh = pdfStrategy === 'mineru_cloud'
+                    && (document.getElementById('mineruForceFresh') || {}).checked === true;
 
                 // 录入路线：原生直提 / 全图视觉 OCR / MinerU 云端解析，
                 // 三者统一走 pdf-task 接口，由 pdf_strategy 决定后端分支。
@@ -2411,6 +2432,9 @@
                 //  也无法推断题目来源页，与「对照原页核对配图」的能力冲突。）
                 const endpoint = '/api/upload/pdf-task';
                 pdfFormData.append('pdf_strategy', pdfStrategy);
+                if (mineruForceFresh) {
+                    pdfFormData.append('force_fresh', 'true');
+                }
 
                 fetch(endpoint, {
                     method: 'POST',
@@ -7727,6 +7751,9 @@ function saveParsedQuestion(index) {
 
             // 若存在 24 小时内完成过的解析任务，显示“找回上次解析”入口
             refreshPdfTaskRecoveryButton();
+
+            // 「忽略缓存」只对云端路线有意义，非云路线时整行收起
+            setupMineruCacheControls();
 
             // 统一适用年级下拉：左右两个入口双向同步
             setupUnifiedGradeSelectors();
