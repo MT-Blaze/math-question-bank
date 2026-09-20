@@ -5079,3 +5079,108 @@ document.addEventListener('DOMContentLoaded', function() {
         window.loadSourceSuggestions(false);
     }
 });
+
+// ── 公式结构自检（KaTeX 严格模式）────────────────────────────────────────
+// 拆题卡片预览用 throwOnError:false 渲染，公式写坏了只会「看着像一段普通文字」，
+// 既不报错也不提示，要到组卷或 XeLaTeX 编译才暴露——那时已经白花钱解析过一次。
+// 这里给每道题补一次严格模式检测，只打角标、绝不阻断导入。
+//
+// ⚠️ 误报比漏报更糟：用户被无关红角标轰炸几次之后就会彻底无视它，这个功能就死了。
+// 所以两条降噪规则是硬要求：
+//   1) 自有宏白名单——存储链会往正文里写 \fillin / \paren，KaTeX 一律不认，
+//      不放行则**每一道填空题**都亮红角标；
+//   2) 「未定义命令」只在成对出现（>=2）时才上报，因为单个未知命令多半是我们的宏
+//      或存量自定义写法，而 `\dfrac`+`\frac` 这种混写才是模型真写坏了。
+//      括号/环境不闭合那类结构性报错不受此限制，它们没有合法的「单次出现」形态。
+window.MathBankFormulaReview = (() => {
+    const OUR_MACROS = new Set([
+        'fillin', 'paren', 'quad', 'qquad', 'hspace', 'vphantom', 'strut',
+        'noindent', 'textrm', 'text', 'mbox', 'arabic', 'label', 'ref'
+    ]);
+    // 定界符按「长优先」匹配，否则 `$$…$$` 会被 `$…$` 抢先切碎。
+    const SPAN_RE = /\$\$([\s\S]+?)\$\$|\$([^$\n]+?)\$|\\\(([\s\S]+?)\\\)|\\\[([\s\S]+?)\\\]/g;
+    const STRUCTURAL_RE = /Unexpected end of input|Expected group|Missing end|extra \}|Mismatched/;
+
+    function mathSpans(value) {
+        const spans = [];
+        const text = String(value || '');
+        SPAN_RE.lastIndex = 0;
+        let match;
+        while ((match = SPAN_RE.exec(text))) {
+            const inner = [match[1], match[2], match[3], match[4]].find(v => v !== undefined);
+            if (inner !== undefined) spans.push(inner);
+        }
+        return spans;
+    }
+
+    function strictError(span) {
+        try {
+            window.katex.renderToString(span, { throwOnError: true });
+            return '';
+        } catch (error) {
+            return String((error && error.message) || error || '').split('\n')[0];
+        }
+    }
+
+    function isStructural(span, message) {
+        if (!message) return false;
+        if (!/Undefined control sequence/.test(message)) return STRUCTURAL_RE.test(message);
+        // 只数真正的反斜杠命令：`\\` 是换行，长度偶数的转义序列不算命令名。
+        const commands = (span.match(/\\+([A-Za-z]+)/g) || []).filter(raw => raw.length % 2 === 1);
+        const unknown = commands.filter(raw => !OUR_MACROS.has(raw.slice(1)));
+        return unknown.length >= 2;
+    }
+
+    // 禁用后行断言（旧 Safari / 移动端 WebView 会 SyntaxError 中断整个级联加载），
+    // 所以数「未转义的 $」只能自己扫：连续反斜杠把下一个 `$` 转义掉时不计入。
+    function countUnescapedDollars(value) {
+        let count = 0;
+        let backslashes = 0;
+        for (const ch of String(value || '')) {
+            if (ch === '\\') {
+                backslashes += 1;
+                continue;
+            }
+            if (ch === '$' && backslashes % 2 === 0) count += 1;
+            backslashes = 0;
+        }
+        return count;
+    }
+
+    /**
+     * 返回本题「公式结构待核对」的理由数组（最多 3 条，供角标 title 使用）。
+     * 空数组表示没问题或未安装 KaTeX——检测失败必须安静放行，不得变成新的报错源。
+     */
+    function inspect() {
+        const reasons = [];
+        const texts = Array.prototype.slice.call(arguments);
+        // 必须查 `window.katex`：裸标识符在严格模式下会先抛 ReferenceError，被调用点的
+        // try/catch 吞成「没问题」——实测踩过，整个自检静默空转且没有任何报错。
+        if (!window.katex || typeof window.katex.renderToString !== 'function') {
+            return reasons;
+        }
+        const joined = texts.map(t => String(t || '')).join('\n');
+        if (!joined.trim()) return reasons;
+
+        const seen = new Set();
+        mathSpans(joined).forEach(span => {
+            const message = strictError(span);
+            if (!message || !isStructural(span, message)) return;
+            const label = span.length > 28 ? span.slice(0, 28) + '…' : span;
+            const key = label + '|' + message;
+            if (seen.has(key)) return;
+            seen.add(key);
+            reasons.push('$' + label + '$ → ' + message.replace('KaTeX parse error: ', ''));
+        });
+
+        // 定界符落单：奇数个未转义 `$` 意味着模型把一对美元符号写丢了，此时上面的
+        // 逐片段检测根本看不到损坏（切片切不出完整公式），只能靠计数发现。
+        const dollars = countUnescapedDollars(joined);
+        if (dollars % 2 === 1) {
+            reasons.push('数学定界符 $ 数量为奇数，公式边界已断裂');
+        }
+        return reasons.slice(0, 3);
+    }
+
+    return { inspect: inspect, mathSpans: mathSpans };
+})();

@@ -6157,8 +6157,68 @@
             return tile;
         }
 
+        // 三种角标共用一套外观（卡片配图条与无配图题的独立提示条都调它），所以样式只有一份。
+        const REVIEW_BADGE_CLASS = 'card-review-badge self-center rounded-md border px-2 py-0.5 text-[10px] font-bold';
+
+        function buildParsedCardReviewBadges(q) {
+            const badges = [];
+            // 配图自检角标：由「页级兜底」推断来的配图、或数量明显偏多的题，
+            // 直接标在卡片上，避免逐题翻看才发现归属错了。
+            const reviewReasons = (q && Array.isArray(q._image_review)) ? q._image_review : [];
+            if (reviewReasons.length) {
+                const warn = document.createElement('span');
+                warn.className = REVIEW_BADGE_CLASS + ' border-amber-200 bg-amber-50 text-amber-700';
+                // 三种待核对形态各说各话：兜底推断 / 选项重复引用同一张图 / 数量偏多。
+                // 「选项重复」最危险（卷面看着完整、答案却会错），必须单列一条。
+                if (reviewReasons.indexOf('duplicate') >= 0) {
+                    warn.textContent = '选项重复引用同一张图，请核对';
+                    warn.title = '视觉模型漏识别了部分图形，本题选项重复用了同一张图；请对照原页【手动截图】补图';
+                } else if (reviewReasons.indexOf('failsafe') >= 0) {
+                    warn.textContent = '配图由兜底推断，请核对';
+                    warn.title = '系统按页面文本重合度自动推断出这批配图的归属，建议人工确认后再入库';
+                } else {
+                    warn.textContent = '配图偏多，请核对';
+                    warn.title = '本题有配图未出现在题干或解析文字里，可能是别题的插图被一并挂了过来';
+                }
+                badges.push(warn);
+            }
+            // 内容守恒角标：本题正文/解析里的选项数、表格数、填空下划线数或插图占位符
+            // 与原卷对不上。这类改写不会报错、卷面也看着正常，只能靠后端数量对账发现。
+            const fidelityReasons = (q && Array.isArray(q._fidelity_review)) ? q._fidelity_review : [];
+            if (fidelityReasons.length) {
+                const mismatch = document.createElement('span');
+                mismatch.className = REVIEW_BADGE_CLASS + ' border-rose-200 bg-rose-50 text-rose-700';
+                mismatch.textContent = '内容与原卷不符，请核对';
+                mismatch.title = fidelityReasons.join('；');
+                badges.push(mismatch);
+            }
+            // 公式结构角标：KaTeX 严格模式在浏览器本地跑出来的结构性损坏（花括号没闭合、
+            // 环境没有 \end、定界符落单）。它和上面那条不是一回事——那条比的是**数量**，
+            // 这条比的是**语法**，所以两者可以同时亮。
+            const formulaReasons = (q && Array.isArray(q._formula_review)) ? q._formula_review : [];
+            if (formulaReasons.length) {
+                const broken = document.createElement('span');
+                broken.className = REVIEW_BADGE_CLASS + ' border-violet-200 bg-violet-50 text-violet-700';
+                broken.textContent = '公式结构待核对，请检查';
+                broken.title = 'KaTeX 严格模式报错：' + formulaReasons.join('\n');
+                badges.push(broken);
+            }
+            return badges;
+        }
+
+        // 无配图题不会生成配图条，角标就没地方挂；这类题恰恰也可能是公式写坏的题，
+        // 所以单独补一条只含角标的提示条。样式仍走同一套 class，不复制外观。
+        function appendParsedCardReviewBadges(container, q) {
+            const badges = buildParsedCardReviewBadges(q);
+            if (!container || !badges.length) return;
+            const bar = document.createElement('div');
+            bar.className = 'flex flex-wrap gap-2 mt-3 pt-2.5 border-t border-dashed border-slate-200/60';
+            badges.forEach(badge => bar.appendChild(badge));
+            container.appendChild(bar);
+        }
+
         function appendParsedCardImageStrip(container, q, index, answerText) {
-            if (!container || !q || !Array.isArray(q.image_paths) || !q.image_paths.length) return;
+            if (!container || !q) return;
             const rendered = container.innerHTML || '';
             // 解答图已由解答预览内联呈现，不再重复出现在题干配图条里。
             const answerOwned = new Set(parsedCardAnswerImagePaths(answerText));
@@ -6181,38 +6241,7 @@
             const strip = document.createElement('div');
             strip.className = 'flex flex-wrap gap-2 mt-3 pt-2.5 border-t '
                 + 'border-dashed border-slate-200/60';
-            // 配图自检角标：由「页级兜底」推断来的配图、或数量明显偏多的题，
-            // 直接标在卡片上，避免逐题翻看才发现归属错了。
-            const reviewReasons = (q && Array.isArray(q._image_review)) ? q._image_review : [];
-            if (reviewReasons.length) {
-                const warn = document.createElement('span');
-                warn.className = 'self-center rounded-md border border-amber-200 bg-amber-50 '
-                    + 'px-2 py-0.5 text-[10px] font-bold text-amber-700';
-                // 三种待核对形态各说各话：兜底推断 / 选项重复引用同一张图 / 数量偏多。
-                // 「选项重复」最危险（卷面看着完整、答案却会错），必须单列一条。
-                if (reviewReasons.indexOf('duplicate') >= 0) {
-                    warn.textContent = '选项重复引用同一张图，请核对';
-                    warn.title = '视觉模型漏识别了部分图形，本题选项重复用了同一张图；请对照原页【手动截图】补图';
-                } else if (reviewReasons.indexOf('failsafe') >= 0) {
-                    warn.textContent = '配图由兜底推断，请核对';
-                    warn.title = '系统按页面文本重合度自动推断出这批配图的归属，建议人工确认后再入库';
-                } else {
-                    warn.textContent = '配图偏多，请核对';
-                    warn.title = '本题有配图未出现在题干或解析文字里，可能是别题的插图被一并挂了过来';
-                }
-                strip.appendChild(warn);
-            }
-            // 内容守恒角标：本题正文/解析里的选项数、表格数、填空下划线数或插图占位符
-            // 与原卷对不上。这类改写不会报错、卷面也看着正常，只能靠后端数量对账发现。
-            const fidelityReasons = (q && Array.isArray(q._fidelity_review)) ? q._fidelity_review : [];
-            if (fidelityReasons.length) {
-                const mismatch = document.createElement('span');
-                mismatch.className = 'self-center rounded-md border border-rose-200 bg-rose-50 '
-                    + 'px-2 py-0.5 text-[10px] font-bold text-rose-700';
-                mismatch.textContent = '内容与原卷不符，请核对';
-                mismatch.title = fidelityReasons.join('；');
-                strip.appendChild(mismatch);
-            }
+            buildParsedCardReviewBadges(q).forEach(badge => strip.appendChild(badge));
             // 转换进度小结：本题共几张图、其中几张已经是 TikZ 矢量图。
             // 只在「已经转过至少一张」时显示——否则会给每道题都挂一个无意义的 0/0 标签。
             const allSafePaths = q.image_paths
@@ -6365,11 +6394,23 @@
         function renderParsedCardPreview(card, contentText, answerText) {
             const contentPrev = card.querySelector('.card-content-preview');
             const answerPrev = card.querySelector('.card-answer-preview');
-            
+
             // Extract card index to find its image_paths dynamically
             const indexStr = card.id ? card.id.replace('parsed-card-', '') : '';
             const index = indexStr ? parseInt(indexStr) : null;
             const q = (index !== null && !isNaN(index)) ? parsedQuestionsData[index] : null;
+
+            // 公式结构自检：预览用 throwOnError:false 渲染，模型写坏的花括号/未闭合
+            // 环境只会静默降级成一段普通文字，要到组卷或 XeLaTeX 编译才暴露。这里在
+            // 卡片上先报一次；只打角标，绝不阻断导入（判据是启发式的，误报一次就会
+            // 让用户从此无视所有角标）。结果缓存到题目对象上，配图条复用同一份。
+            if (q && typeof window.MathBankFormulaReview !== 'undefined') {
+                try {
+                    q._formula_review = window.MathBankFormulaReview.inspect(contentText, answerText);
+                } catch (e) {
+                    q._formula_review = [];
+                }
+            }
 
             // 彻底 LaTeX 化：把本题 image_paths（含 referenced_images）登记进全局
             // basename->URL 表，预览里 \includegraphics{文件名} 才能找回真实地址。
@@ -6414,6 +6455,10 @@
                     // 配图条用真实 DOM 追加（不经 sanitizeRichHtml：<button> 与
                     // data-* 属性不在白名单内，内联 onclick 也会被 DOMPurify 剥掉）。
                     appendParsedCardImageStrip(contentPrev, q, index, answerText);
+                    // 没有任何配图的题不会生成配图条，角标就没地方挂，这里补一条独立提示。
+                    if (!contentPrev.querySelector('.card-review-badge')) {
+                        appendParsedCardReviewBadges(contentPrev, q);
+                    }
                     // 选项图（A./B./C./D. 行内）同样补角标与「转 TikZ」入口，避免成为盲区
                     decorateParsedCardChoiceImages(contentPrev, q, index);
                 } catch(e) {
@@ -8745,6 +8790,12 @@ function saveParsedQuestion(index) {
         }
 
         window.generateSingleAnswer = generateSingleAnswer;
+        // 拆题卡片渲染入口：一并暴露 setter，是因为 renderParsedCardPreview 从**模块内**
+        // 的 parsedQuestionsData 取每题的 _image_review / _fidelity_review / _formula_review
+        // 角标依据；只导出渲染器会让外部调用方喂进一份「假批次」而角标静默全丢（实测踩过，
+        // 表现是三种角标一个都不出现且没有任何报错）。两者必须成对使用。
+        window.replaceParsedQuestions = replaceParsedQuestions;
+        window.renderParsedQuestionsList = renderParsedQuestionsList;
         window.processAsyncAnswerGeneration = processAsyncAnswerGeneration;
         window.openParsedDuplicateReview = openParsedDuplicateReview;
         window.closeParsedDuplicateReviewModal = closeParsedDuplicateReviewModal;

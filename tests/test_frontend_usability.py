@@ -2221,3 +2221,356 @@ def test_parsed_card_shows_content_fidelity_badge():
     call_at = pipeline.index("check_split_output_fidelity(")
     normalize_at = pipeline.index("return apply_storage_normalization(parsed_questions)")
     assert call_at < normalize_at, "对账必须在入库归一化之前，否则口径已与源文不同"
+
+
+
+def _formula_review_helper_source() -> str:
+    """从 api.js 里原样取出 MathBankFormulaReview，测试跑的就是线上那一份实现。"""
+
+    api_source = _read(STATIC_JS_DIR / "api.js")
+    start = api_source.index("window.MathBankFormulaReview")
+    end = api_source.index("return { inspect: inspect, mathSpans: mathSpans };", start)
+    end = api_source.index("})();", end) + len("})();")
+    return api_source[start:end]
+
+
+_FORMULA_REVIEW_JS_PRELUDE = r"""
+const path = require('path');
+global.katex = require(path.join(process.cwd(), 'static/lib/katex/katex.min.js'));
+global.window = global;
+"""
+
+_FORMULA_REVIEW_FIXTURES = r"""
+// 「必须放过」的一侧刻意用真实存储形态：这些写法在库里成百上千，误报一条就等于
+// 整个功能作废（用户被无关角标轰炸后不会再信任何角标）。
+const LEGIT = [
+    '已知 $f(x)=\\frac{1}{x}$，则 $f(2)=\\frac{1}{2}$',
+    '$\\left\\{\\begin{array}{l} x+1>0 \\\\ 2x-4\\leq 0 \\end{array}\\right.$',
+    '集合 $A=\\complement_R B$，则 $\\complement_R A=\\varnothing$',
+    '$\\lim\\limits_{n\\to\\infty} a_n = A$',
+    '$[-1,1)$ 上的单调递增函数',
+    '$\\sqrt[3]{8}=2$',
+    '$\\overrightarrow{AB} \\cdot \\overrightarrow{CD} = 0$',
+    '$\\{x \\mid x^2 - 3x + 2 = 0\\} = \\{1, 2\\}$',
+    '$\\begin{cases} 1, & x>0 \\\\ -1, & x<0 \\end{cases}$',
+    '$\\sum_{i=1}^{n} i = \\frac{n(n+1)}{2}$',
+    '$C_{10}^3 = 120$',
+    '下列各式正确的是（　）',
+    '\\begin{choices}\n\\item $\\frac{1}{2}$\n\\item $\\frac{\\sqrt{3}}{2}$\n\\end{choices}',
+    // 自有宏：KaTeX 严格模式必然报 Undefined control sequence，白名单必须放行，
+    // 否则**每一道填空题**都会亮红角标。
+    '则 $\\fillin$ 的最小值为____。',
+    '【插图待补】比较 $a$、$b$ 大小并填 $\\fillin$',
+    // 合法的空参数：`\frac{1}{}` / `\frac{}{}` 在 KaTeX 里完全合法，只有「没写完的
+    // 花括号」才报错。这条边界一旦判错，正常题会被整批报成坏公式。
+    '$\\frac{1}{}$',
+    '$\\frac{}{} = 0$',
+];
+const BROKEN = [
+    '$\\frac{1}{$}',
+    '$\\dfrac{1}{x} + \\frac{2',
+    '$\\begin{pmatrix} 1 & 2 \\\\ 3',
+    '若 $a>b 则一定成立',       // 定界符落单：奇数个未转义 $
+];
+"""
+
+
+def test_formula_review_passes_legit_stored_forms():
+    """真跑 node + 内置 KaTeX：合法存储形态必须零误报。
+
+    这条是整套判据的生死线。判据本身是启发式的，只要它开始乱报，用户就会连同
+    真正有用的「内容与原卷不符」「配图待核对」一起无视。
+    """
+
+    script = (
+        _FORMULA_REVIEW_JS_PRELUDE
+        + _formula_review_helper_source()
+        + _FORMULA_REVIEW_FIXTURES
+        + r"""
+const falsePositives = [];
+for (const text of LEGIT) {
+    const reasons = window.MathBankFormulaReview.inspect(text, '');
+    if (reasons.length) falsePositives.push(text + ' => ' + reasons.join(' | '));
+}
+console.log(JSON.stringify({ count: falsePositives.length, items: falsePositives }));
+"""
+    )
+    result = _run_node_script(script)
+    assert result.returncode == 0, result.stderr
+    import json
+
+    payload = json.loads(result.stdout.strip().splitlines()[-1])
+    assert payload["count"] == 0, "公式自检误报了合法存储形态：\n" + "\n".join(
+        payload["items"]
+    )
+
+
+def test_formula_review_helper_reads_katex_off_window_not_a_bare_identifier():
+    """钉住真实失效：助手内部若引用裸 `katex`，页面里会静默空转。
+
+    浏览器实测踩到的——调用点的 `typeof window.MathBankFormulaReview` 守卫形同虚设，
+    函数体里那句裸 `katex.renderToString` 抛 ReferenceError，被 try/catch 吞成
+    「没问题」，于是角标永远不出现且没有任何报错。
+
+    ⚠️ 这个失效**在 node 里天然测不出来**：`global.window = global` 会让裸标识符和
+    `window.katex` 指向同一个对象。必须用 vm 造一个「全局上没有 katex、只有
+    window.katex」的独立上下文，才复现浏览器的加载语义。
+    """
+
+    import json
+
+    script = (
+        "const fs = require('fs');\n"
+        "const vm = require('vm');\n"
+        "const path = require('path');\n"
+        "const katex = require(path.join(process.cwd(), 'static/lib/katex/katex.min.js'));\n"
+        "const src = fs.readFileSync('static/js/api.js', 'utf8');\n"
+        "const start = src.indexOf('window.MathBankFormulaReview');\n"
+        "const marker = 'return { inspect: inspect, mathSpans: mathSpans };';\n"
+        "const end = src.indexOf('})();', src.indexOf(marker, start)) + 5;\n"
+        "const snippet = src.slice(start, end);\n"
+        # `$f(x)=\frac{1}{$`：花括号没写完，严格模式必错
+        "const probe = '\\u5df2\\u77e5 $f(x)=' + String.fromCharCode(92)\n"
+        "    + 'frac{1}{$\\uff0c\\u7ed3\\u675f\\u3002';\n"
+        "function run(how) {\n"
+        "    const win = {};\n"
+        "    const ctx = vm.createContext({ window: win });\n"
+        "    if (how === 'windowOnly') win.katex = katex; else ctx.katex = katex;\n"
+        "    vm.runInContext(snippet, ctx);\n"
+        "    return win.MathBankFormulaReview.inspect(probe, '').length;\n"
+        "}\n"
+        "console.log(JSON.stringify({\n"
+        "    windowOnly: run('windowOnly'),\n"
+        "    bareOnly: run('bareOnly'),\n"
+        "}));\n"
+    )
+    result = _run_node_script(script)
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout.strip().splitlines()[-1])
+    assert payload["windowOnly"] > 0, "KaTeX 只挂在 window 上时自检静默空转（裸标识符回归）"
+    assert payload["bareOnly"] == 0, "实现不得依赖裸 katex 之外的解析路径"
+
+
+def test_formula_review_flags_structurally_broken_math():
+    """结构性损坏必须报出来：花括号没闭合、环境缺 \\end、定界符落单。
+
+    这一类不会触发锁异常（锁只保证原文不丢，模型自己写坏的公式照样带回来），
+    预览又是 `throwOnError:false`，静默降级成普通文字——组卷前没有任何地方会提示。
+    """
+
+    script = (
+        _FORMULA_REVIEW_JS_PRELUDE
+        + _formula_review_helper_source()
+        + _FORMULA_REVIEW_FIXTURES
+        + r"""
+const missed = [];
+for (const text of BROKEN) {
+    const reasons = window.MathBankFormulaReview.inspect(text, '');
+    if (!reasons.length) missed.push(text);
+}
+console.log(JSON.stringify({ count: missed.length, items: missed }));
+"""
+    )
+    result = _run_node_script(script)
+    assert result.returncode == 0, result.stderr
+    import json
+
+    payload = json.loads(result.stdout.strip().splitlines()[-1])
+    assert payload["count"] == 0, "公式自检漏掉了结构性损坏：" + "；".join(payload["items"])
+
+
+def test_formula_review_survives_missing_katex_and_answers_are_scanned_too():
+    """检测器自身坏掉时不得变成新的报错源；解答区的坏公式同样要抓到。
+
+    ``katex`` 未加载（离线包缺失、脚本被拦）时必须安静返回空数组而不是抛异常——
+    拆题卡片渲染路径整个 try/catch 兜着，但助手自己就该放行。
+    """
+
+    script = (
+        r"""
+global.window = global;
+"""
+        + _formula_review_helper_source()
+        + r"""
+let threw = '';
+try {
+    const reasons = window.MathBankFormulaReview.inspect('$\\frac{1}{$}', '');
+    threw = Array.isArray(reasons) ? '' : 'not-array';
+} catch (e) {
+    threw = String(e && e.message);
+}
+"""
+        + _FORMULA_REVIEW_JS_PRELUDE.replace("\n", "\n")
+        + r"""
+global.katex = require(path.join(process.cwd(), 'static/lib/katex/katex.min.js'));
+const answerOnly = window.MathBankFormulaReview.inspect(
+    '题干完全正常 $a+b=c$',
+    '故选 B。由 $\\frac{1}{$ 解得 x=2'
+);
+console.log(JSON.stringify({ threw, answerOnly }));
+"""
+    )
+    result = _run_node_script(script)
+    assert result.returncode == 0, result.stderr
+    import json
+
+    payload = json.loads(result.stdout.strip().splitlines()[-1])
+    assert payload["threw"] == "", payload["threw"]
+    assert payload["answerOnly"], "解答区里的坏公式没有被检出"
+
+
+def test_parsed_card_renders_formula_badge_without_blocking_import():
+    """接线检查：角标必须挂在卡片上，且导入闸门不得因它而变严。
+
+    只测文本存在是不够的——曾经出现过角标代码写了但没人调用、以及角标和
+    阻断逻辑混在一起两种失效，所以这里同时钉住「调用了」与「没有阻断」。
+    """
+
+    import_source = _read(STATIC_JS_DIR / "import.js")
+
+    # 渲染入口调用一次严格模式自检，结果按题缓存
+    assert "MathBankFormulaReview.inspect(" in import_source
+    assert "_formula_review" in import_source
+
+    # 角标经 createElement 追加（sanitizeRichHtml 白名单外的一切都不能拼 HTML）
+    badge_builder = import_source[
+        import_source.index("function buildParsedCardReviewBadges") : import_source.index(
+            "function appendParsedCardImageStrip"
+        )
+    ]
+    assert "createElement('span')" in badge_builder
+    assert "公式结构待核对" in badge_builder
+    # 三种角标共用一套外观，避免样式各写一份后走形
+    assert badge_builder.count("REVIEW_BADGE_CLASS") >= 3
+
+    # 无配图题也要能看到角标（配图条只在有图时生成）
+    assert "appendParsedCardReviewBadges(" in import_source
+
+    # 闸门口径不变：公式坏了不得阻止导入
+    validate_body = import_source[
+        import_source.index("function validateParsedQuestionBeforeImport") : import_source.index(
+            "function ", import_source.index("function validateParsedQuestionBeforeImport") + 10
+        )
+    ]
+    assert "_formula_review" not in validate_body, "公式结构自检不得参与导入阻断判定"
+
+
+def test_api_js_helpers_do_not_use_regex_lookbehind():
+    """AGENTS.md 明令禁止后行断言：旧 Safari / WebView 会 SyntaxError 中断级联加载。
+
+    新写的定界符计数很容易顺手用 `(?<!\\)`，所以直接对全文件扫一遍而不是靠人记。
+    先剥掉注释再扫——paper.js 顶部就写着这条禁令本身，逐字扫全文会永远误报。
+    """
+
+    def strip_comments(source: str) -> str:
+        source = re.sub(r"/\*[\s\S]*?\*/", "", source)
+        return "\n".join(
+            line for line in source.splitlines() if not line.lstrip().startswith("//")
+        )
+
+    for name in ("api.js", "editor.js", "ocr.js", "import.js", "paper.js", "lesson.js"):
+        code = strip_comments(_read(STATIC_JS_DIR / name))
+        assert "(?<!" not in code, f"{name} 使用了后行断言"
+        assert "(?<=" not in code, f"{name} 使用了先行断言"
+
+
+def _extract_import_js_function(src: str, name: str) -> str:
+    """按「函数名 + 顶格两空格闭合」取出 import.js 里的一个函数体。
+
+    import.js 的函数一律缩进 8 空格、以 `        }` 闭合，这个约定被既有代码保持；
+    抽取失败时宁可让测试报错，也不要静默拿到半截函数——那会让断言永远为真。
+    """
+
+    start = src.index("function " + name + "(")
+    tail = src[start:]
+    end = tail.index("\n        }")
+    return tail[: end + len("\n        }")]
+
+
+def test_formula_badge_is_actually_built_and_carries_the_reasons():
+    """真跑 node + 最小 DOM 桩：角标必须被 createElement 造出来并带上逐条理由。
+
+    纯文本断言挡不住这类失效：函数写了但没人调用、class 拼错导致角标不可见、
+    title 忘了赋值让用户看不到到底是哪条公式坏了。这里直接检查产物节点。
+    """
+
+    import json
+
+    source = _read(STATIC_JS_DIR / "import.js")
+    script = "".join(
+        (
+            _FORMULA_REVIEW_JS_PRELUDE,
+            _formula_review_helper_source(),
+            "global.document = {\n",
+            "    createElement: function (tag) {\n",
+            "        return { tag: tag, className: '', textContent: '', title: '', children: [] };\n",
+            "    },\n",
+            "};\n",
+            _extract_import_js_function(source, "buildParsedCardReviewBadges"),
+            "\nvar REVIEW_BADGE_CLASS = 'card-review-badge';\n",
+            "var q = {\n",
+            "    _image_review: ['failsafe'],\n",
+            "    _fidelity_review: ['选项变少（源 4 项 → 输出 3 项）'],\n",
+            "};\n",
+            "q._formula_review = window.MathBankFormulaReview.inspect("
+            "'已知 $f(x)=\\\\frac{1}{$ 求定义域', '');\n",
+            "var badges = buildParsedCardReviewBadges(q);\n",
+            "console.log(JSON.stringify(badges.map(function (b) {\n",
+            "    return { tag: b.tag, text: b.textContent, title: b.title, cls: b.className };\n",
+            "})));\n",
+        )
+    )
+    result = _run_node_script(script)
+    assert result.returncode == 0, result.stderr
+    badges = json.loads(result.stdout.strip().splitlines()[-1])
+
+    # 三种理由各出一枚角标，且都是真实 span（不是 innerHTML 拼串）
+    assert [b["tag"] for b in badges] == ["span", "span", "span"], badges
+    texts = [b["text"] for b in badges]
+    assert "配图由兜底推断，请核对" in texts
+    assert "内容与原卷不符，请核对" in texts
+    assert "公式结构待核对，请检查" in texts, texts
+
+    formula = [b for b in badges if b["text"].startswith("公式结构")][0]
+    assert formula["title"].startswith("KaTeX 严格模式报错：")
+    # 用户要能看出是哪一段公式坏了，而不只是「有问题」
+    assert "\\frac" in formula["title"], formula["title"]
+
+    fidelity = [b for b in badges if b["text"].startswith("内容与原卷")][0]
+    assert "选项变少" in fidelity["title"]
+
+    # 外观走共享 class，样式不会三份各走形
+    assert all("card-review-badge" in b["cls"] for b in badges), badges
+
+
+def test_formula_badge_absent_for_clean_question():
+    """干净题目一枚角标都不出——包括自有宏 \\\\fillin 那道生死线。"""
+
+    import json
+
+    source = _read(STATIC_JS_DIR / "import.js")
+    script = "".join(
+        (
+            _FORMULA_REVIEW_JS_PRELUDE,
+            _formula_review_helper_source(),
+            "global.document = { createElement: function (t) {\n",
+            "    return { tag: t, className: '', textContent: '', title: '' };\n",
+            "} };\n",
+            _extract_import_js_function(source, "buildParsedCardReviewBadges"),
+            "\nvar REVIEW_BADGE_CLASS = 'card-review-badge';\n",
+            "var q = { _image_review: [], _fidelity_review: [] };\n",
+            "q._formula_review = window.MathBankFormulaReview.inspect(\n",
+            "    '已知 $a\\\\in\\mathbb{{Z}}$，则 $\\\\complement_R A$ 为（　）并填 $\\\\fillin$',\n",
+            "    '由 $\\\\begin{cases} x>0 \\\\\\\\ y<0 \\\\end{cases}$ 得 $\\\\frac{1}{2}$'\n",
+            ");\n",
+            "console.log(JSON.stringify({\n",
+            "    reasons: q._formula_review,\n",
+            "    badges: buildParsedCardReviewBadges(q).length,\n",
+            "}));\n",
+        )
+    )
+    result = _run_node_script(script)
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout.strip().splitlines()[-1])
+    assert payload["reasons"] == [], payload["reasons"]
+    assert payload["badges"] == 0
