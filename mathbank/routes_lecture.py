@@ -224,6 +224,13 @@ def export_lecture_pdf(payload: dict, db: Session = Depends(get_db)):
 
     preview = payload.get("preview") or _preview_payload(payload, db)
     tex_content, degradations = build_lecture_latex(preview, view=view)
+    # 死图引用（存量题指向已清理的上传文件）先降级成可见占位，再进编译：
+    # 不处理的话 XeLaTeX 会因缺文件崩掉整本讲义
+    from mathbank.lecture_export import sanitize_dead_image_references
+
+    tex_content, dead_img_notes = sanitize_dead_image_references(
+        tex_content, str(_main.UPLOAD_DIR))
+    degradations.extend(dead_img_notes)
     questions_pool = list((preview.get("questions") or []))
     for entry in (preview.get("sections") or []):
         questions_pool.extend(entry.get("questions") or [])

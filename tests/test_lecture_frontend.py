@@ -664,8 +664,8 @@ def _preview_render_prelude() -> str:
 
 
 def test_merged_preview_html_orders_sections_once_each():
-    """真跑 buildLectureHtml：多节 preview 数据必须逐节出知识梳理/考向页且顺序跟随载荷，
-    实战演练与答案册整本各一份——这是合并讲义「拼得上」的前端半边。"""
+    """真跑 buildLectureHtml：封面 → 目录 → 逐讲（知识梳理/考向页/本讲实战演练）→ 答案册；
+    每节各一次且顺序跟随载荷——这是合并讲义「拼得上」的前端半边。"""
     st = ("{ sections: [], activeKey: '', compulsory: '', chapter: '', knowledge: '', section: null,"
           " topics: [], extraIds: [], questions: [], knowledgeMind: null, qIndex: {}, previewData: null, coverBg: {} }")
     body = "".join((
@@ -696,18 +696,92 @@ def test_merged_preview_html_orders_sections_once_each():
         "ST.topics = data.sections[1].topics;\n",
         "var html = api.buildLectureHtml(data);\n",
         "if (typeof html !== 'string') throw new Error('preview 未产出 HTML');\n",
-        # 封面一份；每节各一次知识梳理页与考向页，顺序 = 载荷顺序（K2 在前）
+        # 封面一份 + 紧随其后的目录页（两讲、中文数字、带页码）
+        "if ((html.match(/class=\"sheet cover\"/g) || []).length !== 1) throw new Error('封面不止一份');\n",
+        "if (html.indexOf('目　录') < 0) throw new Error('目录页缺失');\n",
+        "if (html.indexOf('第一讲 K2') > html.indexOf('第二讲 K1')) throw new Error('目录顺序被排错');\n",
+        "if (html.indexOf('目　录') > html.indexOf('第一讲 K2 · 知识梳理')) throw new Error('目录没排在正文前');\n",
+        # 每节各一次知识梳理页与考向页，顺序 = 载荷顺序（K2 在前）；页眉只认讲次不带章名
         "if ((html.match(/class=\"sheet cover\"/g) || []).length !== 1) throw new Error('封面不止一份');\n",
         "if (html.indexOf('ZIJISECTION') > html.indexOf('MINDK1')) throw new Error('节顺序被排错了');\n",
-        "if ((html.match(/考向1　子集判断/g) || []).length !== 1) throw new Error('K2 考向页缺失或重复');\n",
-        "if ((html.match(/考向1　集合判断/g) || []).length !== 1) throw new Error('K1 考向页缺失或重复');\n",
-        # 思维导图节照常渲染且按节存状态，实战演练跨节连续编号
+        "if ((html.match(/考向一　子集判断/g) || []).length !== 1) throw new Error('K2 考向页缺失或重复');\n",
+        "if ((html.match(/考向一　集合判断/g) || []).length !== 1) throw new Error('K1 考向页缺失或重复');\n",
+        "if (html.indexOf('C1 · ') >= 0) throw new Error('页眉还带着章名');\n",
+        # 思维导图节照常渲染且按节存状态；实战演练归各自讲、裸号
         "if (html.indexOf('mind-branch-label') < 0) throw new Error('思维导图节未渲染');\n",
         "if (!ST.sections[1].knowledgeMind) throw new Error('思维导图状态未按节存放');\n",
         "if (ST.sections[0].knowledgeMind) throw new Error('思维导图状态串到了别的节');\n",
-        "if (html.indexOf('实战1') < 0) throw new Error('实战演练缺失');\n",
-        # 答案册整本一份且覆盖两节的题
+        "if (html.indexOf('【实战演练】') < 0) throw new Error('实战演练缺失');\n",
+        "if (html.indexOf('实战1') >= 0) throw new Error('实战演练还在冠整本编号');\n",
+        "if (html.indexOf('例一-1') < 0) throw new Error('例题未按 例<考向>-<序> 编号');\n",
+        # 答案册整本一份、带「第X讲」定位前缀且覆盖两节的题
         "if ((html.match(/id=\"page-answer-book\"/g) || []).length !== 1) throw new Error('答案册不是一份');\n",
+        "if (html.indexOf('第一讲　考向一　例一-1') < 0) throw new Error('答案册缺 K2 的定位前缀条目');\n",
+        "if (html.indexOf('第二讲　考向一　例一-1') < 0) throw new Error('答案册缺 K1 的定位前缀条目');\n",
+        "console.log('OK');\n",
+    ))
+    _run_extracted_lecture_js(
+        ("buildLectureHtml",), st, body,
+        helpers="", prelude=_preview_render_prelude(), aliases=(),
+    )
+
+
+def test_lecture_numbering_resets_per_topic_and_block_heads():
+    """真跑渲染链钉住新口径：变式跨母题连续、趁热打铁按考向归零、板块头只在首题前出一次。"""
+    st = ("{ sections: [], activeKey: '', compulsory: '', chapter: '', knowledge: '', section: null,"
+          " topics: [], extraIds: [], questions: [], knowledgeMind: null, qIndex: {}, previewData: null, coverBg: {} }")
+    body = "".join((
+        "var data = {\n",
+        "  settings: { cover_title: 'T', cover_subtitle: 'S' },\n",
+        "  section: { compulsory:'M', chapter:'C1', knowledge:'K1', name:'K1',\n",
+        "    topics:[{id:'k_a',name:'甲',no:1},{id:'k_b',name:'乙',no:2}] },\n",
+        "  notes: {},\n",
+        "  topics: [\n",
+        # 考向甲的题 id 用 1x、考向乙用 2x：内容串里不出现「变式2」等子串的假命中
+        "    { topic_id:'k_a', name:'甲', items:[\n",
+        "      {question_id:11, role:'example'},  {question_id:12, role:'variant'},\n",
+        "      {question_id:13, role:'example'},  {question_id:14, role:'variant'},\n",
+        "      {question_id:15, role:'practice'}, {question_id:16, role:'practice'}]},\n",
+        "    { topic_id:'k_b', name:'乙', items:[\n",
+        "      {question_id:21, role:'variant'},  {question_id:22, role:'practice'}]}\n",
+        "  ],\n",
+        "  extra_ids: [31, 32],\n",
+        "  questions: [11,12,13,14,15,16,21,22,31,32].map(function (i) {\n",
+        "    return { id:i, content:'Q'+i, question_type:'detailed_answer', answer:'A'+i, sources: [] };\n",
+        "  })\n",
+        "};\n",
+        "var html = api.buildLectureHtml(data);\n",
+        # 考向一：例一-1 → 变式1（跨母题连续）→ 例一-2 → 变式2；趁热打铁 1、2 裸号
+        "for (var i = 0; i < html.length; i++) {}\n",
+        "['例一-1','变式1','例一-2','变式2'].forEach(function (t) {\n",
+        "  if ((html.match(new RegExp(t.replace(/[.*+?^${}()|[\\]\\\\]/g,'\\\\$&'),'g'))||[]).length < 1)"
+        " throw new Error('缺 '+t);\n",
+        "});\n",
+        # 答案册里考向乙的孤儿变式必须从 变式1 重排（每考向归零）：
+        # 「考向二　变式2」若出现，说明跨考向没归零或编号串了槽
+        "if (html.indexOf('考向二　变式2') >= 0) throw new Error('变式没有按考向归零');\n",
+        # 钉住正文侧标签序列本身（沙箱里 api 只导出 buildLectureHtml，裸函数不可见）：
+        # 考向一应为 例一-1 → 变式1 → 例一-2 → 变式2（跨母题连续、不按母题归零）
+        "var tagRe = /<span class=\"tag\">([^<]*)<\\/span>/g; var seq = [], m;\n",
+        "while ((m = tagRe.exec(html))) { if (/^(例|变式)/.test(m[1])) seq.push(m[1]); }\n",
+        "eq(seq.slice(0, 4), ['例一-1','变式1','例一-2','变式2'], '考向一题号序列不对');\n",
+        # 答案册侧同一份口径：定位前缀 + 标签，按出现顺序排（实战演练裸号穿插其间）
+        "var ansRe = /<span class=\"ans-tag\">([^<]*)<\\/span>/g; var aseq = [], am;\n",
+        "while ((am = ansRe.exec(html))) aseq.push(am[1]);\n",
+        "if (aseq.join('|').indexOf('第一讲　考向一　例一-1|第一讲　考向一　变式1|"
+        "第一讲　考向一　例一-2|第一讲　考向一　变式2') < 0) throw new Error('答案册题号序列不对');\n",
+        "eq(seq.filter(function (t) { return t === '变式3'; }).length, 0, '变式不该越过考向内的 N 继续排');\n",
+        # 「变式2」必须出现在「例一-2」之后、「例一-1」之前（跨母题连续，不按母题归零）
+        "if (!(html.indexOf('例一-1') < html.indexOf('变式1')"
+        " && html.indexOf('变式1') < html.indexOf('例一-2')"
+        " && html.indexOf('例一-2') < html.indexOf('变式2'))) throw new Error('变式编号没有跨母题连续排');\n",
+        "if (html.indexOf('>1<') < 0) throw new Error('趁热打铁没出裸号');\n",
+        "if ((html.match(/【实战演练】/g)||[]).length !== 2) throw new Error('正文+答案册应各出一块实战演练');\n",
+        "if ((html.match(/【趁热打铁】/g)||[]).length !== 4) throw new Error('趁热打铁板块头数量不对（正文两考向+答案册两处）');\n",
+        # 孤儿变式（考向乙没配例题）不再冠「典型例题」头，避免空板块头；答案册同口径
+        "if ((html.match(/【典型例题】/g)||[]).length !== 2) throw new Error('典型例题板块头数量不对（正文+答案册各一处）');\n",
+        # 考向二无例题：孤儿变式挂到考向二名下从 变式1 起、裸号趁热打铁从 1 起
+        "if (html.indexOf('第一讲　考向二　变式1') < 0) throw new Error('答案册缺考向二孤儿变式条目');\n",
         "console.log('OK');\n",
     ))
     _run_extracted_lecture_js(

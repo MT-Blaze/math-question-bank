@@ -16,7 +16,7 @@ from typing import Iterator
 
 from mathbank.asset_security import AssetSecurityError, resolve_upload_asset
 from mathbank.latex_normalize import _convert_one_table
-from mathbank.paper_helper import clean_content_for_latex
+from mathbank.paper_helper import clean_content_for_latex, extract_choice_answer_letter
 
 MIND_PREFIX = "@mindmap"
 
@@ -325,6 +325,30 @@ def collect_lecture_images(
 
 _ROLE_LABELS = {"example": "例", "variant": "变式", "practice": "趁热打铁", "homework": "实战"}
 
+_CN_DIGITS = "零一二三四五六七八九"
+
+
+def cn_numeral(n) -> str:
+    """讲次/考向的中文数字，与 lecture.js 的 cnNumeral 同一口径（1..99）。"""
+    try:
+        k = int(n)
+    except (TypeError, ValueError):
+        return str(n)
+    if not 1 <= k <= 99:
+        return str(n)
+    if k < 10:
+        return _CN_DIGITS[k]
+    tens, ones = divmod(k, 10)
+    if tens == 1:
+        return "十" + (_CN_DIGITS[ones] if ones else "")
+    return _CN_DIGITS[tens] + "十" + (_CN_DIGITS[ones] if ones else "")
+
+
+def lecture_title(lecture_no, knowledge: str) -> str:
+    """页眉统一「第X讲 <小节名>」：章名与教材章节号不再出现，重编号只发生在渲染层。"""
+    cleaned = re.sub(r"^\s*\d+(\.\d+)*[.．、]?\s*", "", str(knowledge or "")).strip()
+    return "第%s讲 %s" % (cn_numeral(lecture_no), cleaned or str(knowledge or ""))
+
 _PLACEHOLDER = r"\textcolor{gray}{（待补充）}"
 
 
@@ -364,8 +388,35 @@ def _section_entries(preview: dict) -> list:
     }]
 
 
+def lecture_page_counts(entry: dict) -> int:
+    """一讲占的页数（不含思维导图溢出）：知识梳理 + 考向地图（有大纲考向时）
+    + 每个考向一页 + 实战演练一页（有题时）。
+
+    目录页码的唯一来源：前端 buildLectureHtml 经 countLeaves 数出来的 sheet
+    页数与本函数必须同一口径，改任何一侧的分页结构都要同步另一侧。
+    """
+    n = 2 if (entry.get("section") or {}).get("topics") else 1
+    n += len(entry.get("topics") or [])
+    if entry.get("extra_ids"):
+        n += 1
+    return n
+
+
 def _question_block(question: dict, label: str, include_answers: bool) -> str:
-    body = clean_content_for_latex(question.get("content") or "", question.get("question_type") or "")
+    _q_type = question.get("question_type") or ""
+    # 教师版选择题：把答案字母印进作答括号；学生版留空。
+    # ⚠️ 讲义数据源里答案键是 ``answer``（前端 preview 数据），与组卷链路的
+    #    ``answer_markdown`` 不同名。
+    _answer_letter = (
+        extract_choice_answer_letter(question.get("answer") or "")
+        if include_answers and _q_type in ("single_choice", "multi_choice")
+        else ""
+    )
+    body = clean_content_for_latex(
+        question.get("content") or "",
+        _q_type,
+        answer_letter=_answer_letter,
+    )
     lines = [r"\noindent\textbf{%s}\quad %s" % (escape_text(label), body.strip()), ""]
     answer = (question.get("answer") or "").strip()
     if include_answers:
@@ -375,12 +426,101 @@ def _question_block(question: dict, label: str, include_answers: bool) -> str:
     return "\n".join(lines)
 
 
+_INCLUDEGRAPHICS_RE = re.compile(r"\\includegraphics(?:\[[^\]]*\])?\{([^}]*)\}")
+
+
+def sanitize_dead_image_references(tex: str, uploads_dir: str) -> tuple[str, list]:
+    """把解析不到文件的 ``\\includegraphics`` 降级成可见占位文字。
+
+    存量题可能引用已被清理/晋升掉的图片（collect_ledger_images 只收在盘上的），
+    死链原样进 PDF 会让 XeLaTeX 直接崩掉整本讲义。宁缺勿炸：降级 + 上报。
+    """
+    from mathbank.asset_security import AssetSecurityError, resolve_upload_asset
+
+    notes: list[str] = []
+
+    def repl(match: re.Match) -> str:
+        name = match.group(1).strip()
+        try:
+            resolved = resolve_upload_asset(name, uploads_dir=uploads_dir, url_prefix="static/uploads")
+            if resolved.exists():
+                return match.group(0)
+        except (AssetSecurityError, TypeError, OSError):
+            pass
+        if name and name not in notes:
+            notes.append(name)
+        return r"\textcolor{gray}{【图片待补：%s】}" % escape_text(name or "?")
+
+    out = _INCLUDEGRAPHICS_RE.sub(repl, tex)
+    warnings = ["题目引用的图片已不存在，正文降级为占位文字：%s" % "、".join(notes)] if notes else []
+    return out, warnings
+
+
+def _topic_items(entries, questions_by_id):
+    """逐条目展开 (讲次号, 考向序, role, 题目)：例题/变式共用一个跨考向游标，
+    与 lecture.js buildTopicSheet 的编号归零口径完全一致。"""
+    rows = []
+    for lecture_no, entry in enumerate(entries, start=1):
+        section = entry.get("section") or {}
+        for index, topic in enumerate(entry.get("topics") or []):
+            outline = _outline_topic(section, str(topic.get("topic_id") or ""))
+            number = outline.get("no") or (index + 1)
+            for item in (topic.get("items") or []):
+                question = questions_by_id.get(item.get("question_id"))
+                if not question:
+                    continue
+                rows.append((lecture_no, number, str(item.get("role") or "example"), question))
+    return rows
+
+
+def _numbered_rows(rows):
+    """按讲次/考向归零地给每行算出正文标签（裸号）与板块头，返回
+    [(lecture_no, topic_no, role, question, label, block_head)]；
+    label 与 lecture.js 同口径：例<考向>-<序>、变式<考向内跨母题连续>、
+    趁热打铁/实战纯裸号；block_head 非空时该题前要先出版块标题头，
+    孤儿变式（本考向还没有例题）不出「典型例题」头。"""
+    out = []
+    ex = variant = practice = 0
+    example_seen = False
+    practice_seen = False
+    current = None
+    for lecture_no, topic_no, role, question in rows:
+        if current != (lecture_no, topic_no):
+            current = (lecture_no, topic_no)
+            ex = variant = practice = 0
+            example_seen = practice_seen = False
+        head = ""
+        if role == "example":
+            ex += 1
+            label = "例%s-%d" % (cn_numeral(topic_no), ex)
+            if not example_seen:
+                example_seen = True
+                head = "典型例题"
+        elif role == "variant":
+            variant += 1
+            label = "变式%d" % variant
+            if ex > 0 and not example_seen:
+                example_seen = True
+                head = "典型例题"
+        elif role == "practice":
+            practice += 1
+            label = str(practice)
+            if not practice_seen:
+                practice_seen = True
+                head = "趁热打铁"
+        else:
+            label = "例%s-%d·练" % (cn_numeral(topic_no), max(ex, 1))
+        out.append((lecture_no, topic_no, role, question, label, head))
+    return out
+
+
 def build_lecture_latex(preview: dict, view: str = "jiexi") -> tuple[str, list[str]]:
     """把 preview 数据组装成完整 LaTeX 源码，返回 (源码, 降级说明)。
 
     view：yuan 学生版（不含答案）/ jiexi 教师版（含答案）/ daan 答案册。
-    多节合并时按 ``sections`` 顺序逐节输出知识梳理与考向页，实战演练与
-    答案册整本只出一份；单节旧载荷行为不变。
+    一个小节 = 一讲（中文数字），每讲输出知识梳理 → 考向页 → 本讲实战演练
+    （课后作业，裸号归零）；答案册整本一份、只它带「第X讲」定位前缀。
+    目录页紧跟标题页。单节旧载荷行为不变。
     """
     settings = preview.get("settings") or {}
     entries = _section_entries(preview)
@@ -398,51 +538,74 @@ def build_lecture_latex(preview: dict, view: str = "jiexi") -> tuple[str, list[s
     subtitle = (settings.get("cover_subtitle") or "同步讲义").strip()
 
     lines = _preamble(include_answers=include_answers, title=title)
+    # exam-zh 的 \section* 会画装饰竖条并自动补「【XX】」，讲义里换用无装饰宏；
+    # 标题页/目录/每讲各板块单独起页，由 \lectpage 控制
+    lines.append(r"\newcommand{\lectsec}[1]{\par\vspace{4mm}{\Large\bfseries #1}\par\nopagebreak\vspace{2mm}}")
+    lines.append(r"\newcommand{\blockhead}[1]{\par\vspace{2.5mm}{\normalsize\bfseries 【#1】}\par\vspace{1mm}}")
+    lines.append(r"\newcommand{\lectpage}{\clearpage}")
+    lines.append("")
+
     lines.append("\\begin{document}")
     lines.append(r"\raggedbottom")
+    # 讲义不用试卷的密封线/注意事项：标题页直接居中排，并显式开启页码
+    # （exam-zh 默认 \pagestyle{empty}，不打开的话「第 N 页（共 M 页）」不会出现，
+    # 目录页码就无从对照）
+    lines.append(r"\pagestyle{plain}")
     lines.append(r"\begin{center}{\Large\bfseries %s}\\[1mm]{\normalsize %s}\end{center}" % (
         escape_text(title), escape_text(subtitle)))
     lines.append("")
 
+    # 目录页：列在封面之后；起始页 = 1（标题页）+ 前面各讲的页数之和，
+    # 与前端「封面+目录后第一讲从第 3 页起」同一口径（lecture_page_counts）
+    lines.append(r"\lectpage")
+    lines.append(r"\lectsec{目　录}")
+    start = 3
+    for index, entry in enumerate(entries):
+        sec = entry.get("section") or {}
+        lines.append(r"\noindent %s\dotfill 第 %d 页\par" % (
+            escape_text(lecture_title(index + 1, sec.get("knowledge") or "")), start))
+        start += lecture_page_counts(entry)
+    lines.append("")
+
     if view == "daan":
-        lines.append(r"\section*{答案册}")
-        counter = 0
-        for entry in entries:
-            section = entry.get("section") or {}
-            for index, topic in enumerate(entry.get("topics") or []):
-                topic_id = str(topic.get("topic_id") or "")
-                outline = _outline_topic(section, topic_id)
-                number = outline.get("no") or (index + 1)
-                for item in (topic.get("items") or []):
-                    question = questions_by_id.get(item.get("question_id"))
-                    if not question:
-                        continue
-                    counter += 1
-                    label = "考向%s %s%d" % (
-                        number, _ROLE_LABELS.get(str(item.get("role") or "example"), "例"), counter)
-                    answer = (question.get("answer") or "").strip()
-                    lines.append(r"\noindent\textbf{%s}" % escape_text(label))
-                    lines.append(clean_content_for_latex(answer, is_answer=True).strip() if answer else _PLACEHOLDER)
-                    lines.append("")
-        extra_counter = 0
-        for entry in entries:
+        lines.append(r"\lectpage")
+        lines.append(r"\lectsec{答案册}")
+        for lecture_no, topic_no, role, question, label, head in _numbered_rows(
+                _topic_items(entries, questions_by_id)):
+            if head:
+                lines.append(r"\blockhead{%s}" % head)
+            answer = (question.get("answer") or "").strip()
+            prefix = "第%s讲　考向%s　" % (cn_numeral(lecture_no), cn_numeral(topic_no))
+            lines.append(r"\noindent\textbf{%s}" % escape_text(prefix + label))
+            lines.append(clean_content_for_latex(answer, is_answer=True).strip() if answer else _PLACEHOLDER)
+            lines.append("")
+        hw_block = set()
+        hw_counter = 0
+        for lecture_no, entry in enumerate(entries, start=1):
             for qid in (entry.get("extra_ids") or []):
                 question = questions_by_id.get(qid)
                 if not question:
                     continue
-                extra_counter += 1
+                if lecture_no not in hw_block:
+                    hw_block.add(lecture_no)
+                    lines.append(r"\blockhead{实战演练}")
+                    hw_counter = 0
+                hw_counter += 1
                 answer = (question.get("answer") or "").strip()
-                lines.append(r"\noindent\textbf{实战%d}" % extra_counter)
+                prefix = "第%s讲　" % cn_numeral(lecture_no)
+                lines.append(r"\noindent\textbf{%s}" % escape_text(prefix + str(hw_counter)))
                 lines.append(clean_content_for_latex(answer, is_answer=True).strip() if answer else _PLACEHOLDER)
                 lines.append("")
         lines.append("\\end{document}")
         return "\n".join(lines), degradations
 
-    for entry in entries:
+    for lecture_no, entry in enumerate(entries, start=1):
         section = entry.get("section") or {}
         notes = entry.get("notes") or {}
+        head = lecture_title(lecture_no, section.get("knowledge") or "")
         knowledge = _note(notes, "knowledge", section, "")
-        lines.append(r"\section*{知识梳理}")
+        lines.append(r"\lectpage")
+        lines.append(r"\lectsec{%s · 知识梳理}" % escape_text(head))
         if knowledge.strip():
             body, warns = note_body_to_latex(knowledge)
             degradations.extend(warns)
@@ -453,18 +616,25 @@ def build_lecture_latex(preview: dict, view: str = "jiexi") -> tuple[str, list[s
 
         outline_topics = section.get("topics") or []
         if outline_topics:
-            lines.append(r"\section*{考向地图}")
+            lines.append(r"\lectpage")
+            lines.append(r"\lectsec{%s · 考向地图}" % escape_text(head))
             lines.append("\\begin{enumerate}")
             for outline in outline_topics:
                 lines.append(r"\item %s" % escape_text(str((outline or {}).get("name") or "")))
             lines.append("\\end{enumerate}")
             lines.append("")
 
+        # 逐考向出题：考向标题 → 易错点/解题方法 → 【典型例题】/【趁热打铁】板块。
+        # 题号一律走 _numbered_rows（与答案册同一实现），此处只负责排版；
+        # 每个考向单独起页，与前端 A4「一考向一页」一致
+        rows_iter = iter(_numbered_rows(_topic_items([entry], questions_by_id)))
+        pending = next(rows_iter, None)
         for index, topic in enumerate(entry.get("topics") or []):
             topic_id = str(topic.get("topic_id") or "")
             outline = _outline_topic(section, topic_id)
             number = outline.get("no") or (index + 1)
-            lines.append(r"\subsection*{考向%s　%s}" % (number, escape_text(str(topic.get("name") or ""))))
+            lines.append(r"\lectpage")
+            lines.append(r"\lectsec{考向%s　%s}" % (cn_numeral(number), escape_text(str(topic.get("name") or ""))))
             for kind, heading in (("pit", "易错点"), ("method", "解题方法")):
                 lines.append(r"\noindent\textbf{%s}\quad" % heading)
                 revision = _note(notes, kind, section, topic_id)
@@ -477,47 +647,20 @@ def build_lecture_latex(preview: dict, view: str = "jiexi") -> tuple[str, list[s
                 else:
                     lines.append(_PLACEHOLDER)
                 lines.append("")
-            example = 0
-            variant = 0
-            practice = 0
-            for item in (topic.get("items") or []):
-                question = questions_by_id.get(item.get("question_id"))
-                if not question:
-                    continue
-                role = str(item.get("role") or "example")
-                if role == "example":
-                    example += 1
-                    variant = 0
-                    label = "例%d" % example
-                elif role == "variant":
-                    variant += 1
-                    label = "变式%d.%d" % (max(example, 1), variant)
-                elif role == "practice":
-                    practice += 1
-                    label = "趁热打铁%d" % practice
-                else:
-                    label = "例%d·练" % max(example, 1)
+            while pending is not None and pending[1] == number:
+                _, _, role, question, label, block_head = pending
+                if block_head:
+                    lines.append(r"\blockhead{%s}" % block_head)
                 lines.append(_question_block(question, label, include_answers))
+                pending = next(rows_iter, None)
 
-    extra_sections = [e for e in entries if (e.get("extra_ids") or [])]
-    if extra_sections:
-        lines.append(r"\section*{实战演练}")
-        position = 0
-        for entry in extra_sections:
-            section = entry.get("section") or {}
-            multi = len(extra_sections) > 1
-            for qid in (entry.get("extra_ids") or []):
-                question = questions_by_id.get(qid)
-                if not question:
-                    continue
-                position += 1
-                heading = ""
-                if multi:
-                    heading = r"\noindent{\small\itshape %s · %s}\par" % (
-                        escape_text(str(section.get("chapter") or "")),
-                        escape_text(str(section.get("knowledge") or "")))
-                lines.append(heading)
-                lines.append(_question_block(question, "实战%d" % position, include_answers))
+        extra_ids = [qid for qid in (entry.get("extra_ids") or []) if qid in questions_by_id]
+        if extra_ids:
+            lines.append(r"\lectpage")
+            lines.append(r"\lectsec{%s · 实战演练}" % escape_text(head))
+            lines.append(r"\blockhead{实战演练}")
+            for position, qid in enumerate(extra_ids, start=1):
+                lines.append(_question_block(questions_by_id[qid], str(position), include_answers))
 
     lines.append("\\end{document}")
     return "\n".join(lines), degradations

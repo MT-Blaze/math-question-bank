@@ -177,10 +177,11 @@ def test_views_decide_answer_visibility():
 
 
 def test_topic_numbering_follows_outline_no():
-    """考向编号取大纲 no（元素关系是 7），不是编排下标。"""
+    """考向编号取大纲 no（元素关系是 7 → 考向七），不是编排下标；且为中文数字。"""
     tex, _ = build_lecture_latex(_preview(), view="yuan")
-    assert "考向7" in tex
-    assert "考向1　集合判断" in tex
+    assert "考向七" in tex
+    assert "考向一　集合判断" in tex
+    assert "考向7" not in tex
 
 
 def test_outline_example_used_as_unrevised_method_default():
@@ -200,9 +201,123 @@ def test_outline_example_used_as_unrevised_method_default():
 
 
 def test_question_labels_number_per_topic():
+    """新口径：例<考向>-<序>；变式/趁热打铁纯裸号按考向归零；板块头带字。"""
     tex, _ = build_lecture_latex(_preview(), view="yuan")
-    assert "例1" in tex and "变式1.1" in tex and "趁热打铁1" in tex and "实战1" in tex
+    assert "例一-1" in tex
+    assert "变式1" in tex and "变式1.1" not in tex
+    assert r"\blockhead{典型例题}" in tex and r"\blockhead{趁热打铁}" in tex
+    # 实战演练挪到本讲末尾后仍是裸号，不再冠「实战」前缀
+    assert r"\blockhead{实战演练}" in tex and "实战1" not in tex
 
+
+def test_cn_numeral_covers_lecture_scale():
+    """一轮复习三十几讲：十一/二十/三十五这类进位必须正确，越界值原样回落。"""
+    from mathbank.lecture_export import cn_numeral
+
+    assert cn_numeral(1) == "一"
+    assert cn_numeral(9) == "九"
+    assert cn_numeral(10) == "十"
+    assert cn_numeral(11) == "十一"
+    assert cn_numeral(20) == "二十"
+    assert cn_numeral(35) == "三十五"
+    assert cn_numeral(99) == "九十九"
+    assert cn_numeral(0) == "0"
+    assert cn_numeral("x") == "x"
+
+def test_lecture_headers_drop_chapter_and_use_cn_numerals():
+    """页眉「第X讲 <小节名>」：章名与教材章节号都不再出现。"""
+    from mathbank.lecture_export import lecture_title
+
+    assert lecture_title(1, "1.1 集合的概念") == "第一讲 集合的概念"
+    assert lecture_title(12, "函数的概念") == "第十二讲 函数的概念"
+    tex, _ = build_lecture_latex(_preview(), view="jiexi")
+    assert "第一讲 集合的概念 · 知识梳理" in tex
+    assert "集合与常用逻辑用语" not in tex          # 章名已删
+    # 教材章节号从所有页眉消失（封面标题是用户手填，不在管辖内）
+    assert "1. 集合与常用逻辑用语 · 1.1" not in tex
+    assert "· 1.1 集合的概念" not in tex
+
+def test_toc_page_lists_lectures_after_cover():
+    tex, _ = build_lecture_latex(_preview_multi(), view="yuan")
+    assert "目　录" in tex
+    assert "第一讲 集合间的基本关系" in tex[tex.index("目　录"):tex.index("知识梳理")]
+    assert "第二讲 集合的概念" in tex[tex.index("目　录"):]
+    assert tex.index("目　录") < tex.index("第一讲 集合间的基本关系 · 知识梳理")
+
+def test_lecture_page_counts_matches_compiled_start_pages():
+    """目录页码必须与真编译出来的起始页一致：分页宏、标题页占位任何一侧改动
+    都会让对照表失准——这条用 XeLaTeX 实测钉住两端口径。"""
+    import re
+
+    import pymupdf
+
+    from mathbank.paper_helper import compile_tex_to_pdf
+
+    def norm(s):
+        return s.replace(" ", "").replace("\u3000", "")
+
+    for preview in (_preview(), _preview_multi()):
+        tex, _ = build_lecture_latex(preview, view="jiexi")
+        pdf, log = compile_tex_to_pdf(tex, [])
+        assert pdf, str(log)[-400:]
+        doc = pymupdf.open(stream=pdf, filetype="pdf")
+        toc = {}
+        for page in doc:
+            t = norm(page.get_text())
+            if "目录" not in t[:20]:
+                continue
+            for m in re.finditer(r"第([一二三四五六七八九十]+)讲.*?第(\d+)页", t):
+                toc[m.group(1)] = int(m.group(2))
+        actual = {}
+        for page in doc:
+            t = norm(page.get_text())
+            if "知识梳理" not in t:
+                continue
+            lecture = re.search(r"第([一二三四五六七八九十]+)讲", t)
+            foot = re.search(r"数学试题第(\d+)页", t)
+            if lecture and foot:
+                actual.setdefault(lecture.group(1), int(foot.group(1)))
+        assert actual, "PDF 里没找到讲次起始页"
+        assert toc == actual, "目录页码与实际起始页不符：%s vs %s" % (toc, actual)
+
+def test_answer_book_entries_carry_lecture_prefix():
+    daan, _ = build_lecture_latex(_preview(), view="daan")
+    assert "第一讲　考向一　例一-1" in daan
+    assert "第一讲　考向一　变式1" in daan
+    assert "第一讲　考向七　1" in daan          # 趁热打铁裸号 + 定位前缀
+    assert "第一讲　1" in daan                  # 实战演练裸号 + 定位前缀
+    multi_daan, _ = build_lecture_latex(_preview_multi(), view="daan")
+    assert "第二讲　考向一　例一-1" in multi_daan
+    # 实战演练的题（id4）属于第一讲：前缀按归属讲次，不是位置序号
+    assert "第一讲　1" in multi_daan and "第二讲　1" not in multi_daan
+
+def test_dangling_image_reference_does_not_kill_export():
+    """存量题可能引用已被清理的图片：collect 会静默剔除，但正文里的
+     \\includegraphics 若原样进 PDF 会让整本讲义编译失败。导出侧必须把
+    「解析不到文件」的图片引用降级成可见占位文字，不得让死链炸掉编译。"""
+    import shutil
+
+    import pymupdf
+
+    from mathbank.paper_helper import compile_tex_to_pdf
+
+    preview = _preview()
+    # 真实存储链会把字面 \n 还原成换行；夹具直接用真换行，避免 LaTeX 里
+    # 出现字面 ``\n``（未定义控制序列）这种只有夹具才有的编译噪声
+    preview["questions"][0]["content"] = "如图 $A\\\\cap B$。\n![](static/uploads/gone_file.png)"
+    tex, warns = build_lecture_latex(preview, view="jiexi")
+    from mathbank.lecture_export import sanitize_dead_image_references
+
+    clean, notes = sanitize_dead_image_references(tex, str(_main.UPLOAD_DIR))
+    assert "gone_file" not in clean                   # 死链原样 includegraphics 不允许残留
+    assert notes and any("图片" in n for n in notes)
+    if shutil.which("xelatex") is None:
+        pytest.skip("本机无 XeLaTeX")
+    pdf, log = compile_tex_to_pdf(clean + "\n% probe\n", [])
+    assert pdf, "含死图引用的讲义必须仍能编译：%s" % str(log)[-400:]
+    doc = pymupdf.open(stream=pdf, filetype="pdf")
+    text = "".join(page.get_text() for page in doc)
+    assert "图片待补" in text
 
 def test_preamble_is_shared_not_copied():
     """讲义导言区必须来自 paper_helper.build_exam_preamble，不得自带第二份宏包清单。"""
@@ -256,7 +371,7 @@ def test_export_route_streams_pdf_and_surfaces_degradations(client, monkeypatch)
                     json=dict(SEC, view="jiexi", preview=_preview(mind=True)))
     assert r.status_code == 200
     assert r.headers["content-type"] == "application/pdf"
-    assert "考向1" in captured["tex"]
+    assert "考向一" in captured["tex"]
     notes = r.headers.get("X-MathBank-Export-Notes")
     assert notes and "布局" in unquote(notes)
 
@@ -309,17 +424,20 @@ def _preview_multi():
 
 
 def test_merged_export_orders_sections_and_keeps_single_answer_book():
-    """多节导出：每节各有一组知识梳理/考向页且顺序跟随载荷；答案册整本只有一份。"""
+    """多节导出：每讲各有一组知识梳理/考向页且顺序跟随载荷；实战演练归各讲、
+    答案册整本只有一份。"""
     tex, _ = build_lecture_latex(_preview_multi(), view="jiexi")
-    assert tex.count(r"\section*{知识梳理}") == 2
+    assert tex.count("· 知识梳理}") == 2
     assert tex.index("子集与真子集") < tex.index("集合是确定性对象"), "节的顺序被排错了"
-    assert tex.count(r"\section*{实战演练}") == 1
-    assert r"\section*{答案册}" not in tex
+    assert tex.count(r"\blockhead{实战演练}") == 1      # 只有 K2 配了课后作业，归本讲
+    assert "第一讲 集合间的基本关系 · 实战演练" in tex
+    assert "第二讲 集合的概念 · 实战演练" not in tex     # K1 没有 extra_ids
+    assert r"\lectsec{答案册}" not in tex
     daan, _ = build_lecture_latex(_preview_multi(), view="daan")
-    assert daan.count(r"\section*{答案册}") == 1
+    assert daan.count(r"\lectsec{答案册}") == 1
     # 单节旧载荷行为不变
     single, _ = build_lecture_latex(_preview(), view="jiexi")
-    assert single.count(r"\section*{知识梳理}") == 1
+    assert single.count("· 知识梳理}") == 1
 
 
 @pytest.mark.skipif(shutil.which("xelatex") is None, reason="本机无 XeLaTeX")
@@ -334,9 +452,10 @@ def test_generated_lecture_latex_actually_compiles():
     assert pdf, "讲义 LaTeX 编译失败：%s" % str(log)[-1500:]
     assert pdf[:4] == b"%PDF"
     doc = pymupdf.open(stream=pdf, filetype="pdf")
-    text = "".join(page.get_text() for page in doc)
-    for needle in ("知识梳理", "集合判断", "互异性", "【答案】", "实战1", "考向7"):
-        assert needle in text, "PDF 里缺少 %s" % needle
+    # PDF 文本层会吃掉 CJK 间空格（「第一讲 集合」→「第一讲集合」），比对前统一剥空白
+    text = "".join(page.get_text() for page in doc).replace(" ", "").replace("\u3000", "")
+    for needle in ("知识梳理", "集合判断", "互异性", "【答案】", "第一讲集合的概念", "考向七"):
+        assert needle.replace(" ", "") in text, "PDF 里缺少 %s" % needle
     assert doc.page_count >= 1
 
 
@@ -351,6 +470,6 @@ def test_merged_lecture_latex_actually_compiles():
     pdf, log = compile_tex_to_pdf(tex, [])
     assert pdf, "合并讲义 LaTeX 编译失败：%s" % str(log)[-1500:]
     doc = pymupdf.open(stream=pdf, filetype="pdf")
-    text = "".join(page.get_text() for page in doc)
-    for needle in ("子集与真子集", "集合是确定性对象", "实战1"):
-        assert needle in text, "PDF 里缺少 %s" % needle
+    text = "".join(page.get_text() for page in doc).replace(" ", "").replace("\u3000", "")
+    for needle in ("子集与真子集", "集合是确定性对象", "第一讲集合间的基本关系·实战演练", "目录"):
+        assert needle.replace(" ", "") in text, "PDF 里缺少 %s" % needle

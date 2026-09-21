@@ -520,6 +520,23 @@
     var s = String(t || '').replace(/^\s*\d+(\.\d+)*[.．、]?\s*/, '');
     return s || String(t || '');
   }
+  /* 讲次/考向的中文数字：纯加法进位，1→一 … 99→九十九，讲义规模内够用。 */
+  var CN_DIGITS = ['零', '一', '二', '三', '四', '五', '六', '七', '八', '九'];
+
+  function cnNumeral(n) {
+    var k = Math.floor(Number(n));
+    if (!isFinite(k) || k < 1 || k > 99) return String(n == null ? '' : n);
+    if (k < 10) return CN_DIGITS[k];
+    if (k < 20) return '十' + (k % 10 ? CN_DIGITS[k % 10] : '');
+    return CN_DIGITS[Math.floor(k / 10)] + '十' + (k % 10 ? CN_DIGITS[k % 10] : '');
+  }
+
+  /* 重编号只发生在渲染层：note_key 与草稿 config 仍存真实教材坐标。
+     页眉统一「第X讲 <小节名> · …」，章名与教材章节号都不再出现。 */
+  function lectureTitle(lectureNo, knowledge) {
+    return '第' + cnNumeral(lectureNo) + '讲 ' + cleanChapterTitle(knowledge);
+  }
+
 
   function buildCover(settings, sectionTitle, versionText) {
     var bg = ST.coverBg[matchCoverKey(sectionTitle)] || ST.coverBg.default || '';
@@ -544,20 +561,21 @@
     }).join(':');
   }
 
-  function buildKnowledge(notes, compulsory, chapter, knowledge) {
+  function buildKnowledge(notes, compulsory, chapter, knowledge, headTitle) {
+    var head = headTitle || (cleanChapterTitle(chapter) + ' · ' + knowledge);
     var key = noteKey('knowledge', compulsory, chapter, knowledge);
     var src = notes[key] || '';
     if (src.indexOf('@mindmap') === 0) {
       var mm = parseMindmap(src);
       if (!mm) {
-        return '<div class="sheet" id="page-knowledge"><div class="chapter-info">' + esc(cleanChapterTitle(chapter)) + ' · ' + esc(knowledge) + ' · 知识梳理</div>' +
+        return '<div class="sheet" id="page-knowledge"><div class="chapter-info">' + esc(head) + ' · 知识梳理</div>' +
           '<div class="knowledge"><div class="kn-empty">' +
           '（思维导图数据无法解析，已停止输出原始源码；请在工具栏「知识梳理」中修复后重新保存）</div></div></div>';
       }
-      return buildMindmapSheets(mm, compulsory, chapter, knowledge, src);
+      return buildMindmapSheets(mm, compulsory, chapter, knowledge, src, head);
     }
     var body = src || '<div class="kn-empty">（尚未编写知识梳理，点击工具栏「知识梳理」开始编辑）</div>';
-    return '<div class="sheet" id="page-knowledge"><div class="chapter-info">' + esc(cleanChapterTitle(chapter)) + ' · ' + esc(knowledge) + ' · 知识梳理</div>' +
+    return '<div class="sheet" id="page-knowledge"><div class="chapter-info">' + esc(head) + ' · 知识梳理</div>' +
       '<div class="knowledge">' + body + '</div></div>';
   }
 
@@ -656,7 +674,8 @@
     return html;
   }
 
-  function buildMindmapSheets(data, compulsory, chapter, knowledge, raw) {
+  function buildMindmapSheets(data, compulsory, chapter, knowledge, raw, headTitle) {
+    var head = headTitle || (cleanChapterTitle(chapter) + ' · ' + knowledge);
     var entry = findSectionEntry(secKey(compulsory, chapter, knowledge)) || ensureActiveEntry();
     if (entry) entry.knowledgeMind = { data: data, raw: raw };
     ST.knowledgeMind = entry ? entry.knowledgeMind : null;
@@ -675,7 +694,7 @@
     });
     var html = '';
     pages.forEach(function (pg, pi) {
-      html += '<div class="sheet"><div class="chapter-info">' + esc(cleanChapterTitle(chapter)) + ' · ' + esc(knowledge) + ' · 知识梳理</div>';
+      html += '<div class="sheet"><div class="chapter-info">' + esc(head) + ' · 知识梳理</div>';
       html += '<div class="mind-hint">思维导图 · 点击任一文字块可直接编辑</div>';
       html += '<div class="mind-wrap">';
       if (pi === 0 && data.title) {
@@ -767,11 +786,12 @@
       .catch(function (e) { toast('保存失败：' + e.message, 'error'); });
   }
 
-  function buildMap(section) {
+  function buildMap(section, headTitle) {
+    var head = headTitle || (cleanChapterTitle(section.chapter) + ' · ' + section.knowledge);
     var rows = (section.topics || []).map(function (t, i) {
-      return '<div class="map-row"><span class="map-idx">' + (t.no || i + 1) + '</span><span class="map-name">' + esc(t.name) + '</span></div>';
+      return '<div class="map-row"><span class="map-idx">' + cnNumeral(t.no || i + 1) + '</span><span class="map-name">' + esc(t.name) + '</span></div>';
     }).join('');
-    return '<div class="sheet" id="page-map"><div class="chapter-info">' + esc(cleanChapterTitle(section.chapter)) + ' · ' + esc(section.knowledge) + ' · 考向地图</div><div class="map">' + rows + '</div></div>';
+    return '<div class="sheet" id="page-map"><div class="chapter-info">' + esc(head) + ' · 考向地图</div><div class="map">' + rows + '</div></div>';
   }
 
   function buildSourceHtml(q) {
@@ -806,7 +826,7 @@
       '<div class="q-body">' + content + '</div>' + ans + '</div>';
   }
 
-  function buildTopicSheet(topicCfg, idx, notes, compulsory, chapter, knowledge, topicNo, outlineExample) {
+  function buildTopicSheet(topicCfg, idx, notes, compulsory, chapter, knowledge, topicNo, outlineExample, headTitle) {
     var tid = topicCfg.topic_id || '';
     var pit = tid ? notes[noteKey('pit', compulsory, chapter, knowledge, tid)] : '';
     var method = tid ? notes[noteKey('method', compulsory, chapter, knowledge, tid)] : '';
@@ -816,98 +836,155 @@
     // LectureNote 一直承诺「无修订则用大纲默认」，此前从没实现
     var methodDefault = (tid && outlineExample)
       ? '<span class="km-default">大纲默认 · 未修订</span>' + esc(outlineExample) : '';
-    var html = '<div class="sheet" data-answer-page="true"><div class="page-head"><span class="ph-title">' + esc(cleanChapterTitle(chapter)) + ' · ' + esc(knowledge) + '</span><span class="ph-quote"></span></div>';
-    html += '<div class="subsection-title">考向' + (topicNo || (idx + 1)) + '　' + esc(topicCfg.name) + '</div>';
+    var html = '<div class="sheet" data-answer-page="true"><div class="page-head"><span class="ph-title">' + esc(headTitle || '') + '</span><span class="ph-quote"></span></div>';
+    html += '<div class="subsection-title">考向' + cnNumeral(topicNo || (idx + 1)) + '　' + esc(topicCfg.name) + '</div>';
     html += '<div class="km-box">';
     html += '<div class="km-item km-pit"><span class="km-label">易错点</span>' + (pit || pitEmpty) + '</div>';
     html += '<div class="km-item km-method"><span class="km-label">解题方法</span>' + (method || methodDefault || pitEmpty) + '</div>';
     html += '</div>';
-    var ex = 0, practice = 0;
-    var variantGroup = [];
+    // 编号口径与 lecture_export.py 镜像：例<中文考向序>-<考向内例题序>；
+    // 变式/趁热打铁为纯裸号、每个考向归零。板块头带字，题目不带前缀。
+    var topicCn = cnNumeral(topicNo || (idx + 1));
+    var hasExample = false, ex = 0, variant = 0, practice = 0;
     (topicCfg.items || []).forEach(function (item) {
       var q = ST.qIndex[item.question_id];
       if (!q) return;
       if (item.role === 'example') {
+        if (!hasExample) { html += blockHeadHtml('典型例题'); hasExample = true; }
         ex++;
-        variantGroup = [];
-        html += buildQuestion(q, '例' + ex);
+        // 变式跨母题连续编号（1→N），只有例题本身归零重排
+        html += buildQuestion(q, '例' + topicCn + '-' + ex);
       } else if (item.role === 'variant') {
-        variantGroup.push(q);
-        html += buildQuestion(q, '变式' + ex + '.' + variantGroup.length);
+        // 孤儿变式（该考向还没配例题）不冠「典型例题」头，避免空板块头
+        if (ex > 0 && !hasExample) { html += blockHeadHtml('典型例题'); hasExample = true; }
+        variant++;
+        html += buildQuestion(q, '变式' + variant);
       } else if (item.role === 'practice') {
         practice++;
-        html += buildQuestion(q, '趁热打铁' + practice);
+        if (practice === 1) html += blockHeadHtml('趁热打铁');
+        html += buildQuestion(q, String(practice));
       } else {
-        html += buildQuestion(q, '例' + Math.max(ex, 1) + '·练');
+        html += buildQuestion(q, '例' + topicCn + '-' + Math.max(ex, 1) + '·练');
       }
     });
     html += '<div class="page-foot"><span class="pg"></span></div></div>';
     return html;
   }
 
-  /* 多节合并时每节各出一组：知识梳理页 → 考向地图页 → 该节考向页。
-     metaMapFor 按节重建 topic_id→编号映射，跨节同名 topic_id 不会串号。 */
-  function buildSectionPages(entry, settings) {
-    var section = entry.section || {};
-    var notes = entry.notes || {};
-    var metaMap = buildTopicMetaMap(section);
-    var html = buildKnowledge(notes, section.compulsory, section.chapter, section.knowledge);
-    html += buildMap(section);
-    (entry.topics || []).forEach(function (t, i) {
-      html += buildTopicSheet(t, i, notes, section.compulsory, section.chapter, section.knowledge,
-        topicNoOf(metaMap, t, i), outlineExampleOf(metaMap, t));
-    });
-    return html;
+  function blockHeadHtml(text) {
+    return '<div class="block-title">【' + text + '】</div>';
   }
 
-  function buildHomework() {
-    var html = '';
-    var total = 0;
-    var multi = ST.previewData.sections && ST.previewData.sections.length > 1;
-    (ST.previewData.sections || [{ extra_ids: ST.previewData.extra_ids || [], section: ST.previewData.section || {} }])
-      .forEach(function (entry) {
-        var items = entry.extra_ids || [];
-        if (!items.length) return;
-        var sec = entry.section || {};
-        html += '<div class="sheet" data-answer-page="true"><div class="page-head"><span class="ph-title">实战演练' + (multi ? ' · ' + esc(sec.knowledge || '') : '') + '</span><span class="ph-quote"></span></div>';
-        html += '<div class="subsection-title">实战演练' + (multi ? '' : '') + '</div>';
-        items.forEach(function (qid, i) {
-          var q = ST.qIndex[qid];
-          if (q) { total++; html += buildQuestion(q, '实战' + total); }
-        });
-        html += '<div class="page-foot"><span class="pg"></span></div></div>';
+  /* 目录页（封面后第二页）：逐讲列「第X讲 小节名 …… 第 N 页」。 */
+  function buildToc(entries, startPage) {
+    var rows = entries.map(function (e, i) {
+      var sec = e.section || {};
+      return '<div class="toc-row"><span class="toc-name">' + esc(lectureTitle(i + 1, sec.knowledge)) + '</span>' +
+        '<span class="toc-dots"></span><span class="toc-page">第 ' + (startPage + i) + ' 页</span></div>';
+    }).join('');
+    return '<div class="sheet toc"><div class="section-title">目　录</div><div class="toc">' + rows + '</div></div>';
+  }
+
+  function countLeaves(html) {
+    // 与 iframe 脚本给 .pg 写「第 N 页」同一口径：数所有带页脚的 sheet。
+    // 思维导图分页的 page-foot 是裸文本（无 .pg），只按 <div class="sheet 数会漏页。
+    var s = String(html), n = 0, i = 0;
+    while (i < s.length) {
+      var open = s.indexOf('<div class="sheet', i);
+      if (open < 0) break;
+      var next = s.indexOf('<div class="sheet', open + 1);
+      if (next < 0) next = s.length;
+      if (s.indexOf('page-foot', open) >= 0 && s.indexOf('page-foot', open) < next) n++;
+      i = next;
+    }
+    return n;
+  }
+
+  /* preview 载荷归一为节条目数组（单节旧载荷 → 一条）。 */
+  function normalizePreviewEntries(data) {
+    if (Array.isArray(data.sections) && data.sections.length) {
+      return data.sections.map(function (e) {
+        return { section: e.section || {}, notes: e.notes || {}, topics: e.topics || [], extra_ids: e.extra_ids || [] };
       });
-    if (!html) {
-      html = '<div class="sheet" data-answer-page="true"><div class="page-head"><span class="ph-title">实战演练</span><span class="ph-quote"></span></div>' +
-        '<div class="subsection-title">实战演练</div><div class="text-sm text-slate-400">（尚未选择实战演练题目）</div>' +
-        '<div class="page-foot"><span class="pg"></span></div></div>';
+    }
+    return [{ section: data.section || {}, notes: data.notes || {}, topics: data.topics || [], extra_ids: data.extra_ids || [] }];
+  }
+
+  /* 多节合并时每节各出一组：知识梳理页 → 考向地图页 → 该节考向页。
+     metaMapFor 按节重建 topic_id→编号映射，跨节同名 topic_id 不会串号。 */
+  function buildSectionPages(entry, settings, lectureNo) {
+    var section = entry.section || {};
+    var notes = entry.notes || {};
+    var headTitle = lectureTitle(lectureNo, section.knowledge);
+    var metaMap = buildTopicMetaMap(section);
+    var html = buildKnowledge(notes, section.compulsory, section.chapter, section.knowledge, headTitle);
+    html += buildMap(section, headTitle);
+    (entry.topics || []).forEach(function (t, i) {
+      html += buildTopicSheet(t, i, notes, section.compulsory, section.chapter, section.knowledge,
+        topicNoOf(metaMap, t, i), outlineExampleOf(metaMap, t), headTitle);
+    });
+    var items = entry.extra_ids || [];
+    if (items.length) {
+      html += '<div class="sheet" data-answer-page="true"><div class="page-head"><span class="ph-title">' + esc(headTitle) + '</span><span class="ph-quote"></span></div>';
+      html += blockHeadHtml('实战演练');
+      var hw = 0;
+      items.forEach(function (qid) {
+        var q = ST.qIndex[qid];
+        if (!q) return;
+        hw++;
+        html += buildQuestion(q, String(hw));
+      });
+      html += '<div class="page-foot"><span class="pg"></span></div></div>';
     }
     return html;
   }
 
-  function buildAnswerBook() {
+
+  function buildAnswerBook(entries) {
     var html = '<div class="sheet" id="page-answer-book"><div class="section-title">答案册</div>';
-    var count = 0;
-    (ST.previewData.sections || [{ topics: ST.topics, extra_ids: ST.previewData.extra_ids || [], section: ST.previewData.section || {} }])
-      .forEach(function (entry) {
-        var metaMap = buildTopicMetaMap(entry.section || {});
-        ((entry.topics || [])).forEach(function (topicCfg, idx) {
-          (topicCfg.items || []).forEach(function (item) {
-            var q = ST.qIndex[item.question_id];
-            if (!q) return;
-            count++;
-            var label = '考向' + topicNoOf(metaMap, topicCfg, idx) + ' ' + roleVal(item.role) + ' ' + (item.role === 'example' ? '例' + count : item.role === 'variant' ? '变式' + count : item.role === 'practice' ? '趁热打铁' + count : '实战' + count);
-            var ans = q.answer ? (window.parseMarkdownWithMath ? window.parseMarkdownWithMath(q.answer) : esc(q.answer)) : '';
-            html += '<div class="ans-item"><span class="ans-tag">' + esc(label) + '</span>' + (ans || '<span class="text-slate-400">（暂无答案）</span>') + '</div>';
-          });
-        });
-        (entry.extra_ids || []).forEach(function (qid, i) {
-          var q = ST.qIndex[qid];
+    entries.forEach(function (entry, ei) {
+      var section = entry.section || {};
+      var lecturePrefix = '第' + cnNumeral(ei + 1) + '讲';
+      var metaMap = buildTopicMetaMap(section);
+      (entry.topics || []).forEach(function (topicCfg, idx) {
+        var topicNo = topicNoOf(metaMap, topicCfg, idx);
+        var topicCn = cnNumeral(topicNo);
+        var hasExample = false, ex = 0, variant = 0, practice = 0;
+        (topicCfg.items || []).forEach(function (item) {
+          var q = ST.qIndex[item.question_id];
           if (!q) return;
+          var label;
+          if (item.role === 'example') {
+            if (!hasExample) { html += blockHeadHtml('典型例题'); hasExample = true; }
+            ex++;
+            label = '例' + topicCn + '-' + ex;
+          } else if (item.role === 'variant') {
+            // 与正文同口径：孤儿变式（无母题）不冠「典型例题」头
+            if (ex > 0 && !hasExample) { html += blockHeadHtml('典型例题'); hasExample = true; }
+            variant++;
+            label = '变式' + variant;
+          } else if (item.role === 'practice') {
+            practice++;
+            if (practice === 1) html += blockHeadHtml('趁热打铁');
+            label = String(practice);
+          } else {
+            label = '例' + topicCn + '-' + Math.max(ex, 1) + '·练';
+          }
           var ans = q.answer ? (window.parseMarkdownWithMath ? window.parseMarkdownWithMath(q.answer) : esc(q.answer)) : '';
-          html += '<div class="ans-item"><span class="ans-tag">实战' + (count + i + 1) + '</span>' + (ans || '<span class="text-slate-400">（暂无答案）</span>') + '</div>';
+          html += '<div class="ans-item"><span class="ans-tag">' + esc(lecturePrefix + '　考向' + cnNumeral(topicNo) + '　' + label) + '</span>' + (ans || '<span class="text-slate-400">（暂无答案）</span>') + '</div>';
         });
       });
+      var hwItems = entry.extra_ids || [];
+      var hwShown = false, hw = 0;
+      hwItems.forEach(function (qid) {
+        var q = ST.qIndex[qid];
+        if (!q) return;
+        if (!hwShown) { html += blockHeadHtml('实战演练'); hwShown = true; }
+        hw++;
+        var ans = q.answer ? (window.parseMarkdownWithMath ? window.parseMarkdownWithMath(q.answer) : esc(q.answer)) : '';
+        html += '<div class="ans-item"><span class="ans-tag">' + esc(lecturePrefix + '　' + hw) + '</span>' + (ans || '<span class="text-slate-400">（暂无答案）</span>') + '</div>';
+      });
+    });
     html += '</div>';
     return html;
   }
@@ -938,25 +1015,10 @@
     // 题目查找表按整本建一次：多节合并时同一道题可能出现在任意一节
     ST.qIndex = {};
     (data.questions || []).forEach(function (q) { ST.qIndex[q.id] = q; });
-    var entries;
-    if (Array.isArray(data.sections) && data.sections.length) {
-      entries = data.sections.map(function (e) {
-        (e.questions || []).forEach(function (q) { ST.qIndex[q.id] = q; });
-        return {
-          section: e.section || {},
-          notes: e.notes || {},
-          topics: e.topics || [],
-          extra_ids: e.extra_ids || [],
-        };
-      });
-    } else {
-      entries = [{
-        section: data.section || {},
-        notes: data.notes || {},
-        topics: data.topics || [],
-        extra_ids: data.extra_ids || [],
-      }];
-    }
+    var entries = normalizePreviewEntries(data);
+    entries.forEach(function (e) {
+      (e.questions || []).forEach(function (q) { ST.qIndex[q.id] = q; });
+    });
     // 把后端回带的修订稿与考向树落到对应节的编排容器上（思维导图编辑入口用）
     entries.forEach(function (e) {
       var sec = e.section;
@@ -969,11 +1031,15 @@
     var firstSection = entries[0].section;
     ST.topicMetaById = buildTopicMetaMap(firstSection);
     var title = settings.cover_title || cleanChapterTitle(firstSection.chapter) || firstSection.knowledge || '讲义';
+    // 版面顺序：封面 → 目录 → 逐讲（知识梳理/考向地图/考向页/实战演练）→ 答案册。
+    // 目录起始页码按「带页脚的 sheet」数出来，与 iframe 脚本给 .pg 写的「第 N 页」
+    // 同一口径；思维导图长页在页面生成后追加，只会让后面的页码整体后移，方向安全。
     var body = '';
     body += buildCover(settings, title, '学生版');
-    entries.forEach(function (e) { body += buildSectionPages(e, settings); });
-    body += buildHomework();
-    body += buildAnswerBook();
+    var sectionHtml = entries.map(function (e, i) { return buildSectionPages(e, settings, i + 1); }).join('');
+    body += buildToc(entries, 2 + countLeaves(sectionHtml));
+    body += sectionHtml;
+    body += buildAnswerBook(entries);
 
     var quotePool = data.quote_pool || [];
     var quotesJs = quotePool.map(function (q) { return JSON.stringify(q); }).join(',');
