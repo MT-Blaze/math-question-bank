@@ -1382,7 +1382,8 @@
     if (!sel) return;
     var prev = sel.value;
     sel.innerHTML = '';
-    for (var y = currentYear() + 3; y >= 2024; y--) {
+    // 默认当年，向后多留一年即可；历史届次保留到 2024
+    for (var y = currentYear() + 1; y >= 2024; y--) {
       var el = document.createElement('option');
       el.value = String(y); el.textContent = y + '届';
       sel.appendChild(el);
