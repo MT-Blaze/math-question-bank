@@ -696,18 +696,18 @@ def test_merged_preview_html_orders_sections_once_each():
         "ST.topics = data.sections[1].topics;\n",
         "var html = api.buildLectureHtml(data);\n",
         "if (typeof html !== 'string') throw new Error('preview 未产出 HTML');\n",
-        # 封面一份 + 紧随其后的目录页（两讲、中文数字、带页码）
+        # 封面一份 + 紧随其后的目录页（多节才有；书籍式逐条列，讲次中文数字）
         "if ((html.match(/class=\"sheet cover\"/g) || []).length !== 1) throw new Error('封面不止一份');\n",
         "if (html.indexOf('目　录') < 0) throw new Error('目录页缺失');\n",
         "if (html.indexOf('第一讲 K2') > html.indexOf('第二讲 K1')) throw new Error('目录顺序被排错');\n",
         "if (html.indexOf('目　录') > html.indexOf('第一讲 K2 · 知识梳理')) throw new Error('目录没排在正文前');\n",
-        # 每节各一次知识梳理页与考向页，顺序 = 载荷顺序（K2 在前）；页眉只认讲次不带章名
-        "if ((html.match(/class=\"sheet cover\"/g) || []).length !== 1) throw new Error('封面不止一份');\n",
-        "if (html.indexOf('ZIJISECTION') > html.indexOf('MINDK1')) throw new Error('节顺序被排错了');\n",
-        "if ((html.match(/考向一　子集判断/g) || []).length !== 1) throw new Error('K2 考向页缺失或重复');\n",
-        "if ((html.match(/考向一　集合判断/g) || []).length !== 1) throw new Error('K1 考向页缺失或重复');\n",
+        "if (html.indexOf('toc-sub') < 0) throw new Error('目录没有书籍式子条目');\n",
+        # 每节各一次考向页（考向标题在目录里也出现一次，共 2 处）；页眉不带章名
+        "if ((html.match(/考向一　子集判断/g) || []).length !== 2) throw new Error('K2 考向页或目录条目缺失');\n",
+        "if ((html.match(/考向一　集合判断/g) || []).length !== 2) throw new Error('K1 考向页或目录条目缺失');\n",
         "if (html.indexOf('C1 · ') >= 0) throw new Error('页眉还带着章名');\n",
         # 思维导图节照常渲染且按节存状态；实战演练归各自讲、裸号
+        "if (html.indexOf('ZIJISECTION') > html.indexOf('MINDK1')) throw new Error('节顺序被排错了');\n",
         "if (html.indexOf('mind-branch-label') < 0) throw new Error('思维导图节未渲染');\n",
         "if (!ST.sections[1].knowledgeMind) throw new Error('思维导图状态未按节存放');\n",
         "if (ST.sections[0].knowledgeMind) throw new Error('思维导图状态串到了别的节');\n",
@@ -718,6 +718,13 @@ def test_merged_preview_html_orders_sections_once_each():
         "if ((html.match(/id=\"page-answer-book\"/g) || []).length !== 1) throw new Error('答案册不是一份');\n",
         "if (html.indexOf('第一讲　考向一　例一-1') < 0) throw new Error('答案册缺 K2 的定位前缀条目');\n",
         "if (html.indexOf('第二讲　考向一　例一-1') < 0) throw new Error('答案册缺 K1 的定位前缀条目');\n",
+        # 单节讲义不出目录页（用户规则：一节一本，薄得不需要）
+        "var single = { settings: {}, section: { compulsory:'M', chapter:'C1', knowledge:'K1', name:'K1',\n",
+        "    topics:[{id:'k_a',name:'集合判断',no:1}] }, notes: {},\n",
+        "  topics: [{ topic_id:'k_a', name:'集合判断', items:[{question_id:1, role:'example'}] }],\n",
+        "  extra_ids: [], questions: [{ id:1, content:'题一', question_type:'detailed_answer', answer:'', sources: [] }] };\n",
+        "var sHtml = api.buildLectureHtml(single);\n",
+        "if (sHtml.indexOf('目　录') >= 0) throw new Error('单节讲义不该出目录页');\n",
         "console.log('OK');\n",
     ))
     _run_extracted_lecture_js(

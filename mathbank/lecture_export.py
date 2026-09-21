@@ -402,6 +402,37 @@ def lecture_page_counts(entry: dict) -> int:
     return n
 
 
+def toc_entries(entries: list) -> list:
+    """书籍/论文式目录的行序列 [(level, name, page)]：讲级粗体顶格，
+    子级缩进列「知识梳理 / 考向地图 / 各考向 / 实战演练」。
+
+    行序列与前端 lecture.js 的 tocRowsForEntry 必须同口径；页码从第 3 页起
+    （标题页 1 + 目录页 1），每讲占 lecture_page_counts 页。"""
+    rows = []
+    start = 3
+    for index, entry in enumerate(entries):
+        section = entry.get("section") or {}
+        lecture_no = index + 1
+        rows.append(("lec", lecture_title(lecture_no, section.get("knowledge") or ""), start))
+        page = start
+        has_map = bool(section.get("topics"))
+        rows.append(("sub", "知识梳理", page))
+        page += 1
+        if has_map:
+            rows.append(("sub", "考向地图", page))
+            page += 1
+        outline_index = {str(t.get("id") or ""): t for t in (section.get("topics") or [])}
+        for topic_index, topic in enumerate(entry.get("topics") or []):
+            outline = outline_index.get(str(topic.get("topic_id") or "")) or {}
+            number = outline.get("no") or (topic_index + 1)
+            rows.append(("sub2", "考向%s　%s" % (cn_numeral(number), str(topic.get("name") or "")), page))
+            page += 1
+        if entry.get("extra_ids"):
+            rows.append(("sub", "实战演练", page))
+        start += lecture_page_counts(entry)
+    return rows
+
+
 def _question_block(question: dict, label: str, include_answers: bool) -> str:
     _q_type = question.get("question_type") or ""
     # 教师版选择题：把答案字母印进作答括号；学生版留空。
@@ -555,17 +586,16 @@ def build_lecture_latex(preview: dict, view: str = "jiexi") -> tuple[str, list[s
         escape_text(title), escape_text(subtitle)))
     lines.append("")
 
-    # 目录页：列在封面之后；起始页 = 1（标题页）+ 前面各讲的页数之和，
-    # 与前端「封面+目录后第一讲从第 3 页起」同一口径（lecture_page_counts）
-    lines.append(r"\lectpage")
-    lines.append(r"\lectsec{目　录}")
-    start = 3
-    for index, entry in enumerate(entries):
-        sec = entry.get("section") or {}
-        lines.append(r"\noindent %s\dotfill 第 %d 页\par" % (
-            escape_text(lecture_title(index + 1, sec.get("knowledge") or "")), start))
-        start += lecture_page_counts(entry)
-    lines.append("")
+    # 目录页：仅多节合并讲义出（单节本身就薄）；书籍/论文式逐条列，点线 + 页码。
+    # 行序列与前端 tocRowsForEntry 同口径，页码起点见 toc_entries 注释。
+    if len(entries) > 1:
+        lines.append(r"\lectpage")
+        lines.append(r"\lectsec{目　录}")
+        for level, name, page in toc_entries(entries):
+            indent = {"lec": r"\noindent\textbf{%s}", "sub": r"\hspace*{0.9em}%s",
+                      "sub2": r"\hspace*{1.6em}%s"}[level] % escape_text(name)
+            lines.append(r"%s\dotfill 第 %d 页\par" % (indent, page))
+        lines.append("")
 
     if view == "daan":
         lines.append(r"\lectpage")

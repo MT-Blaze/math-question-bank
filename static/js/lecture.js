@@ -148,6 +148,10 @@
         section: null, topics: [], extraIds: [], questions: [],
       };
       ST.sections.push(entry);
+    } else if (!entry.compulsory) {
+      // 兜底：容器已存在但坐标缺失（历史/异常路径）时补齐，
+      // 否则 collectSectionsPayload 会发出空坐标载荷
+      entry.compulsory = compulsory; entry.chapter = chapter; entry.knowledge = knowledge;
     }
     return entry;
   }
@@ -520,6 +524,7 @@
     var s = String(t || '').replace(/^\s*\d+(\.\d+)*[.．、]?\s*/, '');
     return s || String(t || '');
   }
+
   /* 讲次/考向的中文数字：纯加法进位，1→一 … 99→九十九，讲义规模内够用。 */
   var CN_DIGITS = ['零', '一', '二', '三', '四', '五', '六', '七', '八', '九'];
 
@@ -536,7 +541,6 @@
   function lectureTitle(lectureNo, knowledge) {
     return '第' + cnNumeral(lectureNo) + '讲 ' + cleanChapterTitle(knowledge);
   }
-
 
   function buildCover(settings, sectionTitle, versionText) {
     var bg = ST.coverBg[matchCoverKey(sectionTitle)] || ST.coverBg.default || '';
@@ -875,14 +879,43 @@
     return '<div class="block-title">【' + text + '】</div>';
   }
 
-  /* 目录页（封面后第二页）：逐讲列「第X讲 小节名 …… 第 N 页」。 */
-  function buildToc(entries, startPage) {
-    var rows = entries.map(function (e, i) {
-      var sec = e.section || {};
-      return '<div class="toc-row"><span class="toc-name">' + esc(lectureTitle(i + 1, sec.knowledge)) + '</span>' +
-        '<span class="toc-dots"></span><span class="toc-page">第 ' + (startPage + i) + ' 页</span></div>';
+  /* 目录页（仅多节合并讲义出，封面后第二页）。书籍/论文样式：逐讲列
+     「知识梳理 / 考向地图 / 各考向 / 实战演练」条目，点线引导 + 页码。
+     行序列与 lecture_export.toc_entries 必须同口径（后端是页码唯一来源）。 */
+  function tocRowsForEntry(entry, lectureNo, startPage) {
+    var sec = entry.section || {};
+    var metaMap = buildTopicMetaMap(sec);
+    var rows = [{ level: 'lec', name: lectureTitle(lectureNo, sec.knowledge), page: startPage }];
+    var page = startPage;
+    if ((sec.topics || []).length) {
+      rows.push({ level: 'sub', name: '知识梳理', page: page });
+      page += 1;
+      rows.push({ level: 'sub', name: '考向地图', page: page });
+      page += 1;
+    } else {
+      rows.push({ level: 'sub', name: '知识梳理', page: page });
+      page += 1;
+    }
+    (entry.topics || []).forEach(function (t, i) {
+      rows.push({ level: 'sub2', name: '考向' + cnNumeral(topicNoOf(metaMap, t, i)) + '　' + (t.name || ''), page: page });
+      page += 1;
+    });
+    if ((entry.extra_ids || []).length) {
+      rows.push({ level: 'sub', name: '实战演练', page: page });
+    }
+    return rows;
+  }
+
+  function buildToc(entries, startPages) {
+    var rows = [];
+    entries.forEach(function (e, i) {
+      rows = rows.concat(tocRowsForEntry(e, i + 1, startPages[i]));
+    });
+    var html = rows.map(function (r) {
+      return '<div class="toc-row toc-' + r.level + '"><span class="toc-name">' + esc(r.name) + '</span>' +
+        '<span class="toc-dots"></span><span class="toc-page">第 ' + r.page + ' 页</span></div>';
     }).join('');
-    return '<div class="sheet toc"><div class="section-title">目　录</div><div class="toc">' + rows + '</div></div>';
+    return '<div class="sheet toc"><div class="section-title">目　录</div><div class="toc">' + html + '</div></div>';
   }
 
   function countLeaves(html) {
@@ -910,8 +943,9 @@
     return [{ section: data.section || {}, notes: data.notes || {}, topics: data.topics || [], extra_ids: data.extra_ids || [] }];
   }
 
-  /* 多节合并时每节各出一组：知识梳理页 → 考向地图页 → 该节考向页。
-     metaMapFor 按节重建 topic_id→编号映射，跨节同名 topic_id 不会串号。 */
+  /* 多节合并时每节各出一组：知识梳理页 → 考向地图页 → 该节考向页 → 该节实战演练。
+     metaMapFor 按节重建 topic_id→编号映射，跨节同名 topic_id 不会串号。
+     实战演练是每讲末尾的课后作业，本讲裸号、不跨讲累计。 */
   function buildSectionPages(entry, settings, lectureNo) {
     var section = entry.section || {};
     var notes = entry.notes || {};
@@ -939,7 +973,8 @@
     return html;
   }
 
-
+  /* 答案册整本一份。标签与正文同一口径生成（题号在正文里全是裸号，跨讲会撞车），
+     只在答案册前补「第X讲」定位头；口径改动必须与 buildTopicSheet/buildSectionPages 同步。 */
   function buildAnswerBook(entries) {
     var html = '<div class="sheet" id="page-answer-book"><div class="section-title">答案册</div>';
     entries.forEach(function (entry, ei) {
@@ -1031,13 +1066,23 @@
     var firstSection = entries[0].section;
     ST.topicMetaById = buildTopicMetaMap(firstSection);
     var title = settings.cover_title || cleanChapterTitle(firstSection.chapter) || firstSection.knowledge || '讲义';
-    // 版面顺序：封面 → 目录 → 逐讲（知识梳理/考向地图/考向页/实战演练）→ 答案册。
-    // 目录起始页码按「带页脚的 sheet」数出来，与 iframe 脚本给 .pg 写的「第 N 页」
-    // 同一口径；思维导图长页在页面生成后追加，只会让后面的页码整体后移，方向安全。
+    // 版面顺序：封面 →（多节才有）目录 → 逐讲（知识梳理/考向地图/考向页/实战演练）→ 答案册。
+    // 单节讲义本身就薄，不出目录。多节时目录起始页码按「带页脚的 sheet」数出来
+    // （与 iframe 脚本给 .pg 写的「第 N 页」同一口径），行序列与后端
+    // lecture_export.toc_entries 同口径；思维导图长页只会让后面整体后移，方向安全。
     var body = '';
     body += buildCover(settings, title, '学生版');
-    var sectionHtml = entries.map(function (e, i) { return buildSectionPages(e, settings, i + 1); }).join('');
-    body += buildToc(entries, 2 + countLeaves(sectionHtml));
+    var chunks = entries.map(function (e, i) { return buildSectionPages(e, settings, i + 1); });
+    var sectionHtml = chunks.join('');
+    if (entries.length > 1) {
+      var startPages = [];
+      var cursor = 2;
+      for (var ci = 0; ci < chunks.length; ci++) {
+        startPages.push(cursor);
+        cursor += countLeaves(chunks[ci]);
+      }
+      body += buildToc(entries, startPages);
+    }
     body += sectionHtml;
     body += buildAnswerBook(entries);
 
@@ -1107,6 +1152,17 @@
       '.ph-title{font-size:17px;font-weight:700;color:#1e3a8a}',
       '.ph-quote{font-size:13px;color:#64748b}',
       '.subsection-title{font-size:18px;font-weight:700;color:#1f3a5f;margin:3mm 0}',
+      '.block-title{font-size:16px;font-weight:700;color:#1e3a8a;margin:4mm 0 2mm}',
+      /* 目录 */
+      '.toc{padding:4mm 8mm}',
+      '.toc-row{display:flex;align-items:baseline;gap:3mm;margin-bottom:3mm;font-size:14px}',
+      '.toc-name{font-weight:500;color:#1e293b;flex-shrink:0}',
+      '.toc-dots{flex:1;border-bottom:1px dotted #94a3b8;transform:translateY(-2mm)}',
+      '.toc-page{color:#64748b;flex-shrink:0}',
+      '.toc-lec .toc-name{font-size:16px;font-weight:700;color:#1f3a5f}',
+      '.toc-lec{margin-top:4mm}',
+      '.toc-sub .toc-name{padding-left:8mm}',
+      '.toc-sub2 .toc-name{padding-left:14mm}',
       '.km-box{display:flex;flex-direction:column;gap:2mm;margin-bottom:4mm}',
       '.km-item{padding:2.5mm 3mm;border-radius:1.5mm;font-size:13.5px;line-height:1.7}',
       '.km-pit{background:#fffbeb;border-left:3px solid #f59e0b}',

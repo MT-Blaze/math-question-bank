@@ -184,6 +184,88 @@ def test_topic_numbering_follows_outline_no():
     assert "考向7" not in tex
 
 
+def test_cn_numeral_covers_lecture_scale():
+    """一轮复习三十几讲：十一/二十/三十五这类进位必须正确，越界值原样回落。"""
+    from mathbank.lecture_export import cn_numeral
+
+    assert cn_numeral(1) == "一"
+    assert cn_numeral(9) == "九"
+    assert cn_numeral(10) == "十"
+    assert cn_numeral(11) == "十一"
+    assert cn_numeral(20) == "二十"
+    assert cn_numeral(35) == "三十五"
+    assert cn_numeral(99) == "九十九"
+    assert cn_numeral(0) == "0"
+    assert cn_numeral("x") == "x"
+
+
+def test_lecture_headers_drop_chapter_and_use_cn_numerals():
+    """页眉「第X讲 <小节名>」：章名与教材章节号都不再出现。"""
+    from mathbank.lecture_export import lecture_title
+
+    assert lecture_title(1, "1.1 集合的概念") == "第一讲 集合的概念"
+    assert lecture_title(12, "函数的概念") == "第十二讲 函数的概念"
+    tex, _ = build_lecture_latex(_preview(), view="jiexi")
+    assert "第一讲 集合的概念 · 知识梳理" in tex
+    assert "集合与常用逻辑用语" not in tex          # 章名已删
+    # 教材章节号从所有页眉消失（封面标题是用户手填，不在管辖内）
+    assert "1. 集合与常用逻辑用语 · 1.1" not in tex
+    assert "· 1.1 集合的概念" not in tex
+
+
+def test_toc_page_lists_lectures_after_cover():
+    """多节才出目录；书籍式逐条列（知识梳理/考向地图/考向/实战演练）。"""
+    tex, _ = build_lecture_latex(_preview_multi(), view="yuan")
+    assert "目　录" in tex
+    head = tex[tex.index("目　录"):tex.index("\\lectpage", tex.index("目　录"))]
+    for needle in ("第一讲 集合间的基本关系", "第二讲 集合的概念", "考向一　子集判断"):
+        assert needle in head
+    # 单节旧载荷不出目录页
+    single, _ = build_lecture_latex(_preview(), view="yuan")
+    assert "目　录" not in single
+
+
+def test_lecture_page_counts_matches_compiled_start_pages():
+    """目录页码必须与真编译出来的起始页一致：分页宏、标题页占位任何一侧改动
+    都会让对照表失准——这条用 XeLaTeX 实测钉住两端口径。仅多节导出有目录。"""
+    import re
+
+    import pymupdf
+
+    from mathbank.paper_helper import compile_tex_to_pdf
+
+    def norm(s):
+        return s.replace(" ", "").replace("\u3000", "")
+
+    tex, _ = build_lecture_latex(_preview_multi(), view="jiexi")
+    pdf, log = compile_tex_to_pdf(tex, [])
+    assert pdf, str(log)[-400:]
+    doc = pymupdf.open(stream=pdf, filetype="pdf")
+    toc = {}
+    for page in doc:
+        t = norm(page.get_text())
+        if "目录" not in t[:20]:
+            continue
+        # 讲级行以「第X讲」开头（\noindent\textbf），子级行以缩进空格开头；
+        # PDF 文本层会吃掉 CJK 间空格，按原始文本的换行切行才分得清层级
+        for line in page.get_text().splitlines():
+            m = re.match(r"^第([一二三四五六七八九十]+)讲.*?(\d+)\s*页\s*$", line.strip())
+            if m and not line.startswith(" "):
+                toc[m.group(1)] = int(m.group(2))
+    actual = {}
+    for page in doc:
+        t = norm(page.get_text())
+        # 只认「知识梳理」独立成行的板块头（目录里的子条目行不算起始页）
+        if not re.search(r"知识梳理\s*\n", page.get_text()):
+            continue
+        lecture = re.search(r"第([一二三四五六七八九十]+)讲", t)
+        foot = re.search(r"数学试题第(\d+)页", t)
+        if lecture and foot:
+            actual.setdefault(lecture.group(1), int(foot.group(1)))
+    assert actual, "PDF 里没找到讲次起始页"
+    assert toc == actual, "目录页码与实际起始页不符：%s vs %s" % (toc, actual)
+
+
 def test_outline_example_used_as_unrevised_method_default():
     """已有修订用修订；无修订的「解题方法」落到大纲 example 并标注未修订。"""
     notes = {
@@ -210,76 +292,6 @@ def test_question_labels_number_per_topic():
     assert r"\blockhead{实战演练}" in tex and "实战1" not in tex
 
 
-def test_cn_numeral_covers_lecture_scale():
-    """一轮复习三十几讲：十一/二十/三十五这类进位必须正确，越界值原样回落。"""
-    from mathbank.lecture_export import cn_numeral
-
-    assert cn_numeral(1) == "一"
-    assert cn_numeral(9) == "九"
-    assert cn_numeral(10) == "十"
-    assert cn_numeral(11) == "十一"
-    assert cn_numeral(20) == "二十"
-    assert cn_numeral(35) == "三十五"
-    assert cn_numeral(99) == "九十九"
-    assert cn_numeral(0) == "0"
-    assert cn_numeral("x") == "x"
-
-def test_lecture_headers_drop_chapter_and_use_cn_numerals():
-    """页眉「第X讲 <小节名>」：章名与教材章节号都不再出现。"""
-    from mathbank.lecture_export import lecture_title
-
-    assert lecture_title(1, "1.1 集合的概念") == "第一讲 集合的概念"
-    assert lecture_title(12, "函数的概念") == "第十二讲 函数的概念"
-    tex, _ = build_lecture_latex(_preview(), view="jiexi")
-    assert "第一讲 集合的概念 · 知识梳理" in tex
-    assert "集合与常用逻辑用语" not in tex          # 章名已删
-    # 教材章节号从所有页眉消失（封面标题是用户手填，不在管辖内）
-    assert "1. 集合与常用逻辑用语 · 1.1" not in tex
-    assert "· 1.1 集合的概念" not in tex
-
-def test_toc_page_lists_lectures_after_cover():
-    tex, _ = build_lecture_latex(_preview_multi(), view="yuan")
-    assert "目　录" in tex
-    assert "第一讲 集合间的基本关系" in tex[tex.index("目　录"):tex.index("知识梳理")]
-    assert "第二讲 集合的概念" in tex[tex.index("目　录"):]
-    assert tex.index("目　录") < tex.index("第一讲 集合间的基本关系 · 知识梳理")
-
-def test_lecture_page_counts_matches_compiled_start_pages():
-    """目录页码必须与真编译出来的起始页一致：分页宏、标题页占位任何一侧改动
-    都会让对照表失准——这条用 XeLaTeX 实测钉住两端口径。"""
-    import re
-
-    import pymupdf
-
-    from mathbank.paper_helper import compile_tex_to_pdf
-
-    def norm(s):
-        return s.replace(" ", "").replace("\u3000", "")
-
-    for preview in (_preview(), _preview_multi()):
-        tex, _ = build_lecture_latex(preview, view="jiexi")
-        pdf, log = compile_tex_to_pdf(tex, [])
-        assert pdf, str(log)[-400:]
-        doc = pymupdf.open(stream=pdf, filetype="pdf")
-        toc = {}
-        for page in doc:
-            t = norm(page.get_text())
-            if "目录" not in t[:20]:
-                continue
-            for m in re.finditer(r"第([一二三四五六七八九十]+)讲.*?第(\d+)页", t):
-                toc[m.group(1)] = int(m.group(2))
-        actual = {}
-        for page in doc:
-            t = norm(page.get_text())
-            if "知识梳理" not in t:
-                continue
-            lecture = re.search(r"第([一二三四五六七八九十]+)讲", t)
-            foot = re.search(r"数学试题第(\d+)页", t)
-            if lecture and foot:
-                actual.setdefault(lecture.group(1), int(foot.group(1)))
-        assert actual, "PDF 里没找到讲次起始页"
-        assert toc == actual, "目录页码与实际起始页不符：%s vs %s" % (toc, actual)
-
 def test_answer_book_entries_carry_lecture_prefix():
     daan, _ = build_lecture_latex(_preview(), view="daan")
     assert "第一讲　考向一　例一-1" in daan
@@ -290,6 +302,34 @@ def test_answer_book_entries_carry_lecture_prefix():
     assert "第二讲　考向一　例一-1" in multi_daan
     # 实战演练的题（id4）属于第一讲：前缀按归属讲次，不是位置序号
     assert "第一讲　1" in multi_daan and "第二讲　1" not in multi_daan
+
+
+def test_preamble_is_shared_not_copied():
+    """讲义导言区必须来自 paper_helper.build_exam_preamble，不得自带第二份宏包清单。"""
+    from pathlib import Path
+    source = Path(__file__).resolve().parents[1] / "mathbank" / "lecture_export.py"
+    text = source.read_text(encoding="utf-8")
+    assert "build_exam_preamble" in text
+    assert r"\documentclass[fontset=fandol]{exam-zh}" not in text
+
+
+def test_collect_images_resolves_both_reference_forms(tmp_path):
+    (tmp_path / "a.png").write_bytes(b"\x89PNG")
+    (tmp_path / "b.png").write_bytes(b"\x89PNG")
+    questions = [
+        {"content": "如图 ![插图](static/uploads/a.png)", "answer": "见 $\\includegraphics[width=2cm]{b.png}$"},
+        {"content": "无图", "answer": ""},
+    ]
+    paths = collect_lecture_images(questions, str(tmp_path), "static/uploads")
+    assert any(p.endswith("a.png") for p in paths)
+    assert any(p.endswith("b.png") for p in paths)
+
+
+def test_collect_images_skips_missing_files(tmp_path):
+    """不存在的引用不进编译清单（资产层会挡掉），也不报错。"""
+    questions = [{"content": "![x](static/uploads/missing.png)", "answer": ""}]
+    assert collect_lecture_images(questions, str(tmp_path), "static/uploads") == []
+
 
 def test_dangling_image_reference_does_not_kill_export():
     """存量题可能引用已被清理的图片：collect 会静默剔除，但正文里的
@@ -318,32 +358,6 @@ def test_dangling_image_reference_does_not_kill_export():
     doc = pymupdf.open(stream=pdf, filetype="pdf")
     text = "".join(page.get_text() for page in doc)
     assert "图片待补" in text
-
-def test_preamble_is_shared_not_copied():
-    """讲义导言区必须来自 paper_helper.build_exam_preamble，不得自带第二份宏包清单。"""
-    from pathlib import Path
-    source = Path(__file__).resolve().parents[1] / "mathbank" / "lecture_export.py"
-    text = source.read_text(encoding="utf-8")
-    assert "build_exam_preamble" in text
-    assert r"\documentclass[fontset=fandol]{exam-zh}" not in text
-
-
-def test_collect_images_resolves_both_reference_forms(tmp_path):
-    (tmp_path / "a.png").write_bytes(b"\x89PNG")
-    (tmp_path / "b.png").write_bytes(b"\x89PNG")
-    questions = [
-        {"content": "如图 ![插图](static/uploads/a.png)", "answer": "见 $\\includegraphics[width=2cm]{b.png}$"},
-        {"content": "无图", "answer": ""},
-    ]
-    paths = collect_lecture_images(questions, str(tmp_path), "static/uploads")
-    assert any(p.endswith("a.png") for p in paths)
-    assert any(p.endswith("b.png") for p in paths)
-
-
-def test_collect_images_skips_missing_files(tmp_path):
-    """不存在的引用不进编译清单（资产层会挡掉），也不报错。"""
-    questions = [{"content": "![x](static/uploads/missing.png)", "answer": ""}]
-    assert collect_lecture_images(questions, str(tmp_path), "static/uploads") == []
 
 
 def test_collect_images_rejects_path_traversal():
@@ -400,7 +414,7 @@ def test_export_route_without_token_is_refused(client):
 
 
 def _preview_multi():
-    """两节合并 preview：顺序 K2→K1，各自带知识梳理/考向页，实战演练分属两节。"""
+    """两节合并 preview：顺序 K2→K1，各自带知识梳理/考向页，实战演练分属两讲。"""
     kn2 = "1.2 集合间的基本关系"
     sec1 = dict(SEC)
     sec2 = dict(SEC, knowledge=kn2)
