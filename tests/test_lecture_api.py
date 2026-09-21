@@ -621,6 +621,73 @@ def test_preview_exposes_outline_example_for_unrevised_topics(client, db_session
     assert topics[1]["example"] == ""
 
 
+def test_merged_preview_orders_sections_and_unions_notes(client, db_session, monkeypatch):
+    """多节合并：按勾选顺序逐节出数据，修订稿各归各节，题目一次批量加载。"""
+    ids = [q.id for q in _seed(db_session)]
+    kn2 = "1.2 集合间的基本关系"
+    monkeypatch.setattr("mathbank.lecture_helper.get_current_curriculum", lambda: {
+        "必修一": {_CH: [
+            {"name": _KN, "topics": [{"id": "k_t1", "name": "集合判断", "no": 1}]},
+            {"name": kn2, "topics": [{"id": "k_t2", "name": "子集判断", "no": 2}]},
+        ]}
+    })
+    for knowledge, tid in ((_KN, "k_t1"), (kn2, "k_t2")):
+        r = client.put("/api/lecture/notes", headers=_headers(), json={
+            "compulsory": "必修一", "chapter": _CH, "knowledge": knowledge,
+            "note_type": "pit", "topic_id": tid, "content": "<p>坑-%s</p>" % knowledge})
+        assert r.status_code == 200
+
+    r = client.post("/api/lecture/preview", headers=_headers(), json={"sections": [
+        {"compulsory": "必修一", "chapter": _CH, "knowledge": kn2,
+         "topics": [{"topic_id": "k_t2", "name": "子集判断",
+                     "items": [{"question_id": ids[1], "role": "example"}]}],
+         "extra_ids": []},
+        {"compulsory": "必修一", "chapter": _CH, "knowledge": _KN,
+         "topics": [{"topic_id": "k_t1", "name": "集合判断",
+                     "items": [{"question_id": ids[0], "role": "example"}]}],
+         "extra_ids": [ids[0]]},
+    ]})
+    assert r.status_code == 200
+    body = r.json()
+    # 顺序 = 载荷顺序（先 K2 后 K1），不是字母序或激活序
+    assert [e["section"]["knowledge"] for e in body["sections"]] == [kn2, _KN]
+    assert "坑-%s" % kn2 in body["sections"][0]["notes"]["pit:必修一:%s:%s:k_t2" % (_CH, kn2)]
+    assert "坑-%s" % _KN in body["sections"][1]["notes"]["pit:必修一:%s:%s:k_t1" % (_CH, _KN)]
+    # 每节只带自己编排引用的题；实战演练的题也在第二节里
+    assert [q["id"] for q in body["sections"][0]["questions"]] == [ids[1]]
+    assert sorted(q["id"] for q in body["sections"][1]["questions"]) == sorted({ids[0]})
+    assert body["sections"][1]["extra_ids"] == [ids[0]]
+
+
+def test_merged_preview_rejects_empty_or_garbage_sections(client, db_session):
+    """sections 全空/坐标缺失时 400，而不是出一份没有内容的讲义。"""
+    r = client.post("/api/lecture/preview", headers=_headers(), json={"sections": []})
+    assert r.status_code == 400
+    r = client.post("/api/lecture/preview", headers=_headers(), json={"sections": [
+        {"compulsory": "", "chapter": "", "knowledge": ""}]})
+    assert r.status_code == 400
+
+
+def test_merged_preview_reports_dead_sections_per_entry(client, db_session, monkeypatch):
+    """某一节在小节改名后 section_found=False、题目被删后 missing_ids 如实带出，
+    其余节照常出稿——合并讲义不得让一节的问题拖垮整本。"""
+    ids = [q.id for q in _seed(db_session)]
+    _pin_curriculum(monkeypatch)  # 活跃树只有 _KN 一个小节
+    r = client.post("/api/lecture/preview", headers=_headers(), json={"sections": [
+        {"compulsory": "必修一", "chapter": _CH, "knowledge": "已被改名的旧小节",
+         "topics": [], "extra_ids": []},
+        {"compulsory": "必修一", "chapter": _CH, "knowledge": _KN,
+         "topics": [{"topic_id": "k_x", "name": "n",
+                     "items": [{"question_id": 999999, "role": "example"}]}],
+         "extra_ids": []},
+    ]})
+    assert r.status_code == 200
+    entries = r.json()["sections"]
+    assert entries[0]["section_found"] is False
+    assert entries[1]["section_found"] is True
+    assert entries[1]["missing_ids"] == [999999]
+
+
 def test_orphan_notes_lists_only_unreachable_revisions(client, db_session, monkeypatch):
     """考向树重建 / 小节改名后留下的修订稿必须列得出来，且能按列出的坐标删掉。
 
@@ -664,11 +731,19 @@ def test_orphan_notes_lists_only_unreachable_revisions(client, db_session, monke
 
 
 def test_orphan_notes_accepts_revisions_from_inactive_textbook_versions(client, db_session, monkeypatch):
-    """lecture_notes 没有版本列：只按当前活跃树判存活，会把另一套教材写好的修订稿误报成孤儿。"""
+    """lecture_notes 没有版本列：只按当前活跃树判存活，会把另一套教材写好的修订稿误报成孤儿。
+
+    考点 ID 从预设树里实际取，不硬编码——同步考向树重建会换掉 ID，钉死字面量
+    会让这条回归在每次改大纲后都假红。
+    """
     _pin_curriculum(monkeypatch)   # 活跃树里只有 _CH/_KN 这一个小节
-    preset = {"compulsory": "必修一", "chapter": "1. 集合与常用逻辑用语", "knowledge": "1.1 集合的概念"}
+    from mathbank.curriculums import load_curriculum
+
+    preset_section = load_curriculum("A")["必修一"]["1. 集合与常用逻辑用语"][0]
+    tid = preset_section["topics"][0]["id"]
+    preset = {"compulsory": "必修一", "chapter": "1. 集合与常用逻辑用语", "knowledge": preset_section["name"]}
     assert client.put("/api/lecture/notes", headers=_headers(), json={
-        **preset, "note_type": "pit", "topic_id": "k_73cd5e2899",
+        **preset, "note_type": "pit", "topic_id": tid,
         "content": "<p>人教A 版预设里的真考向</p>",
     }).status_code == 200
 

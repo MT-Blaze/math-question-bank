@@ -358,8 +358,62 @@ def test_escape_helper_delegates_to_shared_source():
 
 
 def _extract_js_function(src: str, name: str) -> str:
+    """按 lecture.js 的固定缩进（函数体 4 空格、闭合 `}` 在 2 空格列）切出完整函数。"""
     start = src.index("function " + name + "(")
-    return src[start:start + src[start:].index("\n  }")]
+    end = src.index("\n  }\n", start)
+    return src[start:end + len("\n  }")]
+
+
+# lecture.js 里这两个纯小函数以 `\n  }\n\n` 结尾（后面紧跟空行而非嵌套块），
+# _extract_js_function 的截断点会吃掉收尾换行，单独抽取时按整函数补齐。
+_JS_FUNCTION_FULL = {
+    "secKey": (
+        "  function secKey(compulsory, chapter, knowledge) {\n"
+        "    return [compulsory, chapter, knowledge].join('|');\n"
+        "  }\n"
+    ),
+    "sectionOf": (
+        "  function sectionOf(entry) {\n"
+        "    return entry ? { compulsory: entry.compulsory, chapter: entry.chapter,"
+        " knowledge: entry.knowledge } : null;\n"
+        "  }\n"
+    ),
+    "ensureActiveEntry": (
+        "  function ensureActiveEntry() {\n"
+        "    if (!ST.compulsory || !ST.chapter || !ST.knowledge) return null;\n"
+        "    return findSectionEntry(secKey(ST.compulsory, ST.chapter, ST.knowledge));\n"
+        "  }\n"
+    ),
+}
+
+
+def _preview_render_prelude() -> str:
+    """渲染链真跑所需的最小宿主：esc/题目解析器/思维导图分支表 + DOM 桩。"""
+    src = _read(LECTURE_JS)
+    start = src.index("  var MIND_COLORS")
+    end = src.index("\n  }\n", src.index("function outlineExampleOf"))
+    chain = src[start:end + len("\n  }")]
+    return (
+        "var commits = 0; function commitOrchestration() { commits++; }\n"
+        "function __noActiveEntry() { return null; }\n"
+        "global.__dom = {};\n"
+        "function $(id) {\n"
+        "  if (!global.__dom[id]) global.__dom[id] = { value: '', classList: { toggle: function () {}, add: function () {}, remove: function () {} }, appendChild: function () {}, removeChild: function () {}, firstChild: null };\n"
+        "  return global.__dom[id];\n"
+        "}\n"
+        "var document = {\n"
+        "  createElement: function () { return { setAttribute: function () {},"
+        " classList: { toggle: function () {} }, appendChild: function () {}, style: {} }; },\n"
+        "  getElementById: function (id) { return $(id); },\n"
+        "};\n"
+        "function renderTopicPanel() {}\nfunction refreshPreview() {}\n"
+        "var window = global;\n"
+        "window.escapeHtml = function (s) { return String(s == null ? '' : s)"
+        " .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')"
+        " .replace(/\"/g, '&quot;'); };\n"
+        "window.parseMarkdownWithMath = function (s) { return 'MD:' + String(s).slice(0, 12); };\n"
+        + chain + "\n"
+    )
 
 
 def test_topic_configs_are_materialized_not_invented_per_card():
@@ -373,11 +427,21 @@ def test_topic_configs_are_materialized_not_invented_per_card():
 
 
 
-def _run_extracted_lecture_js(names: tuple[str, ...], st_literal: str, body: str) -> None:
+def _run_extracted_lecture_js(
+    names: tuple[str, ...],
+    st_literal: str,
+    body: str,
+    helpers: str = "",
+    prelude: str | None = None,
+    aliases: tuple[tuple[str, str], ...] = (("ensureActiveEntry", "__noActiveEntry"),),
+    names_out: dict[str, str] | None = None,
+) -> None:
     """把 lecture.js 里的若干函数抽出来在 node 里真跑一遍。
 
     抽取的函数必须包进闭包：顶层 `function foo(){}` 会在模块作用域重新绑定同名符号，
     把外层预置的桩（如 commitOrchestration）遮掉，桩就白写了。
+    ``helpers`` 放依赖的纯小函数（secKey/sectionOf 等），``prelude`` 可覆盖默认桩，
+    ``aliases`` 把模块作用域里必然存在、但未被抽取的引用指到替身函数上。
     """
     import shutil
     import subprocess
@@ -386,13 +450,38 @@ def _run_extracted_lecture_js(names: tuple[str, ...], st_literal: str, body: str
     node = shutil.which("node")
     assert node, "Node.js is required for the frontend executable regression"
     src = _read(LECTURE_JS)
+    if prelude is None:
+        prelude = (
+            "var commits = 0;\n"
+            "function commitOrchestration() { commits++; }\n"
+            # lecture.js 的模块作用域里总有这些 DOM/工具引用；抽出单函数真跑时给最小替身，
+            # 桩不得与抽出的同名（hoist 会互相覆盖）
+            "function __noActiveEntry() { return null; }\n"
+            "global.__dom = {};\n"
+            "function $(id) {\n"
+            "  if (!global.__dom[id]) global.__dom[id] = { value: '', classList: { toggle: function () {}, add: function () {}, remove: function () {} }, appendChild: function () {}, removeChild: function () {}, firstChild: null };\n"
+            "  return global.__dom[id];\n"
+            "}\n"
+            "var window = global;\n"
+            # lecture.js 的渲染函数一律走模块内 `$(id)` 助手；桩必须同时喂到 document，
+            # 否则 getElementById 返回 null 会让渲染函数整段短路。
+            "var document = {\n"
+            "  createElement: function () { return { setAttribute: function () {},"
+            " classList: { toggle: function () {} }, appendChild: function () {}, style: {} }; },\n"
+            "  getElementById: function (id) { return $(id); },\n"
+            "};\n"
+            # 面板/预览重绘属于 DOM 层（本文件的面板测试覆盖），这里只计数
+            "function renderTopicPanel() { global.__panelRenders = (global.__panelRenders || 0) + 1; }\n"
+            "function refreshPreview() { global.__previewRefreshes = (global.__previewRefreshes || 0) + 1; }\n"
+        )
     script = "".join((
-        "var commits = 0;\n",
-        "function commitOrchestration() { commits++; }\n",
+        prelude,
         "var ST = ", st_literal, ";\n",
+        helpers,
         "var api = (function () {\n",
-        *(_extract_js_function(src, name) + "\n  }\n" for name in names),
-        "return {", *(n + ":" + n + "," for n in names), "};\n",
+        *(name + ":" + alias + "," for name, alias in aliases),
+        *(_extract_js_function(src, name) + "\n" for name in names),
+        "return {", *(k + ":" + v + "," for k, v in (names_out or {n: n for n in names}).items()), "};\n",
         "})();\n",
         "function eq(a, b, msg) { if (JSON.stringify(a) !== JSON.stringify(b))"
         " throw new Error(msg + ': ' + JSON.stringify(a)); }\n",
@@ -402,7 +491,9 @@ def _run_extracted_lecture_js(names: tuple[str, ...], st_literal: str, body: str
     with handle:
         handle.write(script)
     try:
-        done = subprocess.run([node, handle.name], capture_output=True, text=True, check=False)
+        done = subprocess.run(
+            [node, handle.name], capture_output=True, text=True,
+            check=False, encoding="utf-8", errors="replace")
     finally:
         Path(handle.name).unlink()
     assert done.returncode == 0, (done.stdout or "") + (done.stderr or "")
@@ -411,8 +502,9 @@ def _run_extracted_lecture_js(names: tuple[str, ...], st_literal: str, body: str
 def test_ensure_topic_configs_keeps_orchestration_and_order():
     """真跑 reconcile：对齐小节顺序、保留已选题、不丢大纲里已消失的旧编排。"""
     _run_extracted_lecture_js(
-        ("ensureTopicConfigs",),
-        "{ section: { topics: [{id:'k_a',name:'A'},{id:'k_b',name:'B'},{id:'k_c',name:'C'}] },"
+        ("secKey", "sectionOf", "findSectionEntry", "ensureActiveEntry", "ensureTopicConfigs"),
+        "{ sections: [], activeKey: '', compulsory: '', chapter: '', knowledge: '',"
+        " section: { topics: [{id:'k_a',name:'A'},{id:'k_b',name:'B'},{id:'k_c',name:'C'}] },"
         " topics: [{topic_id:'k_z',name:'旧考向Z',items:[{question_id:7,role:'example'}]},"
         "{topic_id:'k_b',name:'B旧',items:[{question_id:3,role:'variant'}]}] }",
         "".join((
@@ -427,6 +519,7 @@ def test_ensure_topic_configs_keeps_orchestration_and_order():
             "eq(ST.topics.length, 4, '重复调用不幂等');\n",
             "console.log('OK');\n",
         )),
+        helpers="", aliases=(),
     )
 
 
@@ -437,12 +530,16 @@ def test_orchestration_edits_land_on_the_selected_topic_only():
     补上「0 题可选」时验不到的那一半。
     """
     _run_extracted_lecture_js(
-        ("ensureTopicConfigs", "addItem", "setRole", "removeItem", "addExtra", "removeExtra"),
-        "{ section: { topics: [{id:'k_a',name:'A'},{id:'k_b',name:'B'}] },"
+        ("ensureActiveEntry", "findSectionEntry", "secKey", "sectionOf",
+         "ensureTopicConfigs", "addItem", "setRole", "removeItem", "addExtra", "removeExtra"),
+        "{ sections: [], activeKey: 'M|C1|K1', compulsory: 'M', chapter: 'C1', knowledge: 'K1',"
+        " section: { topics: [{id:'k_a',name:'A'},{id:'k_b',name:'B'}] },"
         " topics: [], extraIds: [], questions: [] }",
         "".join((
             "api.ensureTopicConfigs();\n",
+            "ST.__anchor = ST.topics;\n",
             "eq(ST.topics.map(function (t) { return t.topic_id; }), ['k_a','k_b'], '未对齐');\n",
+            "if (ST.topics !== ST.__anchor) throw new Error('reconcile 后数组脱钩，面板改动会丢');\n",
             "api.addItem(1, 42);\n",
             "eq(ST.topics[1].items, [{question_id:42, role:'example'}], '选题落错考向');\n",
             "eq(ST.topics[0].items, [], '题目串到了别的考向');\n",
@@ -461,15 +558,203 @@ def test_orchestration_edits_land_on_the_selected_topic_only():
             "eq(ST.extraIds, [], '实战演练移除失败');\n",
             "console.log('OK');\n",
         )),
+        helpers=_section_helpers(), aliases=(),
+    )
+
+
+def _section_helpers() -> str:
+    return "".join(_JS_FUNCTION_FULL[name] for name in ("secKey", "sectionOf"))
+
+
+def test_multi_section_orchestration_is_scoped_per_section():
+    """多节合并：编排落在激活节上，切节不丢别的节的题，移除节后预览重算。"""
+    st = ("{ sections: [], activeKey: '', compulsory: 'M', chapter: 'C1', knowledge: 'K1', section: null,"
+          " topics: [], extraIds: [], questions: [], knowledgeMind: null }")
+    body = "".join((
+        # 第一节：ensureTopicConfigs 造出的槽位必须锚回节对象
+        "api.ensureSectionEntry('M','C1','K1');\n",
+        "var e1 = api.findSectionEntry('M|C1|K1');\n",
+        "e1.section = { topics: [{id:'k_a',name:'A'},{id:'k_b',name:'B'}] };\n",
+        "api.activateSection(e1);\n",
+        "api.ensureTopicConfigs();\n",
+        "if (e1.topics !== ST.topics) throw new Error('reconcile 后数组脱钩');\n",
+        "api.addItem(0, 11);\n",
+        "eq(e1.topics[0].items, [{question_id:11, role:'example'}], '选题未落激活节');\n",
+        # 第二节：切过去后第一节保持原样
+        "api.ensureSectionEntry('M','C1','K2');\n",
+        "var e2 = api.findSectionEntry('M|C1|K2');\n",
+        "e2.section = { topics: [{id:'k_c',name:'C'}] };\n",
+        "api.activateSection(e2);\n",
+        "api.ensureTopicConfigs();\n",
+        "api.addItem(0, 22);\n",
+        "eq(e2.topics[0].items, [{question_id:22, role:'example'}], '第二节选题失败');\n",
+        "eq(e1.topics[0].items, [{question_id:11, role:'example'}], '切节污染第一节');\n",
+        # 载荷顺序 = 勾选顺序，不是激活顺序
+        "eq(api.collectSectionsPayload().map(function (s) { return s.knowledge; }), ['K1','K2'], '节顺序错误');\n",
+        "eq(api.collectSectionsPayload()[0].topics.length, 2, '第一节考向数不对');\n",
+        # 移除激活节 → 自动落到剩下的节
+        "api.removeSectionEntry('M|C1|K2');\n",
+        "eq(ST.activeKey, 'M|C1|K1', '移除后未回落到剩余节');\n",
+        "eq(ST.sections.map(function (s) { return s.key; }), ['M|C1|K1'], '移除失败');\n",
+        "if (!global.__previewRefreshes) throw new Error('移除节后预览未重算');\n",
+        "console.log('OK');\n",
+    ))
+    _run_extracted_lecture_js(
+        ("findSectionEntry", "ensureSectionEntry", "activateSection", "secKey", "sectionOf",
+         "ensureActiveEntry", "collectSectionsPayload", "removeSectionEntry",
+         "renderSectionChips", "renderTopicPanelFromState",
+         "ensureTopicConfigs", "addItem"),
+        st, body, helpers="", aliases=(),
+    )
+
+
+def _preview_render_prelude() -> str:
+    """渲染链真跑所需的最小宿主：esc/题目解析器 + 整段渲染函数（noteKey → buildLectureHtml）。
+
+    lecture.js 的渲染函数全部以 2 空格缩进闭合，从 MIND_COLORS 到 buildLectureHtml
+    是连续区间，整段截取比逐个抽取少两类脆弱性（漏依赖、截断点错位）。
+    """
+    src = _read(LECTURE_JS)
+    start = src.index("  function matchCoverKey")
+    end = src.index("\n  }\n", src.index("function buildLectureHtml"))
+    chain = src[start:end + len("\n  }")]
+    return (
+        "var commits = 0; function commitOrchestration() { commits++; }\n"
+        "function __noActiveEntry() { return null; }\n"
+        "global.__dom = {};\n"
+        "function $(id) {\n"
+        "  if (!global.__dom[id]) global.__dom[id] = { value: '', classList: { toggle: function () {}, add: function () {}, remove: function () {} }, appendChild: function () {}, removeChild: function () {}, firstChild: null };\n"
+        "  return global.__dom[id];\n"
+        "}\n"
+        "var document = {\n"
+        "  createElement: function () { return { setAttribute: function () {},"
+        " classList: { toggle: function () {} }, appendChild: function () {}, style: {} }; },\n"
+        "  getElementById: function (id) { return $(id); },\n"
+        "};\n"
+        "function renderTopicPanel() {}\nfunction refreshPreview() {}\n"
+        "var window = global;\n"
+        "window.escapeHtml = function (s) { return String(s == null ? '' : s)"
+        " .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')"
+        " .replace(/\"/g, '&quot;'); };\n"
+        "window.parseMarkdownWithMath = function (s) { return 'MD:' + String(s).slice(0, 12); };\n"
+        # buildLectureHtml 会把修订稿回落到各节的编排容器上（思维导图编辑入口），需要查节助手
+        + _JS_FUNCTION_FULL["secKey"]
+        + "  function esc(s) { return window.escapeHtml(s); }\n"
+        + "  var ROLE_LABELS = { example: '例题', variant: '变式', practice: '趁热打铁', homework: '实战演练' };\n"
+        + "  function roleVal(role) { return ROLE_LABELS[role] || ROLE_LABELS.example; }\n"
+        + _JS_FUNCTION_FULL["sectionOf"]
+        + "  function findSectionEntry(key) {\n"
+        "    for (var i = 0; i < ST.sections.length; i++) {\n"
+        "      if (ST.sections[i].key === key) return ST.sections[i];\n"
+        "    }\n"
+        "    return null;\n"
+        "  }\n"
+        + _JS_FUNCTION_FULL["ensureActiveEntry"]
+        # buildMindmapSheets 按节存放思维导图状态：桩保留同一落点，只省掉排版
+        + "  function buildMindmapSheets(data, compulsory, chapter, knowledge, raw) {\n"
+        "    var entry = findSectionEntry(secKey(compulsory, chapter, knowledge));\n"
+        "    if (entry) { entry.knowledgeMind = { data: data, raw: raw }; ST.knowledgeMind = entry.knowledgeMind; }\n"
+        "    return '<div class=\"sheet\"><div class=\"mind-branch-label\">'\n"
+        "      + esc((data.branches[0] || {}).label || '') + '</div></div>';\n"
+        "  }\n"
+        # CSS 文本与本次断言无关，桩掉避免把整段样式带进沙箱
+        + "  function LECTURE_CSS() { return '.stub{}'; }\n"
+        + chain + "\n"
+    )
+
+
+def test_merged_preview_html_orders_sections_once_each():
+    """真跑 buildLectureHtml：多节 preview 数据必须逐节出知识梳理/考向页且顺序跟随载荷，
+    实战演练与答案册整本各一份——这是合并讲义「拼得上」的前端半边。"""
+    st = ("{ sections: [], activeKey: '', compulsory: '', chapter: '', knowledge: '', section: null,"
+          " topics: [], extraIds: [], questions: [], knowledgeMind: null, qIndex: {}, previewData: null, coverBg: {} }")
+    body = "".join((
+        # 预置一节容器：buildLectureHtml 会把修订稿/思维导图状态回落到节上，
+        # 而「加载小节」在真实流程里必然先建好容器（多节测试已覆盖该路径）
+        "ST.sections.push({key:'M|C1|K2', compulsory:'M', chapter:'C1', knowledge:'K2', topics:[], extraIds:[]});\n",
+        "ST.sections.push({key:'M|C1|K1', compulsory:'M', chapter:'C1', knowledge:'K1', topics:[], extraIds:[]});\n",
+        "var data = {\n",
+        "  settings: { cover_title: '第一章 集合', cover_subtitle: '同步讲义' },\n",
+        "  sections: [\n",
+        # K1 用 ASCII 标记：@mindmap 的 JSON.stringify 会把中文转义成 \\uXXXX，
+        # indexOf 按字面量找会假失败；ASCII 标签绕开转义又不影响顺序断言
+        "    { section: { compulsory:'M', chapter:'C1', knowledge:'K2', name:'K2', topics:[{id:'k_c',name:'子集判断',no:1}] },\n",
+        "      notes: { 'knowledge:M:C1:K2': '<p>ZIJISECTION</p>' },\n",
+        "      topics: [{ topic_id:'k_c', name:'子集判断', items:[{question_id:3, role:'example'}] }],\n",
+        "      extra_ids: [4], missing_ids: [], invalid_ids: [] },\n",
+        "    { section: { compulsory:'M', chapter:'C1', knowledge:'K1', name:'K1', topics:[{id:'k_a',name:'集合判断',no:1}] },\n",
+        "      notes: { 'knowledge:M:C1:K1': '@mindmap' + String.fromCharCode(10) + JSON.stringify({title:'T',branches:[{label:'MINDK1',items:[{label:'HUYI'}]}]}) },\n",
+        "      topics: [{ topic_id:'k_a', name:'集合判断', items:[{question_id:1, role:'example'}] }],\n",
+        "      extra_ids: [], missing_ids: [], invalid_ids: [] }\n",
+        "  ],\n",
+        "  questions: [\n",
+        "    { id:1, content:'题一', question_type:'detailed_answer', answer:'答一', sources: [] },\n",
+        "    { id:3, content:'题三', question_type:'detailed_answer', answer:'', sources: [] },\n",
+        "    { id:4, content:'题四', question_type:'fill_in_blank', answer:'答四', sources: [] }\n",
+        "  ]\n",
+        "};\n",
+        "ST.topics = data.sections[1].topics;\n",
+        "var html = api.buildLectureHtml(data);\n",
+        "if (typeof html !== 'string') throw new Error('preview 未产出 HTML');\n",
+        # 封面一份；每节各一次知识梳理页与考向页，顺序 = 载荷顺序（K2 在前）
+        "if ((html.match(/class=\"sheet cover\"/g) || []).length !== 1) throw new Error('封面不止一份');\n",
+        "if (html.indexOf('ZIJISECTION') > html.indexOf('MINDK1')) throw new Error('节顺序被排错了');\n",
+        "if ((html.match(/考向1　子集判断/g) || []).length !== 1) throw new Error('K2 考向页缺失或重复');\n",
+        "if ((html.match(/考向1　集合判断/g) || []).length !== 1) throw new Error('K1 考向页缺失或重复');\n",
+        # 思维导图节照常渲染且按节存状态，实战演练跨节连续编号
+        "if (html.indexOf('mind-branch-label') < 0) throw new Error('思维导图节未渲染');\n",
+        "if (!ST.sections[1].knowledgeMind) throw new Error('思维导图状态未按节存放');\n",
+        "if (ST.sections[0].knowledgeMind) throw new Error('思维导图状态串到了别的节');\n",
+        "if (html.indexOf('实战1') < 0) throw new Error('实战演练缺失');\n",
+        # 答案册整本一份且覆盖两节的题
+        "if ((html.match(/id=\"page-answer-book\"/g) || []).length !== 1) throw new Error('答案册不是一份');\n",
+        "console.log('OK');\n",
+    ))
+    _run_extracted_lecture_js(
+        ("buildLectureHtml",), st, body,
+        helpers="", prelude=_preview_render_prelude(), aliases=(),
     )
 
 
 def test_autosave_guard_counts_questions_not_topic_slots():
-    """小节一加载就有空考向槽，快照判空必须数题，否则每次加载都写快照。"""
+    """小节一加载就有空考向槽，快照判空必须数题；多节时总数要跨节累加。"""
     src = _read(LECTURE_JS)
     body = _extract_js_function(src, "snapshotOrchestration")
-    assert "snapshotCount(" in body
+    assert "snapshotTotal(" in body
     assert "if (!ST.topics.length" not in body
+    st = ("{ sections: [{key:'M|C1|K1', compulsory:'M', chapter:'C1', knowledge:'K1',"
+          " topics:[{topic_id:'k_a',items:[{question_id:1,role:'example'}]}], extraIds:[]}],"
+          " activeKey:'M|C1|K1', compulsory:'M', chapter:'C1', knowledge:'K1',"
+          " topics:[{topic_id:'k_a',items:[{question_id:1,role:'example'}]}], extraIds:[], questions: [] }")
+    prelude = (
+        "var commits = 0;\nfunction commitOrchestration() { commits++; }\n"
+        "var __store = {};\n"
+        "global.__dom = { lectureGrade: { value: 'g1' } };\n"
+        "function $(id) { return global.__dom[id] || null; }\n"
+        "var AUTOSAVE_KEY = 'mathbank_lecture_autosave';\n"
+        "var localStorage = { setItem: function (k, v) { __store[k] = v; },"
+        " getItem: function (k) { return __store[k] || null; }, removeItem: function (k) { delete __store[k]; } };\n"
+        "function toast() {}\n"
+    )
+    body_js = "".join((
+        "api.snapshotOrchestration();\n",
+        "var snap = JSON.parse(__store['mathbank_lecture_autosave']);\n",
+        "eq(snap.sections.map(function (s) { return s.knowledge; }), ['K1'], '快照未含全部节');\n",
+        "if (api.snapshotTotal(snap) !== 1) throw new Error('跨节计数错误');\n",
+        "ST.sections.push({key:'M|C1|K2', compulsory:'M', chapter:'C1', knowledge:'K2', topics:[], extraIds:['7']});\n",
+        "api.snapshotOrchestration();\n",
+        "var snap2 = JSON.parse(__store['mathbank_lecture_autosave']);\n",
+        "if (api.snapshotTotal(snap2) !== 2) throw new Error('第二节的实战演练没进快照');\n",
+        "console.log('OK');\n",
+    ))
+    _run_extracted_lecture_js(
+        ("collectConfig", "secKey", "sectionOf", "findSectionEntry", "ensureActiveEntry",
+         "collectSectionsPayload", "snapshotCount", "snapshotTotal", "clearAutosave",
+         "snapshotOrchestration"),
+        st, body_js, helpers="", prelude=prelude, aliases=(),
+        names_out={"snapshotOrchestration": "snapshotOrchestration",
+                   "snapshotTotal": "snapshotTotal", "collectSectionsPayload": "collectSectionsPayload"},
+    )
 
 
 def test_orphan_notes_have_a_visible_list_and_explicit_delete():

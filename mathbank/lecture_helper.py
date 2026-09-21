@@ -161,6 +161,173 @@ def collect_notes(db: Session, compulsory: str, chapter: str, knowledge: str, to
     return {row.note_key: row.content for row in rows}
 
 
+def _as_question_id(value) -> Optional[int]:
+    """编排快照里的 ID 可能来自外部脚本或手改的 config，非数字要容错而不是 500。"""
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _collect_ids(topics: Optional[list], extra_ids: Optional[list]) -> tuple:
+    qids: list[int] = []
+    invalid_ids: list[str] = []
+    if topics:
+        for t in topics:
+            if not isinstance(t, dict):
+                continue
+            for item in (t.get("items") or []):
+                if not isinstance(item, dict) or not item.get("question_id"):
+                    continue
+                parsed = _as_question_id(item.get("question_id"))
+                if parsed is None:
+                    invalid_ids.append(str(item.get("question_id")))
+                    continue
+                qids.append(parsed)
+    for qid in (extra_ids or []):
+        parsed = _as_question_id(qid)
+        if parsed is None:
+            invalid_ids.append(str(qid))
+        else:
+            qids.append(parsed)
+    return qids, invalid_ids
+
+
+def _load_questions(db: Session, qids: list) -> tuple:
+    """按 ID 批量取题目详情（去重、保持首次出现顺序）。"""
+    from mathbank.database import Question
+    from mathbank.sources_helper import load_question_sources
+
+    questions: list[dict] = []
+    missing_ids: list[int] = []
+    if qids:
+        sources_map = load_question_sources(db, qids)
+        seen = set()
+        rows = db.query(Question).filter(Question.id.in_(qids)).all()
+        by_id = {q.id: q for q in rows}
+        for qid in qids:
+            if qid in seen:
+                continue
+            seen.add(qid)
+            q = by_id.get(qid)
+            if q is None:
+                # 编排引用的题目已被删除：如实登记，不能静默吞掉
+                missing_ids.append(qid)
+                continue
+            questions.append({
+                "id": q.id,
+                "content": q.content or "",
+                "question_type": q.question_type or "",
+                "difficulty": q.difficulty or "",
+                "topic_id": q.topic_id or "",
+                "source": q.source or "",
+                "paper_category": q.paper_category or "",
+                "answer": q.answer_markdown or "",
+                # 一题多来源：按 高考>模考>联考>校考 + 年份新在前 排序后的列表
+                "sources": sources_map.get(q.id, []),
+            })
+    return questions, missing_ids
+
+
+def collect_sections(
+    db: Session,
+    sections: list,
+    questions_by_id: Optional[dict] = None,
+) -> list:
+    """按用户勾选顺序逐节组装预览数据。
+
+    每节独立解析小节、收集修订稿与编排引用；``questions_by_id`` 由合并预览
+    预先批量加载后传入，避免同一道题在多节间重复查库。旧草稿的编排是当时的
+    快照，换过教材树后 topic_id 可能与当前大纲不等，因此修订稿收集范围仍是
+    大纲考点 ∪ 编排考点（与单节 ``build_preview`` 同一口径）。
+    """
+    entries: list[dict] = []
+    shared_questions = questions_by_id or {}
+    for raw in sections or []:
+        if not isinstance(raw, dict):
+            continue
+        compulsory = str(raw.get("compulsory") or "").strip()
+        chapter = str(raw.get("chapter") or "").strip()
+        knowledge = str(raw.get("knowledge") or "").strip()
+        if not (compulsory and chapter and knowledge):
+            continue
+        found = find_section(compulsory, chapter, knowledge)
+        section_found = found is not None
+        section = found or {"name": knowledge, "topics": []}
+        tree_topic_ids = [
+            t.get("id") for t in (section.get("topics") or [])
+            if isinstance(t, dict) and t.get("id")
+        ]
+        topics = raw.get("topics") if isinstance(raw.get("topics"), list) else []
+        extra_ids = raw.get("extra_ids") if isinstance(raw.get("extra_ids"), list) else []
+        config_topic_ids = [
+            t.get("topic_id") for t in topics
+            if isinstance(t, dict) and t.get("topic_id")
+        ]
+        notes = collect_notes(
+            db,
+            compulsory,
+            chapter,
+            knowledge,
+            list(dict.fromkeys([*tree_topic_ids, *config_topic_ids])),
+        )
+        qids, invalid_ids = _collect_ids(topics, extra_ids)
+        questions = []
+        missing_ids: list[int] = []
+        for qid in dict.fromkeys(qids):
+            q = shared_questions.get(qid)
+            if q is None:
+                missing_ids.append(qid)
+            else:
+                questions.append(q)
+        entries.append({
+            "section": {
+                "compulsory": compulsory,
+                "chapter": chapter,
+                "knowledge": knowledge,
+                "name": section.get("name") or knowledge,
+                "topics": [
+                    {"id": t.get("id"), "name": t.get("name"), "no": t.get("no"), "level": t.get("level"),
+                     # 大纲自带的例题说明：无修订稿时作为「解题方法」的默认内容
+                     "example": str(t.get("example") or "").strip()}
+                    for t in (section.get("topics") or [])
+                    if isinstance(t, dict)
+                ],
+            },
+            "section_found": section_found,
+            "notes": notes,
+            "topics": topics,
+            "extra_ids": extra_ids,
+            "questions": questions,
+            "missing_ids": missing_ids,
+            "invalid_ids": invalid_ids,
+        })
+    return entries
+
+
+def build_merged_preview(db: Session, sections: list) -> dict:
+    """多节合并讲义：封面共用，正文按节串联，题目一次批量加载。"""
+    settings = get_or_create_settings(db).to_dict()
+    all_qids: list[int] = []
+    for raw in sections or []:
+        if not isinstance(raw, dict):
+            continue
+        qids, _ = _collect_ids(
+            raw.get("topics") if isinstance(raw.get("topics"), list) else [],
+            raw.get("extra_ids") if isinstance(raw.get("extra_ids"), list) else [],
+        )
+        all_qids.extend(qids)
+    questions, _missing = _load_questions(db, list(dict.fromkeys(all_qids)))
+    questions_by_id = {q["id"]: q for q in questions}
+    entries = collect_sections(db, sections, questions_by_id=questions_by_id)
+    return {
+        "settings": settings,
+        "sections": entries,
+        "quote_pool": settings.get("quote_pool") or load_quotes(),
+        "cover_bg": load_cover_bg(),
+    }
+
+
 def build_preview(
     db: Session,
     compulsory: str,
@@ -198,67 +365,8 @@ def build_preview(
         list(dict.fromkeys([*tree_topic_ids, *config_topic_ids])),
     )
 
-    # 题目详情
-    qids: list[int] = []
-    invalid_ids: list[str] = []
-
-    def _as_question_id(value) -> Optional[int]:
-        """编排快照里的 ID 可能来自外部脚本或手改的 config，非数字要容错而不是 500。"""
-        try:
-            return int(str(value).strip())
-        except (TypeError, ValueError):
-            return None
-
-    if topics:
-        for t in topics:
-            if not isinstance(t, dict):
-                continue
-            for item in (t.get("items") or []):
-                if not isinstance(item, dict) or not item.get("question_id"):
-                    continue
-                parsed = _as_question_id(item.get("question_id"))
-                if parsed is None:
-                    invalid_ids.append(str(item.get("question_id")))
-                    continue
-                qids.append(parsed)
-    for qid in (extra_ids or []):
-        parsed = _as_question_id(qid)
-        if parsed is None:
-            invalid_ids.append(str(qid))
-        else:
-            qids.append(parsed)
-
-    from mathbank.database import Question
-    from mathbank.sources_helper import load_question_sources
-
-    questions = []
-    missing_ids: list[int] = []
-    if qids:
-        sources_map = load_question_sources(db, qids)
-        seen = set()
-        rows = db.query(Question).filter(Question.id.in_(qids)).all()
-        by_id = {q.id: q for q in rows}
-        for qid in qids:
-            if qid in seen:
-                continue
-            seen.add(qid)
-            q = by_id.get(qid)
-            if q is None:
-                # 编排引用的题目已被删除：如实登记，不能静默吞掉
-                missing_ids.append(qid)
-                continue
-            questions.append({
-                "id": q.id,
-                "content": q.content or "",
-                "question_type": q.question_type or "",
-                "difficulty": q.difficulty or "",
-                "topic_id": q.topic_id or "",
-                "source": q.source or "",
-                "paper_category": q.paper_category or "",
-                "answer": q.answer_markdown or "",
-                # 一题多来源：按 高考>模考>联考>校考 + 年份新在前 排序后的列表
-                "sources": sources_map.get(q.id, []),
-            })
+    qids, invalid_ids = _collect_ids(topics, extra_ids)
+    questions, missing_ids = _load_questions(db, qids)
 
     settings = get_or_create_settings(db).to_dict()
     return {

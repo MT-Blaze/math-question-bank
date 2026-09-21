@@ -284,6 +284,44 @@ def test_export_route_without_token_is_refused(client):
 # ============ 真实编译守卫 ============
 
 
+def _preview_multi():
+    """两节合并 preview：顺序 K2→K1，各自带知识梳理/考向页，实战演练分属两节。"""
+    kn2 = "1.2 集合间的基本关系"
+    sec1 = dict(SEC)
+    sec2 = dict(SEC, knowledge=kn2)
+    key2 = "knowledge:必修一:%s:%s" % (SEC["chapter"], kn2)
+    return {
+        "settings": {"cover_title": "第一章 集合", "cover_subtitle": "同步讲义"},
+        "sections": [
+            {"section": dict(sec2, name=kn2, topics=[{"id": "k_c", "name": "子集判断", "no": 1, "example": ""}]),
+             "notes": {key2: "<p>子集与真子集。</p>"},
+             "topics": [{"topic_id": "k_c", "name": "子集判断",
+                         "items": [{"question_id": 3, "role": "example"}]}],
+             "extra_ids": [4]},
+            {"section": dict(sec1, name=SEC["knowledge"], topics=[{"id": "k_a", "name": "集合判断", "no": 1, "example": ""}]),
+             "notes": {_key("knowledge"): "<p>集合是确定性对象的整体。</p>"},
+             "topics": [{"topic_id": "k_a", "name": "集合判断",
+                         "items": [{"question_id": 1, "role": "example"}]}],
+             "extra_ids": []},
+        ],
+        "questions": _preview()["questions"],
+    }
+
+
+def test_merged_export_orders_sections_and_keeps_single_answer_book():
+    """多节导出：每节各有一组知识梳理/考向页且顺序跟随载荷；答案册整本只有一份。"""
+    tex, _ = build_lecture_latex(_preview_multi(), view="jiexi")
+    assert tex.count(r"\section*{知识梳理}") == 2
+    assert tex.index("子集与真子集") < tex.index("集合是确定性对象"), "节的顺序被排错了"
+    assert tex.count(r"\section*{实战演练}") == 1
+    assert r"\section*{答案册}" not in tex
+    daan, _ = build_lecture_latex(_preview_multi(), view="daan")
+    assert daan.count(r"\section*{答案册}") == 1
+    # 单节旧载荷行为不变
+    single, _ = build_lecture_latex(_preview(), view="jiexi")
+    assert single.count(r"\section*{知识梳理}") == 1
+
+
 @pytest.mark.skipif(shutil.which("xelatex") is None, reason="本机无 XeLaTeX")
 def test_generated_lecture_latex_actually_compiles():
     """静态断言挡不住 LaTeX 语法错：真编一次，并核对内容确实进了 PDF。"""
@@ -300,3 +338,19 @@ def test_generated_lecture_latex_actually_compiles():
     for needle in ("知识梳理", "集合判断", "互异性", "【答案】", "实战1", "考向7"):
         assert needle in text, "PDF 里缺少 %s" % needle
     assert doc.page_count >= 1
+
+
+@pytest.mark.skipif(shutil.which("xelatex") is None, reason="本机无 XeLaTeX")
+def test_merged_lecture_latex_actually_compiles():
+    """多节合并必须真编得过：跨节拼接最容易在 \begin{document} 之外或环境配对上出事。"""
+    import pymupdf
+
+    from mathbank.paper_helper import compile_tex_to_pdf
+
+    tex, _ = build_lecture_latex(_preview_multi(), view="jiexi")
+    pdf, log = compile_tex_to_pdf(tex, [])
+    assert pdf, "合并讲义 LaTeX 编译失败：%s" % str(log)[-1500:]
+    doc = pymupdf.open(stream=pdf, filetype="pdf")
+    text = "".join(page.get_text() for page in doc)
+    for needle in ("子集与真子集", "集合是确定性对象", "实战1"):
+        assert needle in text, "PDF 里缺少 %s" % needle

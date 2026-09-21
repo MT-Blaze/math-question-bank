@@ -21,6 +21,7 @@ from mathbank.database import LectureDraft, LectureNote, get_db
 from mathbank.latex_diagnostics import build_local_latex_diagnostic
 from mathbank.lecture_export import build_lecture_latex, collect_lecture_images
 from mathbank.lecture_helper import (
+    build_merged_preview,
     build_preview,
     find_orphan_notes,
     get_or_create_settings,
@@ -29,6 +30,29 @@ from mathbank.lecture_helper import (
     note_key,
     split_note_key,
 )
+
+
+def _preview_payload(payload: dict, db: Session) -> dict:
+    """preview/export 共用载荷分派：sections 为多节合并，旧单节字段照常。"""
+    sections = payload.get("sections")
+    if isinstance(sections, list) and sections:
+        merged = build_merged_preview(db, sections)
+        if not merged["sections"]:
+            raise HTTPException(status_code=400, detail="sections 里没有有效的册次 / 章节 / 小节")
+        return merged
+    compulsory = str(payload.get("compulsory") or "").strip()
+    chapter = str(payload.get("chapter") or "").strip()
+    knowledge = str(payload.get("knowledge") or "").strip()
+    if not (compulsory and chapter and knowledge):
+        raise HTTPException(status_code=400, detail="请先选择册次 / 章节 / 小节")
+    return build_preview(
+        db,
+        compulsory,
+        chapter,
+        knowledge,
+        topics=payload.get("topics"),
+        extra_ids=payload.get("extra_ids"),
+    )
 
 router = APIRouter(tags=["lecture"])
 
@@ -177,50 +201,34 @@ def lecture_preview(
     payload: dict,
     db: Session = Depends(get_db),
 ):
-    """组装讲义预览数据：设置 + 考向树 + 知识块修订 + 题目详情。"""
-    compulsory = str(payload.get("compulsory") or "").strip()
-    chapter = str(payload.get("chapter") or "").strip()
-    knowledge = str(payload.get("knowledge") or "").strip()
-    if not (compulsory and chapter and knowledge):
-        raise HTTPException(status_code=400, detail="请先选择册次 / 章节 / 小节")
-    return build_preview(
-        db,
-        compulsory,
-        chapter,
-        knowledge,
-        topics=payload.get("topics"),
-        extra_ids=payload.get("extra_ids"),
-    )
+    """组装讲义预览数据：设置 + 考向树 + 知识块修订 + 题目详情。
+
+    载荷两种形态：``sections=[{compulsory,chapter,knowledge,topics,extra_ids},...]``
+    为多节合并讲义（按勾选顺序串联）；旧的单节三坐标字段照常兼容。
+    """
+    return _preview_payload(payload, db)
 
 
 @router.post("/api/lecture/export/pdf")
 def export_lecture_pdf(payload: dict, db: Session = Depends(get_db)):
     """把当前讲义编排交给组卷引擎（exam-zh + XeLaTeX）编译 PDF。
 
+    载荷与 preview 同口径：``sections`` 多节合并，或旧的单节三坐标字段。
     知识块存的是 HTML / @mindmap JSON，按保守规则转换；转换不了的部分经
     ``X-MathBank-Export-Notes`` 响应头回传（URL 编码、分号分隔），前端必须
     显示而不是静默吞掉。编译失败返回本地 LaTeX 诊断，不触碰任何付费模型。
     """
-    compulsory = str(payload.get("compulsory") or "").strip()
-    chapter = str(payload.get("chapter") or "").strip()
-    knowledge = str(payload.get("knowledge") or "").strip()
-    if not (compulsory and chapter and knowledge):
-        raise HTTPException(status_code=400, detail="请先选择册次 / 章节 / 小节")
     view = str(payload.get("view") or "jiexi")
     if view not in ("yuan", "jiexi", "daan"):
         raise HTTPException(status_code=400, detail="view 仅支持 yuan / jiexi / daan")
 
-    preview = payload.get("preview") or build_preview(
-        db,
-        compulsory,
-        chapter,
-        knowledge,
-        topics=payload.get("topics"),
-        extra_ids=payload.get("extra_ids"),
-    )
+    preview = payload.get("preview") or _preview_payload(payload, db)
     tex_content, degradations = build_lecture_latex(preview, view=view)
+    questions_pool = list((preview.get("questions") or []))
+    for entry in (preview.get("sections") or []):
+        questions_pool.extend(entry.get("questions") or [])
     image_paths = collect_lecture_images(
-        preview.get("questions") or [], _main.UPLOAD_DIR, _main.UPLOAD_DIR_REL
+        questions_pool, _main.UPLOAD_DIR, _main.UPLOAD_DIR_REL
     )
     pdf_bytes, log_or_err = _main.compile_tex_to_pdf(tex_content, image_paths)
     if not pdf_bytes:

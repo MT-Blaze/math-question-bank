@@ -2883,7 +2883,12 @@
             <select id="lectureGrade" class="rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 px-2 py-1.5 text-sm w-32"></select>
             <select id="lectureCompulsory" class="rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 px-2 py-1.5 text-sm w-36"></select>
             <select id="lectureChapter" class="rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 px-2 py-1.5 text-sm w-40"></select>
-            <select id="lectureKnowledge" class="rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 px-2 py-1.5 text-sm w-44"></select>
+            <div class="relative">
+                <button id="lectureKnowledgeBtn" type="button" class="rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-1.5 text-sm min-w-[11rem] text-left" data-tooltip="勾选多个小节即合并为一本讲义（按勾选顺序串联）">
+                    <i class="fa-solid fa-list-check mr-1 text-slate-400"></i>小节 <span id="lectureSectionCount" class="hidden ml-1 text-[11px] px-1.5 py-0.5 rounded-full bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300 font-bold"></span><i class="fa-solid fa-chevron-down ml-1 text-[10px] text-slate-400"></i>
+                </button>
+                <div id="lectureKnowledgeDropdown" class="hidden glass-dropdown absolute left-0 top-full z-30 mt-1 max-h-72 w-72 overflow-y-auto rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-xl py-1"></div>
+            </div>
             <button onclick="LectureManager.loadSection()" class="rounded-lg bg-indigo-600 px-3 py-1.5 text-sm font-bold text-white hover:bg-indigo-700">
                 <i class="fa-solid fa-download mr-1"></i>加载小节
             </button>
@@ -3006,6 +3011,9 @@
 
         <form id="lessonForm" class="flex-1 overflow-y-auto px-5 py-4 space-y-5 custom-scrollbar" onsubmit="return false;">
             <input type="hidden" id="lessonId">
+        <!-- 已选小节 chips：点击切换激活节，点 × 移除该节（事件委托绑定，坐标不进内联属性） -->
+        <div id="lectureSectionChips" class="px-4 py-2 border-b border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-900/40 flex flex-wrap items-center gap-1.5"></div>
+
 
             <!-- 基本信息 -->
             <div class="space-y-3">

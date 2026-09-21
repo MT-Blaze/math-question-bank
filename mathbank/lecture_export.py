@@ -338,10 +338,30 @@ def _outline_topic(section: dict, topic_id: str) -> dict:
 def _note(notes: dict, kind: str, section: dict, topic_id: str) -> str:
     if not topic_id and kind != "knowledge":
         return ""
-    parts = [kind, section.get("compulsory", ""), section.get("chapter", ""), section.get("knowledge", "")]
-    if topic_id:
-        parts.append(topic_id)
-    return notes.get(":".join(parts)) or ""
+    # 必须走 lecture_helper.note_key：段内 ":"/"\\" 要转义，裸拼接会查不回
+    # 「小节名里带冒号」的修订稿（split_note_key 反解同样只认转义后的键）
+    from mathbank.lecture_helper import note_key
+
+    return notes.get(note_key(
+        kind,
+        section.get("compulsory", ""),
+        section.get("chapter", ""),
+        section.get("knowledge", ""),
+        topic_id,
+    )) or ""
+
+
+def _section_entries(preview: dict) -> list:
+    """统一单节与多节两种 preview 形态为条目列表。"""
+    entries = preview.get("sections")
+    if isinstance(entries, list) and entries:
+        return [e for e in entries if isinstance(e, dict)]
+    return [{
+        "section": preview.get("section") or {},
+        "notes": preview.get("notes") or {},
+        "topics": preview.get("topics") or [],
+        "extra_ids": preview.get("extra_ids") or [],
+    }]
 
 
 def _question_block(question: dict, label: str, include_answers: bool) -> str:
@@ -359,16 +379,22 @@ def build_lecture_latex(preview: dict, view: str = "jiexi") -> tuple[str, list[s
     """把 preview 数据组装成完整 LaTeX 源码，返回 (源码, 降级说明)。
 
     view：yuan 学生版（不含答案）/ jiexi 教师版（含答案）/ daan 答案册。
+    多节合并时按 ``sections`` 顺序逐节输出知识梳理与考向页，实战演练与
+    答案册整本只出一份；单节旧载荷行为不变。
     """
     settings = preview.get("settings") or {}
-    section = preview.get("section") or {}
-    notes = preview.get("notes") or {}
-    topics = preview.get("topics") or []
-    questions_by_id = {q.get("id"): q for q in (preview.get("questions") or [])}
+    entries = _section_entries(preview)
+    first_section = entries[0].get("section") or {} if entries else {}
+    questions_by_id: dict = {}
+    for entry in entries:
+        for q in (entry.get("questions") or []):
+            questions_by_id[q.get("id")] = q
+    for q in (preview.get("questions") or []):
+        questions_by_id.setdefault(q.get("id"), q)
     include_answers = view in ("jiexi", "daan")
     degradations: list[str] = []
 
-    title = (settings.get("cover_title") or section.get("chapter") or section.get("knowledge") or "讲义").strip()
+    title = (settings.get("cover_title") or first_section.get("chapter") or first_section.get("knowledge") or "讲义").strip()
     subtitle = (settings.get("cover_subtitle") or "同步讲义").strip()
 
     lines = _preamble(include_answers=include_answers, title=title)
@@ -381,90 +407,117 @@ def build_lecture_latex(preview: dict, view: str = "jiexi") -> tuple[str, list[s
     if view == "daan":
         lines.append(r"\section*{答案册}")
         counter = 0
-        for index, topic in enumerate(topics):
-            topic_id = str(topic.get("topic_id") or "")
-            outline = _outline_topic(section, topic_id)
-            number = outline.get("no") or (index + 1)
-            for item in (topic.get("items") or []):
-                question = questions_by_id.get(item.get("question_id"))
+        for entry in entries:
+            section = entry.get("section") or {}
+            for index, topic in enumerate(entry.get("topics") or []):
+                topic_id = str(topic.get("topic_id") or "")
+                outline = _outline_topic(section, topic_id)
+                number = outline.get("no") or (index + 1)
+                for item in (topic.get("items") or []):
+                    question = questions_by_id.get(item.get("question_id"))
+                    if not question:
+                        continue
+                    counter += 1
+                    label = "考向%s %s%d" % (
+                        number, _ROLE_LABELS.get(str(item.get("role") or "example"), "例"), counter)
+                    answer = (question.get("answer") or "").strip()
+                    lines.append(r"\noindent\textbf{%s}" % escape_text(label))
+                    lines.append(clean_content_for_latex(answer, is_answer=True).strip() if answer else _PLACEHOLDER)
+                    lines.append("")
+        extra_counter = 0
+        for entry in entries:
+            for qid in (entry.get("extra_ids") or []):
+                question = questions_by_id.get(qid)
                 if not question:
                     continue
-                counter += 1
-                label = "考向%s %s%d" % (
-                    number, _ROLE_LABELS.get(str(item.get("role") or "example"), "例"), counter)
+                extra_counter += 1
                 answer = (question.get("answer") or "").strip()
-                lines.append(r"\noindent\textbf{%s}" % escape_text(label))
+                lines.append(r"\noindent\textbf{实战%d}" % extra_counter)
                 lines.append(clean_content_for_latex(answer, is_answer=True).strip() if answer else _PLACEHOLDER)
                 lines.append("")
         lines.append("\\end{document}")
         return "\n".join(lines), degradations
 
-    knowledge = _note(notes, "knowledge", section, "")
-    lines.append(r"\section*{知识梳理}")
-    if knowledge.strip():
-        body, warns = note_body_to_latex(knowledge)
-        degradations.extend(warns)
-        lines.append(body or _PLACEHOLDER)
-    else:
-        lines.append(_PLACEHOLDER)
-    lines.append("")
-
-    outline_topics = section.get("topics") or []
-    if outline_topics:
-        lines.append(r"\section*{考向地图}")
-        lines.append("\\begin{enumerate}")
-        for outline in outline_topics:
-            lines.append(r"\item %s" % escape_text(str((outline or {}).get("name") or "")))
-        lines.append("\\end{enumerate}")
+    for entry in entries:
+        section = entry.get("section") or {}
+        notes = entry.get("notes") or {}
+        knowledge = _note(notes, "knowledge", section, "")
+        lines.append(r"\section*{知识梳理}")
+        if knowledge.strip():
+            body, warns = note_body_to_latex(knowledge)
+            degradations.extend(warns)
+            lines.append(body or _PLACEHOLDER)
+        else:
+            lines.append(_PLACEHOLDER)
         lines.append("")
 
-    for index, topic in enumerate(topics):
-        topic_id = str(topic.get("topic_id") or "")
-        outline = _outline_topic(section, topic_id)
-        number = outline.get("no") or (index + 1)
-        lines.append(r"\subsection*{考向%s　%s}" % (number, escape_text(str(topic.get("name") or ""))))
-        for kind, heading in (("pit", "易错点"), ("method", "解题方法")):
-            lines.append(r"\noindent\textbf{%s}\quad" % heading)
-            revision = _note(notes, kind, section, topic_id)
-            if revision.strip():
-                body, warns = note_body_to_latex(revision)
-                degradations.extend(warns)
-                lines.append(body or _PLACEHOLDER)
-            elif kind == "method" and str(outline.get("example") or "").strip():
-                lines.append(r"{\small（大纲默认，未修订）}\ %s" % escape_text(str(outline["example"]).strip()))
-            else:
-                lines.append(_PLACEHOLDER)
+        outline_topics = section.get("topics") or []
+        if outline_topics:
+            lines.append(r"\section*{考向地图}")
+            lines.append("\\begin{enumerate}")
+            for outline in outline_topics:
+                lines.append(r"\item %s" % escape_text(str((outline or {}).get("name") or "")))
+            lines.append("\\end{enumerate}")
             lines.append("")
-        example = 0
-        variant = 0
-        practice = 0
-        for item in (topic.get("items") or []):
-            question = questions_by_id.get(item.get("question_id"))
-            if not question:
-                continue
-            role = str(item.get("role") or "example")
-            if role == "example":
-                example += 1
-                variant = 0
-                label = "例%d" % example
-            elif role == "variant":
-                variant += 1
-                label = "变式%d.%d" % (max(example, 1), variant)
-            elif role == "practice":
-                practice += 1
-                label = "趁热打铁%d" % practice
-            else:
-                label = "例%d·练" % max(example, 1)
-            lines.append(_question_block(question, label, include_answers))
 
-    extra_ids = preview.get("extra_ids") or []
-    if extra_ids:
+        for index, topic in enumerate(entry.get("topics") or []):
+            topic_id = str(topic.get("topic_id") or "")
+            outline = _outline_topic(section, topic_id)
+            number = outline.get("no") or (index + 1)
+            lines.append(r"\subsection*{考向%s　%s}" % (number, escape_text(str(topic.get("name") or ""))))
+            for kind, heading in (("pit", "易错点"), ("method", "解题方法")):
+                lines.append(r"\noindent\textbf{%s}\quad" % heading)
+                revision = _note(notes, kind, section, topic_id)
+                if revision.strip():
+                    body, warns = note_body_to_latex(revision)
+                    degradations.extend(warns)
+                    lines.append(body or _PLACEHOLDER)
+                elif kind == "method" and str(outline.get("example") or "").strip():
+                    lines.append(r"{\small（大纲默认，未修订）}\ %s" % escape_text(str(outline["example"]).strip()))
+                else:
+                    lines.append(_PLACEHOLDER)
+                lines.append("")
+            example = 0
+            variant = 0
+            practice = 0
+            for item in (topic.get("items") or []):
+                question = questions_by_id.get(item.get("question_id"))
+                if not question:
+                    continue
+                role = str(item.get("role") or "example")
+                if role == "example":
+                    example += 1
+                    variant = 0
+                    label = "例%d" % example
+                elif role == "variant":
+                    variant += 1
+                    label = "变式%d.%d" % (max(example, 1), variant)
+                elif role == "practice":
+                    practice += 1
+                    label = "趁热打铁%d" % practice
+                else:
+                    label = "例%d·练" % max(example, 1)
+                lines.append(_question_block(question, label, include_answers))
+
+    extra_sections = [e for e in entries if (e.get("extra_ids") or [])]
+    if extra_sections:
         lines.append(r"\section*{实战演练}")
-        for position, qid in enumerate(extra_ids, 1):
-            question = questions_by_id.get(qid)
-            if not question:
-                continue
-            lines.append(_question_block(question, "实战%d" % position, include_answers))
+        position = 0
+        for entry in extra_sections:
+            section = entry.get("section") or {}
+            multi = len(extra_sections) > 1
+            for qid in (entry.get("extra_ids") or []):
+                question = questions_by_id.get(qid)
+                if not question:
+                    continue
+                position += 1
+                heading = ""
+                if multi:
+                    heading = r"\noindent{\small\itshape %s · %s}\par" % (
+                        escape_text(str(section.get("chapter") or "")),
+                        escape_text(str(section.get("knowledge") or "")))
+                lines.append(heading)
+                lines.append(_question_block(question, "实战%d" % position, include_answers))
 
     lines.append("\\end{document}")
     return "\n".join(lines), degradations

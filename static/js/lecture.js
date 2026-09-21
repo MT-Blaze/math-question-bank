@@ -10,9 +10,11 @@
 
   var ST = {
     grade: 'g1', compulsory: '', chapter: '', knowledge: '',
-    topics: [],          // 编排结果 [{topic_id,name,items:[{question_id,role}]}]
-    extraIds: [],        // 实战演练题目 id
-    questions: [],       // 已加载的本小节题目（题库数据）
+    sections: [],        // 多节合并的唯一容器 [{compulsory,chapter,knowledge,section,topics,extraIds,questions}]
+    activeKey: '',       // 当前激活节的键 compulsory|chapter|knowledge
+    topics: [],          // → 激活节的编排数组（面板操作唯一入口，禁止平行状态）
+    extraIds: [],        // → 激活节的实战演练数组
+    questions: [],       // → 激活节已加载的题库数据
     settings: null,      // 讲义设置
     noteTarget: null,    // 当前编辑的知识块目标
     draftId: null,       // 当前草稿 id
@@ -21,8 +23,9 @@
     previewData: null,
     view: 'yuan',        // 当前打印视图：yuan 学生版 / jiexi 教师版 / daan 答案册
     yearFilter: '',      // 顶部届次筛选：'' 为全部（只显示最新架子）
-    knowledgeMind: null, // 当前小节思维导图知识梳理 {data,raw}
+    knowledgeMind: null, // → 激活节思维导图知识梳理 {data,raw}
     topicMetaById: {},   // 大纲考向 topic_id → {no, example}，编号与默认内容同一口径
+    qIndex: {},          // 预览题目查找表 id→题（整本一份，跨节共用）
     dirty: false,        // 编排改过但还没写入草稿
     autosaveBlocked: false, // LocalStorage 写不进（配额/隐私模式），只提示一次
     autosaveBound: false,
@@ -114,28 +117,230 @@
     });
     if (keys.indexOf(ST.chapter) >= 0) sel.value = ST.chapter;
     else if (keys.length) { sel.value = keys[0]; ST.chapter = keys[0]; }
-    renderKnowledge();
+    renderKnowledgeDropdown();
   }
 
-  function renderKnowledge() {
+  /* ---------------- 多节合并状态 ----------------
+     ST.sections 是编排的唯一容器；ST.topics/extraIds/questions 只是指向
+     激活节内部数组的别名，面板操作永远落在激活节上。 */
+  function secKey(compulsory, chapter, knowledge) {
+    return [compulsory, chapter, knowledge].join('|');
+  }
+
+  function sectionOf(entry) {
+    // 纯取数：从激活节派生，测试与运行期同一口径
+    return entry ? { compulsory: entry.compulsory, chapter: entry.chapter, knowledge: entry.knowledge } : null;
+  }
+
+  function findSectionEntry(key) {
+    for (var i = 0; i < ST.sections.length; i++) {
+      if (ST.sections[i].key === key) return ST.sections[i];
+    }
+    return null;
+  }
+
+  function ensureSectionEntry(compulsory, chapter, knowledge) {
+    var key = secKey(compulsory, chapter, knowledge);
+    var entry = findSectionEntry(key);
+    if (!entry) {
+      entry = {
+        key: key, compulsory: compulsory, chapter: chapter, knowledge: knowledge,
+        section: null, topics: [], extraIds: [], questions: [],
+      };
+      ST.sections.push(entry);
+    }
+    return entry;
+  }
+
+  function activateSection(entry) {
+    ST.activeKey = entry.key;
+    ST.compulsory = entry.compulsory;
+    ST.chapter = entry.chapter;
+    ST.knowledge = entry.knowledge;
+    ST.section = entry.section;
+    ST.topics = entry.topics;
+    ST.extraIds = entry.extraIds;
+    ST.questions = entry.questions;
+    ST.knowledgeMind = null;
+  }
+
+  function switchActive(key) {
+    var entry = findSectionEntry(key);
+    if (!entry) return;
+    activateSection(entry);
+    renderKnowledgeDropdown();
+    renderSectionChips();
+    if (entry.section) {
+      renderTopicPanel(entry.section, entry.questions);
+      refreshPreview();
+    } else {
+      loadSection({ keepSelection: true });
+    }
+  }
+
+  function removeSectionEntry(key) {
+    var idx = -1;
+    for (var i = 0; i < ST.sections.length; i++) { if (ST.sections[i].key === key) { idx = i; break; } }
+    if (idx < 0) return;
+    ST.sections.splice(idx, 1);
+    var wasActive = ST.activeKey === key;
+    if (wasActive) {
+      var next = ST.sections[Math.min(idx, ST.sections.length - 1)];
+      if (next) activateSection(next);
+      else {
+        ST.activeKey = ''; ST.section = null;
+        ST.topics = []; ST.extraIds = []; ST.questions = [];
+        ST.knowledgeMind = null;
+      }
+    }
+    renderSectionChips();
+    if (wasActive) {
+      renderTopicPanelFromState();
+      refreshPreview();
+    }
+    commitOrchestration();
+  }
+
+  function collectSectionsPayload() {
+    return ST.sections.map(function (e) {
+      return {
+        compulsory: e.compulsory, chapter: e.chapter, knowledge: e.knowledge,
+        topics: e.topics, extra_ids: e.extraIds,
+      };
+    });
+  }
+
+  /* ---------------- 小节多选下拉（事件委托，坐标绝不拼进内联属性） ---------------- */
+  function selectedKeys() {
+    return ST.sections.map(function (e) { return e.key; });
+  }
+
+  function knowledgeOptions() {
     var cur = metaCur();
     var comp = $('lectureCompulsory') ? $('lectureCompulsory').value : ST.compulsory;
     var chap = $('lectureChapter') ? $('lectureChapter').value : ST.chapter;
     var sections = (cur[comp] || {})[chap] || [];
-    var sel = $('lectureKnowledge');
-    if (!sel) return;
-    sel.innerHTML = '';
-    sections.forEach(function (sec) {
-      var name = typeof sec === 'string' ? sec : (sec.name || '');
-      if (!name) return;
-      var o = document.createElement('option');
-      o.value = name; o.textContent = name;
-      sel.appendChild(o);
+    return sections.map(function (sec) {
+      return typeof sec === 'string' ? sec : (sec && sec.name) || '';
+    }).filter(Boolean);
+  }
+
+  function toggleSection(name) {
+    var comp = $('lectureCompulsory') ? $('lectureCompulsory').value : ST.compulsory;
+    var chap = $('lectureChapter') ? $('lectureChapter').value : ST.chapter;
+    if (!comp || !chap || !name) return;
+    var key = secKey(comp, chap, name);
+    if (findSectionEntry(key)) {
+      removeSectionEntry(key);
+      return;
+    }
+    var entry = ensureSectionEntry(comp, chap, name);
+    activateSection(entry);
+    renderKnowledgeDropdown();
+    renderSectionChips();
+    loadSection({ keepSelection: true });
+  }
+
+  function addCurrentSection() {
+    var comp = $('lectureCompulsory') ? $('lectureCompulsory').value : ST.compulsory;
+    var chap = $('lectureChapter') ? $('lectureChapter').value : ST.chapter;
+    var know = knowledgeOptions()[0] || ST.knowledge;
+    if (!comp || !chap || !know) { toast('请先选择册次 / 章节，小节在「小节」多选里添加'); return; }
+    var key = secKey(comp, chap, know);
+    if (findSectionEntry(key)) { loadSection(); return; } // 已在清单里：重新加载而不重复添加
+    var entry = ensureSectionEntry(comp, chap, know);
+    activateSection(entry);
+    renderSectionChips();
+    loadSection({ keepSelection: true });
+  }
+
+  function renderKnowledgeDropdown() {
+    var dd = $('lectureKnowledgeDropdown');
+    if (!dd) return;
+    var opts = knowledgeOptions();
+    var sel = selectedKeys();
+    while (dd.firstChild) dd.removeChild(dd.firstChild);
+    if (!opts.length) {
+      var empty = document.createElement('div');
+      empty.className = 'px-3 py-2 text-xs text-slate-400';
+      empty.textContent = '当前章节下没有小节';
+      dd.appendChild(empty);
+      return;
+    }
+    opts.forEach(function (name) {
+      var key = secKey(
+        $('lectureCompulsory') ? $('lectureCompulsory').value : ST.compulsory,
+        $('lectureChapter') ? $('lectureChapter').value : ST.chapter,
+        name);
+      var row = document.createElement('label');
+      row.className = 'flex items-center gap-2 px-3 py-1.5 text-sm cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-800';
+      var box = document.createElement('input');
+      box.type = 'checkbox';
+      box.checked = sel.indexOf(key) >= 0;
+      box.addEventListener('change', function () { toggleSection(name); });
+      var span = document.createElement('span');
+      span.textContent = name;
+      row.appendChild(box);
+      row.appendChild(span);
+      dd.appendChild(row);
     });
-    if (sections.some(function (s2) { return (typeof s2 === 'string' ? s2 : s2.name) === ST.knowledge; })) {
-      sel.value = ST.knowledge;
-    } else if (sel.options.length) {
-      sel.value = sel.options[0].value; ST.knowledge = sel.options[0].value;
+  }
+
+  function renderSectionChips() {
+    var bar = $('lectureSectionChips');
+    if (!bar) return;
+    while (bar.firstChild) bar.removeChild(bar.firstChild);
+    var count = $('lectureSectionCount');
+    if (count) {
+      count.textContent = String(ST.sections.length);
+      count.classList.toggle('hidden', !ST.sections.length);
+    }
+    if (!ST.sections.length) return;
+    ST.sections.forEach(function (e) {
+      var chip = document.createElement('button');
+      chip.type = 'button';
+      chip.setAttribute('data-key', e.key);
+      chip.className = 'rounded-full border px-2.5 py-0.5 text-xs max-w-[220px] truncate ' +
+        (e.key === ST.activeKey
+          ? 'border-blue-500 bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300 font-bold'
+          : 'border-slate-300 dark:border-slate-700 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800');
+      chip.title = e.compulsory + ' · ' + e.chapter + ' · ' + e.knowledge + '（点击切换，悬停点 × 移除）';
+      chip.textContent = e.knowledge;
+      var x = document.createElement('span');
+      x.setAttribute('data-remove', '1');
+      x.className = 'ml-1 text-slate-400 hover:text-red-500';
+      x.textContent = '\u00d7';
+      chip.appendChild(x);
+      bar.appendChild(chip);
+    });
+  }
+
+  var _sectionBarBound = false;
+  function bindSectionBar() {
+    if (_sectionBarBound) return;
+    _sectionBarBound = true;
+    var bar = $('lectureSectionChips');
+    if (bar) {
+      bar.addEventListener('click', function (e) {
+        var el = e.target;
+        while (el && el !== bar && !(el.hasAttribute && el.hasAttribute('data-key'))) el = el.parentNode;
+        if (!el || el === bar) return;
+        var key = el.getAttribute('data-key');
+        var isRemove = e.target && e.target.hasAttribute && e.target.hasAttribute('data-remove');
+        if (isRemove) removeSectionEntry(key);
+        else if (key !== ST.activeKey) switchActive(key);
+      });
+    }
+    var btn = $('lectureKnowledgeBtn');
+    var dd = $('lectureKnowledgeDropdown');
+    if (btn && dd) {
+      btn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        renderKnowledgeDropdown();
+        dd.classList.toggle('hidden');
+      });
+      dd.addEventListener('click', function (e) { e.stopPropagation(); });
+      document.addEventListener('click', function () { dd.classList.add('hidden'); });
     }
   }
 
@@ -145,10 +350,10 @@
   var Q_PAGE_SIZE = 100;
   var Q_MAX_PAGES = 10;
 
-  function loadQuestions() {
-    var comp = $('lectureCompulsory') ? $('lectureCompulsory').value : '';
-    var chap = $('lectureChapter') ? $('lectureChapter').value : '';
-    var know = $('lectureKnowledge') ? $('lectureKnowledge').value : '';
+  function loadQuestions(entry) {
+    var comp = entry ? entry.compulsory : ($('lectureCompulsory') ? $('lectureCompulsory').value : '');
+    var chap = entry ? entry.chapter : ($('lectureChapter') ? $('lectureChapter').value : '');
+    var know = entry ? entry.knowledge : ST.knowledge;
     var base = 'compulsory=' + encodeURIComponent(comp) +
       '&chapter=' + encodeURIComponent(chap) +
       '&knowledge=' + encodeURIComponent(know) +
@@ -171,6 +376,7 @@
         toast('本小节共 ' + total + ' 题，仅载入前 ' + all.length + ' 题，其余题目未参与选题', 'error');
       }
       ST.questions = all;
+      if (entry) entry.questions = all;
       return all;
     });
   }
@@ -196,6 +402,9 @@
     // 大纲里已不存在的旧编排留在末尾：换教材树后静默丢弃用户选题是不可接受的
     ST.topics.forEach(function (t) { if (t && out.indexOf(t) < 0) out.push(t); });
     ST.topics = out;
+    // 数组被整体替换时必须重新锚定激活节，否则面板改动会写进旧数组、节里丢编排
+    var entry = ensureActiveEntry();
+    if (entry) entry.topics = ST.topics;
   }
 
   function renderTopicPanel(section, questions) {
@@ -341,15 +550,15 @@
     if (src.indexOf('@mindmap') === 0) {
       var mm = parseMindmap(src);
       if (!mm) {
-        return '<div class="sheet" id="page-knowledge"><div class="chapter-info">' + esc(cleanChapterTitle(chapter)) + ' · ' + esc(knowledge) + '</div>' +
-          '<div class="section-title">知识梳理</div><div class="knowledge"><div class="kn-empty">' +
+        return '<div class="sheet" id="page-knowledge"><div class="chapter-info">' + esc(cleanChapterTitle(chapter)) + ' · ' + esc(knowledge) + ' · 知识梳理</div>' +
+          '<div class="knowledge"><div class="kn-empty">' +
           '（思维导图数据无法解析，已停止输出原始源码；请在工具栏「知识梳理」中修复后重新保存）</div></div></div>';
       }
       return buildMindmapSheets(mm, compulsory, chapter, knowledge, src);
     }
     var body = src || '<div class="kn-empty">（尚未编写知识梳理，点击工具栏「知识梳理」开始编辑）</div>';
-    return '<div class="sheet" id="page-knowledge"><div class="chapter-info">' + esc(cleanChapterTitle(chapter)) + ' · ' + esc(knowledge) + '</div>' +
-      '<div class="section-title">知识梳理</div><div class="knowledge">' + body + '</div></div>';
+    return '<div class="sheet" id="page-knowledge"><div class="chapter-info">' + esc(cleanChapterTitle(chapter)) + ' · ' + esc(knowledge) + ' · 知识梳理</div>' +
+      '<div class="knowledge">' + body + '</div></div>';
   }
 
   /* ---------------- 思维导图知识梳理 ---------------- */
@@ -448,7 +657,9 @@
   }
 
   function buildMindmapSheets(data, compulsory, chapter, knowledge, raw) {
-    ST.knowledgeMind = { data: data, raw: raw };
+    var entry = findSectionEntry(secKey(compulsory, chapter, knowledge)) || ensureActiveEntry();
+    if (entry) entry.knowledgeMind = { data: data, raw: raw };
+    ST.knowledgeMind = entry ? entry.knowledgeMind : null;
     var PAGE_BUDGET = 220;
     var pages = [];
     var cur = { branches: [], height: 0 };
@@ -464,8 +675,7 @@
     });
     var html = '';
     pages.forEach(function (pg, pi) {
-      html += '<div class="sheet"><div class="chapter-info">' + esc(cleanChapterTitle(chapter)) + ' · ' + esc(knowledge) + '</div>';
-      html += '<div class="section-title">知识梳理</div>';
+      html += '<div class="sheet"><div class="chapter-info">' + esc(cleanChapterTitle(chapter)) + ' · ' + esc(knowledge) + ' · 知识梳理</div>';
       html += '<div class="mind-hint">思维导图 · 点击任一文字块可直接编辑</div>';
       html += '<div class="mind-wrap">';
       if (pi === 0 && data.title) {
@@ -505,10 +715,12 @@
   }
 
   function editMindNode(path) {
-    if (!ST.knowledgeMind || !ST.knowledgeMind.data) { toast('请先加载讲义小节'); return; }
-    var node = mindNodeAt(ST.knowledgeMind.data, path);
+    var entry = ensureActiveEntry();
+    var mind = entry && entry.knowledgeMind;
+    if (!mind || !mind.data) { toast('请先加载讲义小节'); return; }
+    var node = mindNodeAt(mind.data, path);
     if (!node) return;
-    ST.noteTarget = { type: 'mind-node', mindPath: path, name: node.name };
+    ST.noteTarget = { type: 'mind-node', mindPath: path, name: node.name, key: entry.key };
     // 单节点编辑器不允许整块删除思维导图
     setNoteDeleteVisible(false);
     var titleEl = $('lectureNoteModalTitle');
@@ -559,7 +771,7 @@
     var rows = (section.topics || []).map(function (t, i) {
       return '<div class="map-row"><span class="map-idx">' + (t.no || i + 1) + '</span><span class="map-name">' + esc(t.name) + '</span></div>';
     }).join('');
-    return '<div class="sheet" id="page-map"><div class="section-title">考向地图</div><div class="map">' + rows + '</div></div>';
+    return '<div class="sheet" id="page-map"><div class="chapter-info">' + esc(cleanChapterTitle(section.chapter)) + ' · ' + esc(section.knowledge) + ' · 考向地图</div><div class="map">' + rows + '</div></div>';
   }
 
   function buildSourceHtml(q) {
@@ -613,8 +825,7 @@
     var ex = 0, practice = 0;
     var variantGroup = [];
     (topicCfg.items || []).forEach(function (item) {
-      var q = null;
-      for (var k = 0; k < ST.previewData.questions.length; k++) { if (ST.previewData.questions[k].id === item.question_id) { q = ST.previewData.questions[k]; break; } }
+      var q = ST.qIndex[item.question_id];
       if (!q) return;
       if (item.role === 'example') {
         ex++;
@@ -634,44 +845,69 @@
     return html;
   }
 
+  /* 多节合并时每节各出一组：知识梳理页 → 考向地图页 → 该节考向页。
+     metaMapFor 按节重建 topic_id→编号映射，跨节同名 topic_id 不会串号。 */
+  function buildSectionPages(entry, settings) {
+    var section = entry.section || {};
+    var notes = entry.notes || {};
+    var metaMap = buildTopicMetaMap(section);
+    var html = buildKnowledge(notes, section.compulsory, section.chapter, section.knowledge);
+    html += buildMap(section);
+    (entry.topics || []).forEach(function (t, i) {
+      html += buildTopicSheet(t, i, notes, section.compulsory, section.chapter, section.knowledge,
+        topicNoOf(metaMap, t, i), outlineExampleOf(metaMap, t));
+    });
+    return html;
+  }
+
   function buildHomework() {
-    var items = ST.previewData.extra_ids || [];
-    var html = '<div class="sheet" data-answer-page="true"><div class="page-head"><span class="ph-title">实战演练</span><span class="ph-quote"></span></div>';
-    html += '<div class="subsection-title">实战演练</div>';
-    if (!items.length) {
-      html += '<div class="text-sm text-slate-400">（尚未选择实战演练题目）</div>';
-    } else {
-      items.forEach(function (qid, i) {
-        var q = null;
-        for (var k = 0; k < ST.previewData.questions.length; k++) { if (ST.previewData.questions[k].id === qid) { q = ST.previewData.questions[k]; break; } }
-        if (q) html += buildQuestion(q, '实战' + (i + 1));
+    var html = '';
+    var total = 0;
+    var multi = ST.previewData.sections && ST.previewData.sections.length > 1;
+    (ST.previewData.sections || [{ extra_ids: ST.previewData.extra_ids || [], section: ST.previewData.section || {} }])
+      .forEach(function (entry) {
+        var items = entry.extra_ids || [];
+        if (!items.length) return;
+        var sec = entry.section || {};
+        html += '<div class="sheet" data-answer-page="true"><div class="page-head"><span class="ph-title">实战演练' + (multi ? ' · ' + esc(sec.knowledge || '') : '') + '</span><span class="ph-quote"></span></div>';
+        html += '<div class="subsection-title">实战演练' + (multi ? '' : '') + '</div>';
+        items.forEach(function (qid, i) {
+          var q = ST.qIndex[qid];
+          if (q) { total++; html += buildQuestion(q, '实战' + total); }
+        });
+        html += '<div class="page-foot"><span class="pg"></span></div></div>';
       });
+    if (!html) {
+      html = '<div class="sheet" data-answer-page="true"><div class="page-head"><span class="ph-title">实战演练</span><span class="ph-quote"></span></div>' +
+        '<div class="subsection-title">实战演练</div><div class="text-sm text-slate-400">（尚未选择实战演练题目）</div>' +
+        '<div class="page-foot"><span class="pg"></span></div></div>';
     }
-    html += '<div class="page-foot"><span class="pg"></span></div></div>';
     return html;
   }
 
   function buildAnswerBook() {
     var html = '<div class="sheet" id="page-answer-book"><div class="section-title">答案册</div>';
     var count = 0;
-    (ST.topics || []).forEach(function (topicCfg, idx) {
-      (topicCfg.items || []).forEach(function (item) {
-        var q = null;
-        for (var k = 0; k < ST.previewData.questions.length; k++) { if (ST.previewData.questions[k].id === item.question_id) { q = ST.previewData.questions[k]; break; } }
-        if (!q) return;
-        count++;
-        var label = '考向' + topicNoOf(ST.topicMetaById || {}, topicCfg, idx) + ' ' + roleVal(item.role) + ' ' + (item.role === 'example' ? '例' + count : item.role === 'variant' ? '变式' + count : item.role === 'practice' ? '趁热打铁' + count : '实战' + count);
-        var ans = q.answer ? (window.parseMarkdownWithMath ? window.parseMarkdownWithMath(q.answer) : esc(q.answer)) : '';
-        html += '<div class="ans-item"><span class="ans-tag">' + esc(label) + '</span>' + (ans || '<span class="text-slate-400">（暂无答案）</span>') + '</div>';
+    (ST.previewData.sections || [{ topics: ST.topics, extra_ids: ST.previewData.extra_ids || [], section: ST.previewData.section || {} }])
+      .forEach(function (entry) {
+        var metaMap = buildTopicMetaMap(entry.section || {});
+        ((entry.topics || [])).forEach(function (topicCfg, idx) {
+          (topicCfg.items || []).forEach(function (item) {
+            var q = ST.qIndex[item.question_id];
+            if (!q) return;
+            count++;
+            var label = '考向' + topicNoOf(metaMap, topicCfg, idx) + ' ' + roleVal(item.role) + ' ' + (item.role === 'example' ? '例' + count : item.role === 'variant' ? '变式' + count : item.role === 'practice' ? '趁热打铁' + count : '实战' + count);
+            var ans = q.answer ? (window.parseMarkdownWithMath ? window.parseMarkdownWithMath(q.answer) : esc(q.answer)) : '';
+            html += '<div class="ans-item"><span class="ans-tag">' + esc(label) + '</span>' + (ans || '<span class="text-slate-400">（暂无答案）</span>') + '</div>';
+          });
+        });
+        (entry.extra_ids || []).forEach(function (qid, i) {
+          var q = ST.qIndex[qid];
+          if (!q) return;
+          var ans = q.answer ? (window.parseMarkdownWithMath ? window.parseMarkdownWithMath(q.answer) : esc(q.answer)) : '';
+          html += '<div class="ans-item"><span class="ans-tag">实战' + (count + i + 1) + '</span>' + (ans || '<span class="text-slate-400">（暂无答案）</span>') + '</div>';
+        });
       });
-    });
-    (ST.previewData.extra_ids || []).forEach(function (qid, i) {
-      var q = null;
-      for (var k = 0; k < ST.previewData.questions.length; k++) { if (ST.previewData.questions[k].id === qid) { q = ST.previewData.questions[k]; break; } }
-      if (!q) return;
-      var ans = q.answer ? (window.parseMarkdownWithMath ? window.parseMarkdownWithMath(q.answer) : esc(q.answer)) : '';
-      html += '<div class="ans-item"><span class="ans-tag">实战' + (i + 1) + '</span>' + (ans || '<span class="text-slate-400">（暂无答案）</span>') + '</div>';
-    });
     html += '</div>';
     return html;
   }
@@ -699,18 +935,43 @@
   function buildLectureHtml(data) {
     ST.previewData = data;
     var settings = data.settings || {};
-    var section = data.section || {};
-    var notes = data.notes || {};
-    ST.topicMetaById = buildTopicMetaMap(section);
-    var title = settings.cover_title || cleanChapterTitle(section.chapter) || section.knowledge || '讲义';
+    // 题目查找表按整本建一次：多节合并时同一道题可能出现在任意一节
+    ST.qIndex = {};
+    (data.questions || []).forEach(function (q) { ST.qIndex[q.id] = q; });
+    var entries;
+    if (Array.isArray(data.sections) && data.sections.length) {
+      entries = data.sections.map(function (e) {
+        (e.questions || []).forEach(function (q) { ST.qIndex[q.id] = q; });
+        return {
+          section: e.section || {},
+          notes: e.notes || {},
+          topics: e.topics || [],
+          extra_ids: e.extra_ids || [],
+        };
+      });
+    } else {
+      entries = [{
+        section: data.section || {},
+        notes: data.notes || {},
+        topics: data.topics || [],
+        extra_ids: data.extra_ids || [],
+      }];
+    }
+    // 把后端回带的修订稿与考向树落到对应节的编排容器上（思维导图编辑入口用）
+    entries.forEach(function (e) {
+      var sec = e.section;
+      var entry = findSectionEntry(secKey(sec.compulsory, sec.chapter, sec.knowledge));
+      if (!entry) return;
+      entry.notes = e.notes;
+      entry.section = entry.section || sec;
+      if (sec.topics) entry.section = sec;
+    });
+    var firstSection = entries[0].section;
+    ST.topicMetaById = buildTopicMetaMap(firstSection);
+    var title = settings.cover_title || cleanChapterTitle(firstSection.chapter) || firstSection.knowledge || '讲义';
     var body = '';
     body += buildCover(settings, title, '学生版');
-    body += buildKnowledge(notes, section.compulsory, section.chapter, section.knowledge);
-    body += buildMap(section);
-    ST.topics.forEach(function (t, i) {
-      body += buildTopicSheet(t, i, notes, section.compulsory, section.chapter, section.knowledge,
-        topicNoOf(ST.topicMetaById, t, i), outlineExampleOf(ST.topicMetaById, t));
-    });
+    entries.forEach(function (e) { body += buildSectionPages(e, settings); });
     body += buildHomework();
     body += buildAnswerBook();
 
@@ -836,26 +1097,46 @@
 
   /* ---------------- 预览刷新 ---------------- */
   function collectConfig() {
-    var comp = $('lectureCompulsory') ? $('lectureCompulsory').value : '';
-    var chap = $('lectureChapter') ? $('lectureChapter').value : '';
-    var know = $('lectureKnowledge') ? $('lectureKnowledge').value : '';
+    // 坐标一律取激活节：小节已改成多选下拉，DOM 里不再有单值可回退
+    var comp = ST.compulsory || ($('lectureCompulsory') ? $('lectureCompulsory').value : '');
+    var chap = ST.chapter || ($('lectureChapter') ? $('lectureChapter').value : '');
     return {
       grade: $('lectureGrade') ? $('lectureGrade').value : 'g1',
-      compulsory: comp, chapter: chap, knowledge: know,
+      compulsory: comp, chapter: chap, knowledge: ST.knowledge,
       topics: ST.topics, extra_ids: ST.extraIds,
     };
   }
 
-  function refreshPreview() {
+  function ensureActiveEntry() {
+    if (!ST.compulsory || !ST.chapter || !ST.knowledge) return null;
+    return findSectionEntry(secKey(ST.compulsory, ST.chapter, ST.knowledge));
+  }
+
+  /* preview/export 共用载荷：多节走 sections，未合并时退回单节三坐标。 */
+  function buildPreviewPayload(extra) {
+    var payload = extra || {};
+    if (ST.sections.length > 1) {
+      payload.sections = collectSectionsPayload();
+      return payload;
+    }
     var cfg = collectConfig();
+    payload.compulsory = cfg.compulsory;
+    payload.chapter = cfg.chapter;
+    payload.knowledge = cfg.knowledge;
+    payload.topics = ST.topics;
+    payload.extra_ids = ST.extraIds;
+    return payload;
+  }
+
+  function refreshPreview() {
     var iframe = $('lecturePreview');
     if (!iframe) return;
-    if (!cfg.compulsory || !cfg.chapter || !cfg.knowledge) { toast('请先选择册次 / 章节 / 小节'); return; }
+    if (!ST.sections.length) { toast('请先选择册次 / 章节 / 小节'); return; }
     // 封面标题的 PUT 尚未落库时先等它完成，否则重建的预览会复活旧标题
     (ST._coverSave || Promise.resolve()).then(function () {
     apiJson('/api/lecture/preview', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ compulsory: cfg.compulsory, chapter: cfg.chapter, knowledge: cfg.knowledge, topics: ST.topics, extra_ids: ST.extraIds }),
+      body: JSON.stringify(buildPreviewPayload()),
     })
       .then(function (data) {
         ST.settings = data.settings;
@@ -872,11 +1153,11 @@
           toast('有 ' + invalid.length + ' 处选题引用不是有效题目 ID，已跳过', 'error');
         }
         var html = buildLectureHtml(data);
-        var iframe = $('lecturePreview');
-        iframe.srcdoc = html;
-        iframe.onload = function () {
+        var frame = $('lecturePreview');
+        frame.srcdoc = html;
+        frame.onload = function () {
           if (ST.view && ST.view !== 'yuan') {
-            iframe.contentWindow.postMessage({ type: 'mathbank-set-view', view: ST.view }, '*');
+            frame.contentWindow.postMessage({ type: 'mathbank-set-view', view: ST.view }, '*');
           }
         };
       })
@@ -905,8 +1186,7 @@
   /* 高清 PDF 走组卷引擎编译（十秒级），期间禁用按钮并置 aria-busy，
      否则用户会连点触发多次 XeLaTeX 编译。降级说明经响应头回传，必须说出来。 */
   function exportPdf() {
-    var cfg = collectConfig();
-    if (!cfg.compulsory || !cfg.chapter || !cfg.knowledge) { toast('请先加载讲义小节'); return; }
+    if (!ST.sections.length) { toast('请先加载讲义小节'); return; }
     if (ST.exporting) { toast('已有讲义 PDF 在编译，请稍候'); return; }
     var view = ST.view || 'yuan';
     var button = $('lectureExportPdf');
@@ -915,10 +1195,7 @@
     var tab = window.open('', '_blank');
     apiBlob('/api/lecture/export/pdf', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        compulsory: cfg.compulsory, chapter: cfg.chapter, knowledge: cfg.knowledge,
-        topics: ST.topics, extra_ids: ST.extraIds, view: view,
-      }),
+      body: JSON.stringify(buildPreviewPayload({ view: view })),
     }).then(function (result) {
       var url = URL.createObjectURL(result.blob);
       if (tab && !tab.closed) tab.location.href = url; else window.location.href = url;
@@ -1098,12 +1375,22 @@
   /* 草稿标题：首次创建时生成，之后只有小节或届次真的变了才重写。
      旧写法每次保存都按 chapter+knowledge 重拼，届次后缀会被冲掉，
      【复制为新版】出来的新草稿也和旧版同名。 */
+  /* 草稿标题：首次创建时生成，之后只有小节或届次真的变了才重写。
+     旧写法每次保存都按 chapter+knowledge 重拼，届次后缀会被冲掉，
+     【复制为新版】出来的新草稿也和旧版同名。 */
   function draftTitle(drawer, knowledge, year) {
     return (drawer || '未归类') + ' ' + (knowledge || '') + ' 讲义（' + (year || currentYear()) + '届）';
   }
 
   function draftStamp(drawer, knowledge, year) {
     return [drawer || '', knowledge || '', year || ''].join('|');
+  }
+
+  /* 多节合并时主行坐标只反映激活节（兼容旧查询），完整清单在 config.sections；
+     标题用「首节 等N节」，避免整本讲义只显示最后加载的小节名。 */
+  function draftKnowledgeLabel() {
+    if (ST.sections.length <= 1) return ST.knowledge;
+    return ST.sections[0].knowledge + ' 等' + ST.sections.length + '节';
   }
 
   function cloneDraft(id) {
@@ -1117,6 +1404,7 @@
           topics: cfg.topics || [], extra_ids: cfg.extra_ids || [],
           series: meta.series, drawer: meta.drawer, year: targetYear, cloned_from: id,
         };
+        if (Array.isArray(cfg.sections)) newCfg.sections = JSON.parse(JSON.stringify(cfg.sections));
         var compulsory = meta.series === 'sync' ? meta.drawer : d.compulsory;
         return apiJson('/api/lecture/drafts', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -1152,12 +1440,16 @@
   }
 
   function newDraft() {
-    ST.draftId = null; ST.draftStamp = ''; ST.topics = []; ST.extraIds = []; ST.questions = [];
+    ST.draftId = null; ST.draftStamp = '';
+    ST.sections = []; ST.activeKey = ''; ST.section = null;
+    ST.topics = []; ST.extraIds = []; ST.questions = [];
+    ST.knowledgeMind = null;
     ST.dirty = false;
     clearAutosave();
+    renderSectionChips();
     renderAutosaveBar();
     var panel = $('lectureTopicPanel');
-    if (panel) panel.innerHTML = '<div class="text-sm text-slate-400 p-4">选择册次 / 章节 / 小节后点击「加载小节」。</div>';
+    if (panel) panel.innerHTML = '<div class="text-sm text-slate-400 p-4">选择册次 / 章节 / 小节并加载。勾选多个小节即可合并为一本讲义。</div>';
     var iframe = $('lecturePreview');
     if (iframe) iframe.srcdoc = '';
     if ($('lectureSeries')) $('lectureSeries').value = 'sync';
@@ -1172,14 +1464,19 @@
     return false;
   }
 
-  /* 把册次/章节/小节落到 ST 再同步跑级联（级联只会把不在候选里的值改写成首项）。
+  /* 把册次/章节/小节落到激活节（级联只会把不在候选里的值改写成首项）。
      返回无法在当前教材树里定位的那一段，供调用方如实提示。 */
   function applySelection(compulsory, chapter, knowledge) {
-    ST.compulsory = compulsory; ST.chapter = chapter; ST.knowledge = knowledge;
+    var entry = findSectionEntry(secKey(compulsory, chapter, knowledge)) || ensureActiveEntry();
+    if (entry) {
+      ST.compulsory = entry.compulsory; ST.chapter = entry.chapter; ST.knowledge = entry.knowledge;
+    } else {
+      ST.compulsory = compulsory; ST.chapter = chapter; ST.knowledge = knowledge;
+    }
     renderCompulsory();
-    return !selectHasValue($('lectureCompulsory'), compulsory) ? compulsory
-      : !selectHasValue($('lectureChapter'), chapter) ? chapter
-        : !selectHasValue($('lectureKnowledge'), knowledge) ? knowledge : '';
+    return !selectHasValue($('lectureCompulsory'), ST.compulsory) ? ST.compulsory
+      : !selectHasValue($('lectureChapter'), ST.chapter) ? ST.chapter
+        : !knowledgeOptions().some(function (n) { return n === ST.knowledge; }) ? ST.knowledge : '';
   }
 
   function loadDraft(id) {
@@ -1189,9 +1486,27 @@
         var cfg = d.config || {};
         var meta = draftMeta(d);
         ST.grade = d.grade || 'g1';
-        ST.topics = cfg.topics || [];
-        ST.extraIds = cfg.extra_ids || [];
-        ST.draftStamp = draftStamp(meta.drawer, d.knowledge, meta.year);
+        // sections 是编排唯一来源；主行坐标只是激活节快照，不再单独读旧字段
+        ST.sections = [];
+        ST.activeKey = ''; ST.section = null;
+        ST.topics = []; ST.extraIds = []; ST.questions = [];
+        ST.knowledgeMind = null;
+        var list = Array.isArray(cfg.sections) && cfg.sections.length ? cfg.sections : null;
+        if (list) {
+          list.forEach(function (s) {
+            if (!s || !s.compulsory || !s.chapter || !s.knowledge) return;
+            var entry = ensureSectionEntry(s.compulsory, s.chapter, s.knowledge);
+            entry.topics = s.topics || [];
+            entry.extraIds = s.extra_ids || [];
+          });
+        } else if (d.compulsory && d.chapter && d.knowledge) {
+          var only = ensureSectionEntry(d.compulsory, d.chapter, d.knowledge);
+          only.topics = cfg.topics || [];
+          only.extraIds = cfg.extra_ids || [];
+        }
+        var first = ST.sections[0];
+        if (first) activateSection(first);
+        ST.draftStamp = draftStamp(meta.drawer, draftKnowledgeLabel(), meta.year);
         renderGrade();
         if ($('lectureSeries')) $('lectureSeries').value = meta.series;
         renderDrawerOptions();
@@ -1199,19 +1514,21 @@
         if ($('lectureDrawer') && meta.drawer) $('lectureDrawer').value = meta.drawer;
         if ($('lectureYearSelect') && meta.year) $('lectureYearSelect').value = meta.year;
         // 不用定时器延时等 DOM：旧写法在慢机器上会加载到错误的小节
-        var stale = applySelection(d.compulsory, d.chapter, d.knowledge);
+        var stale = applySelection(ST.compulsory, ST.chapter, ST.knowledge);
+        renderSectionChips();
         ST.dirty = false;
         renderDraftTree();
         renderAutosaveBar();
         if (stale) {
           toast('草稿的小节「' + stale + '」已不在当前教材树，请先切换教材版本或重选小节', 'error');
         }
-        loadSection();
+        loadSection({ keepSelection: true });
       })
       .catch(function (e) { toast('载入草稿失败：' + e.message); });
   }
 
   function saveDraft() {
+    if (!ST.sections.length) { toast('请先选择册次 / 章节 / 小节'); return; }
     var cfg = collectConfig();
     if (!cfg.compulsory || !cfg.chapter || !cfg.knowledge) { toast('请先选择册次 / 章节 / 小节'); return; }
     var tree = collectTreeControls();
@@ -1223,13 +1540,14 @@
       chapter: cfg.chapter, knowledge: cfg.knowledge,
       config: {
         topics: ST.topics, extra_ids: ST.extraIds,
+        sections: collectSectionsPayload(),
         series: tree.series, drawer: drawer, year: tree.year,
       },
     };
     // 标题只在首次创建、或小节/届次确实变化时重写；其余情况不带 title
     // （后端 patch 语义未传字段不动），避免每次保存都把届次后缀冲掉
-    var stamp = draftStamp(drawer, cfg.knowledge, tree.year);
-    if (!ST.draftId || stamp !== ST.draftStamp) body.title = draftTitle(drawer, cfg.knowledge, tree.year);
+    var stamp = draftStamp(drawer, draftKnowledgeLabel(), tree.year);
+    if (!ST.draftId || stamp !== ST.draftStamp) body.title = draftTitle(drawer, draftKnowledgeLabel(), tree.year);
     apiJson(url, {
       method: method, headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -1266,12 +1584,20 @@
     return n;
   }
 
+  /* 快照计数兼容单节（topics/extra_ids）与多节（sections）两种形态 */
+  function snapshotTotal(snap) {
+    if (!snap) return 0;
+    var n = snapshotCount(snap);
+    (snap.sections || []).forEach(function (s) { n += snapshotCount(s || {}); });
+    return n;
+  }
+
   function readAutosave() {
     try {
       var raw = localStorage.getItem(AUTOSAVE_KEY);
       if (!raw) return null;
       var snap = JSON.parse(raw);
-      return (snap && Array.isArray(snap.topics)) ? snap : null;
+      return (snap && Array.isArray(snap.sections)) ? snap : null;
     } catch (e) { return null; }
   }
 
@@ -1282,13 +1608,14 @@
   /* 每次编排变更都同步写快照：LocalStorage 写不进（配额/隐私模式）必须说一声，
      否则用户会以为刷新后还有保险。 */
   function snapshotOrchestration() {
-    // 只看真正编排了几道题：小节一加载 ST.topics 就有 5 个空槽，按长度判会天天写快照
-    if (!snapshotCount({ topics: ST.topics, extra_ids: ST.extraIds })) { clearAutosave(); return; }
+    // 只看真正编排了几道题：小节一加载每节就有几个空槽，按长度判会天天写快照
+    var sections = collectSectionsPayload();
+    if (!snapshotTotal({ topics: [], extra_ids: [], sections: sections })) { clearAutosave(); return; }
     var cfg = collectConfig();
     var snap = {
       saved_at: Date.now(), draft_id: ST.draftId,
       compulsory: cfg.compulsory, chapter: cfg.chapter, knowledge: cfg.knowledge,
-      topics: ST.topics, extra_ids: ST.extraIds,
+      sections: sections,
     };
     try {
       localStorage.setItem(AUTOSAVE_KEY, JSON.stringify(snap));
@@ -1303,7 +1630,7 @@
     var bar = $('lectureAutosaveBar');
     if (!bar) return;
     var snap = readAutosave();
-    var count = snap ? snapshotCount(snap) : 0;
+    var count = snapshotTotal(snap);
     var text = $('lectureAutosaveText');
     var restore = $('lectureAutosaveRestore');
     if (!snap || !count) { bar.classList.add('hidden'); return; }
@@ -1318,21 +1645,31 @@
 
   function restoreAutosave() {
     var snap = readAutosave();
-    if (!snap || !snapshotCount(snap)) return;
-    var stale = applySelection(snap.compulsory, snap.chapter, snap.knowledge);
+    if (!snap || !snapshotTotal(snap)) return;
+    ST.sections = [];
+    ST.activeKey = ''; ST.section = null;
+    (snap.sections || []).forEach(function (s) {
+      if (!s || !s.compulsory || !s.chapter || !s.knowledge) return;
+      var entry = ensureSectionEntry(s.compulsory, s.chapter, s.knowledge);
+      entry.topics = s.topics || [];
+      entry.extraIds = s.extra_ids || [];
+    });
+    var first = ST.sections[0];
+    if (!first) return;
+    activateSection(first);
+    var stale = applySelection(first.compulsory, first.chapter, first.knowledge);
     if (stale) {
       toast('快照里的小节「' + stale + '」已不在当前教材树，无法恢复', 'error');
       return;
     }
     ST.draftId = snap.draft_id || null;
-    ST.topics = snap.topics || [];
-    ST.extraIds = snap.extra_ids || [];
     ST.draftStamp = '';
     ST.dirty = true;
+    renderSectionChips();
     toast('已恢复本地快照，请点「保存讲义」写入草稿', 'success');
     renderAutosaveBar();
     renderDraftTree();
-    loadSection();
+    loadSection({ keepSelection: true });
   }
 
   function discardAutosave() {
@@ -1400,24 +1737,43 @@
     if (ST.section) renderTopicPanel(ST.section, ST.questions);
   }
 
-  function loadSection() {
+  function loadSection(opts) {
+    var keep = opts && opts.keepSelection;
     var cfg = collectConfig();
     if (!cfg.compulsory || !cfg.chapter || !cfg.knowledge) { toast('请先选择册次 / 章节 / 小节'); return; }
+    // 下拉框坐标与激活节不一致时（用户改了下拉没点加载），切到对应节；不在清单里则加入
+    var key = secKey(cfg.compulsory, cfg.chapter, cfg.knowledge);
+    var entry = findSectionEntry(key);
+    if (!entry) {
+      entry = ensureSectionEntry(cfg.compulsory, cfg.chapter, cfg.knowledge);
+      activateSection(entry);
+    } else if (key !== ST.activeKey) {
+      activateSection(entry);
+    }
+    if (!keep) renderSectionChips();
+    else { renderKnowledgeDropdown(); renderSectionChips(); }
     toast('加载小节…');
     apiJson('/api/lesson-plans/section-topics?compulsory=' + encodeURIComponent(cfg.compulsory) + '&chapter=' + encodeURIComponent(cfg.chapter) + '&knowledge=' + encodeURIComponent(cfg.knowledge))
       .then(function (built) {
-        ST.section = { compulsory: cfg.compulsory, chapter: cfg.chapter, knowledge: cfg.knowledge, name: cfg.knowledge, topics: (built.blocks || []).map(function (b) { return { id: b.topic_id, name: b.title, no: b.no }; }) };
-        return loadQuestions();
+        entry.section = { compulsory: cfg.compulsory, chapter: cfg.chapter, knowledge: cfg.knowledge, name: cfg.knowledge, topics: (built.blocks || []).map(function (b) { return { id: b.topic_id, name: b.title, no: b.no }; }) };
+        ST.section = entry.section;
+        return loadQuestions(entry);
       })
       .then(function (questions) {
-        renderTopicPanel(ST.section, questions);
+        if (ST.activeKey === entry.key) renderTopicPanel(entry.section, questions);
         refreshPreview();
         toast('小节已加载', 'success');
       })
       .catch(function (e) { toast('加载失败：' + e.message); });
   }
 
-  /* ---------------- 知识块编辑 ---------------- */
+  /* ---------------- 知识块编辑（坐标一律取所属节，不依赖下拉框当前值） ---------------- */
+  function noteCoords(target) {
+    var entry = target && target.key ? findSectionEntry(target.key) : ensureActiveEntry();
+    if (!entry) return null;
+    return { compulsory: entry.compulsory, chapter: entry.chapter, knowledge: entry.knowledge };
+  }
+
   function setNoteDeleteVisible(on) {
     var btn = $('lectureNoteDelete');
     if (!btn) return;
@@ -1449,13 +1805,13 @@
     var target = ST.noteTarget;
     if (!target) return;
     if (target.type === 'mind-node') { toast('思维导图整块删除请先用工具栏「知识梳理」打开源码'); return; }
-    var cfg = collectConfig();
-    if (!cfg.compulsory || !cfg.chapter || !cfg.knowledge) { toast('请先选择小节'); return; }
+    var coords = noteCoords(target);
+    if (!coords) { toast('请先选择小节'); return; }
     if (!confirm('删除这条已保存的修订稿？删除后回到默认内容，不可撤销。')) return;
     var q = 'note_type=' + encodeURIComponent(target.type) +
-      '&compulsory=' + encodeURIComponent(cfg.compulsory) +
-      '&chapter=' + encodeURIComponent(cfg.chapter) +
-      '&knowledge=' + encodeURIComponent(cfg.knowledge) +
+      '&compulsory=' + encodeURIComponent(coords.compulsory) +
+      '&chapter=' + encodeURIComponent(coords.chapter) +
+      '&knowledge=' + encodeURIComponent(coords.knowledge) +
       (target.topic_id ? '&topic_id=' + encodeURIComponent(target.topic_id) : '');
     apiJson('/api/lecture/notes?' + q, { method: 'DELETE' })
       .then(function () {
@@ -1469,12 +1825,16 @@
   }
 
   function editNote(type, topicIdx) {
-    var cfg = collectConfig();
-    if (!cfg.compulsory || !cfg.chapter || !cfg.knowledge) { toast('请先选择小节'); return; }
+    var coords = noteCoords();
+    if (!coords) { toast('请先选择小节'); return; }
+    var entry = ensureActiveEntry();
     var topicCfg = ST.topics[topicIdx];
     if (!topicCfg) { toast('该考向尚未初始化'); return; }
     if (!topicCfg.topic_id) { toast('该考向缺少考点标识，请先重新加载小节后再编辑'); return; }
-    ST.noteTarget = { type: type, topic_idx: topicIdx, topic_id: topicCfg.topic_id, name: topicCfg.name };
+    ST.noteTarget = {
+      type: type, topic_idx: topicIdx, topic_id: topicCfg.topic_id, name: topicCfg.name,
+      key: entry.key,
+    };
     // 无修订稿时「解题方法」以大纲例题为起点，与预览里渲染的默认内容同一份
     var fallback = (type === 'method') ? outlineExampleOf(ST.topicMetaById || {}, topicCfg) : '';
     var titleEl = $('lectureNoteModalTitle');
@@ -1486,21 +1846,22 @@
     var ta = $('lectureNoteContent');
     if (ta) ta.value = '';
     // 读取已保存
-    loadNoteIntoModal('note_type=' + type + '&compulsory=' + encodeURIComponent(cfg.compulsory) + '&chapter=' + encodeURIComponent(cfg.chapter) + '&knowledge=' + encodeURIComponent(cfg.knowledge) + '&topic_id=' + encodeURIComponent(topicCfg.topic_id), fallback);
+    loadNoteIntoModal('note_type=' + type + '&compulsory=' + encodeURIComponent(coords.compulsory) + '&chapter=' + encodeURIComponent(coords.chapter) + '&knowledge=' + encodeURIComponent(coords.knowledge) + '&topic_id=' + encodeURIComponent(topicCfg.topic_id), fallback);
     var modal = $('lectureNoteModal');
     if (modal) { modal.classList.remove('hidden'); modal.classList.add('flex'); }
     if (ta) ta.focus();
   }
 
   function editKnowledge() {
-    var cfg = collectConfig();
-    if (!cfg.compulsory || !cfg.chapter || !cfg.knowledge) { toast('请先选择小节'); return; }
-    ST.noteTarget = { type: 'knowledge', topic_id: '', name: '知识梳理' };
+    var coords = noteCoords();
+    if (!coords) { toast('请先选择小节'); return; }
+    var entry = ensureActiveEntry();
+    ST.noteTarget = { type: 'knowledge', topic_id: '', name: '知识梳理', key: entry.key };
     var titleEl = $('lectureNoteModalTitle');
-    if (titleEl) titleEl.textContent = '编辑知识梳理：' + cfg.chapter + ' · ' + cfg.knowledge;
+    if (titleEl) titleEl.textContent = '编辑知识梳理：' + coords.chapter + ' · ' + coords.knowledge;
     var ta = $('lectureNoteContent');
     if (ta) ta.value = '';
-    loadNoteIntoModal('note_type=knowledge&compulsory=' + encodeURIComponent(cfg.compulsory) + '&chapter=' + encodeURIComponent(cfg.chapter) + '&knowledge=' + encodeURIComponent(cfg.knowledge));
+    loadNoteIntoModal('note_type=knowledge&compulsory=' + encodeURIComponent(coords.compulsory) + '&chapter=' + encodeURIComponent(coords.chapter) + '&knowledge=' + encodeURIComponent(coords.knowledge));
     var modal = $('lectureNoteModal');
     if (modal) { modal.classList.remove('hidden'); modal.classList.add('flex'); }
     if (ta) ta.focus();
@@ -1517,23 +1878,26 @@
 
   function saveNote() {
     if (!ST.noteTarget) return;
-    var cfg = collectConfig();
+    var coords = noteCoords(ST.noteTarget);
+    if (!coords) { toast('请先选择小节'); return; }
     var content = $('lectureNoteContent') ? $('lectureNoteContent').value : '';
     if (ST.noteTarget.noteLoadFailed && !String(content).trim()) {
       toast('修订稿未读取成功，不能保存空内容覆盖已存版本', 'error');
       return;
     }
     if (ST.noteTarget.type === 'mind-node') {
-      if (!ST.knowledgeMind || !ST.knowledgeMind.data) { closeNoteModal(); return; }
-      var node = mindNodeAt(ST.knowledgeMind.data, ST.noteTarget.mindPath);
+      var entry = findSectionEntry(ST.noteTarget.key) || ensureActiveEntry();
+      var mind = entry && entry.knowledgeMind;
+      if (!mind || !mind.data) { closeNoteModal(); return; }
+      var node = mindNodeAt(mind.data, ST.noteTarget.mindPath);
       if (!node) { closeNoteModal(); return; }
       if (node.kind === 'table') node.table[node.r][node.c] = content;
       else node.ref[node.prop] = content;
-      var serialized = '@mindmap\n' + JSON.stringify(ST.knowledgeMind.data, null, 1);
-      ST.knowledgeMind.raw = serialized;
+      var serialized = '@mindmap\n' + JSON.stringify(mind.data, null, 1);
+      mind.raw = serialized;
       putNote({
         note_type: 'knowledge',
-        compulsory: cfg.compulsory, chapter: cfg.chapter, knowledge: cfg.knowledge,
+        compulsory: coords.compulsory, chapter: coords.chapter, knowledge: coords.knowledge,
         content: serialized
       })
         .then(function () {
@@ -1546,7 +1910,7 @@
     }
     var payload = {
       note_type: ST.noteTarget.type,
-      compulsory: cfg.compulsory, chapter: cfg.chapter, knowledge: cfg.knowledge,
+      compulsory: coords.compulsory, chapter: coords.chapter, knowledge: coords.knowledge,
       content: content,
     };
     if (ST.noteTarget.type !== 'knowledge') payload.topic_id = ST.noteTarget.topic_id || '';
@@ -1658,18 +2022,18 @@
   var _bound = false;
   function bindSelectors() {
     if (_bound) return;
-    var g = $('lectureGrade'), c = $('lectureCompulsory'), ch = $('lectureChapter'), k = $('lectureKnowledge');
-    if (!g || !c || !ch || !k) return;
+    var g = $('lectureGrade'), c = $('lectureCompulsory'), ch = $('lectureChapter');
+    if (!g || !c || !ch) return;
     g.addEventListener('change', function () { ST.grade = g.value; renderCompulsory(); });
     c.addEventListener('change', function () {
       ST.compulsory = c.value; renderChapter();
       // 同步侧：抽屉默认跟随册次
       if (collectTreeControls().series === 'sync' && $('lectureDrawer')) $('lectureDrawer').value = c.value;
     });
-    ch.addEventListener('change', function () { ST.chapter = ch.value; renderKnowledge(); });
-    k.addEventListener('change', function () { ST.knowledge = k.value; });
+    ch.addEventListener('change', function () { ST.chapter = ch.value; renderKnowledgeDropdown(); });
     var s = $('lectureSeries');
     if (s) s.addEventListener('change', function () { renderDrawerOptions(); });
+    bindSectionBar();
     _bound = true;
   }
   window.LectureManager = {
@@ -1677,7 +2041,8 @@
       bindSelectors();
       bindMindEdit();
       bindAutosave();
-      renderGrade(); renderCompulsory(); renderChapter(); renderKnowledge();
+      renderGrade(); renderCompulsory(); renderKnowledgeDropdown();
+      renderSectionChips();
       renderDrawerOptions(); renderYearOptions();
       renderDraftTree();
       renderAutosaveBar();
@@ -1686,7 +2051,9 @@
     },
     newDraft: newDraft, loadDraft: loadDraft, saveDraft: saveDraft, deleteDraft: deleteDraft,
     cloneDraft: cloneDraft, restoreDraft: restoreDraft, setYearFilter: setYearFilter,
-    loadSection: loadSection, refreshPreview: refreshPreview,
+    loadSection: loadSection, addCurrentSection: addCurrentSection, switchActive: switchActive,
+    removeSection: removeSectionEntry,
+    refreshPreview: refreshPreview,
     switchView: switchView, printLecture: printLecture, exportPdf: exportPdf,
     addItem: addItem, setRole: setRole, removeItem: removeItem,
     addExtra: addExtra, removeExtra: removeExtra,
