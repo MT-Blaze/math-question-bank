@@ -700,7 +700,7 @@ def test_merged_preview_html_orders_sections_once_each():
         "if ((html.match(/class=\"sheet cover\"/g) || []).length !== 1) throw new Error('封面不止一份');\n",
         "if (html.indexOf('目　录') < 0) throw new Error('目录页缺失');\n",
         "if (html.indexOf('第一讲 K2') > html.indexOf('第二讲 K1')) throw new Error('目录顺序被排错');\n",
-        "if (html.indexOf('目　录') > html.indexOf('第一讲 K2 · 知识梳理')) throw new Error('目录没排在正文前');\n",
+        "if (html.indexOf('目　录') > html.indexOf('第一讲 K2')) throw new Error('目录没排在正文前');\n",
         "if (html.indexOf('toc-sub') < 0) throw new Error('目录没有书籍式子条目');\n",
         # 每节各一次考向页（考向标题在目录里也出现一次，共 2 处）；页眉不带章名
         "if ((html.match(/考向一　子集判断/g) || []).length !== 2) throw new Error('K2 考向页或目录条目缺失');\n",

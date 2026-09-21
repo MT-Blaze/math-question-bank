@@ -572,6 +572,8 @@ def build_lecture_latex(preview: dict, view: str = "jiexi") -> tuple[str, list[s
     # exam-zh 的 \section* 会画装饰竖条并自动补「【XX】」，讲义里换用无装饰宏；
     # 标题页/目录/每讲各板块单独起页，由 \lectpage 控制
     lines.append(r"\newcommand{\lectsec}[1]{\par\vspace{4mm}{\Large\bfseries #1}\par\nopagebreak\vspace{2mm}}")
+    # 讲级页的板块名（知识梳理/考向地图）：大标题下另起一行、左对齐
+    lines.append(r"\newcommand{\lectsub}[1]{\par\vspace{-1mm}{\large\bfseries #1}\par\nopagebreak\vspace{2mm}}")
     lines.append(r"\newcommand{\blockhead}[1]{\par\vspace{2.5mm}{\normalsize\bfseries 【#1】}\par\vspace{1mm}}")
     lines.append(r"\newcommand{\lectpage}{\clearpage}")
     lines.append("")
@@ -635,7 +637,8 @@ def build_lecture_latex(preview: dict, view: str = "jiexi") -> tuple[str, list[s
         head = lecture_title(lecture_no, section.get("knowledge") or "")
         knowledge = _note(notes, "knowledge", section, "")
         lines.append(r"\lectpage")
-        lines.append(r"\lectsec{%s · 知识梳理}" % escape_text(head))
+        lines.append(r"\lectsec{%s}" % escape_text(head))
+        lines.append(r"\lectsub{知识梳理}")
         if knowledge.strip():
             body, warns = note_body_to_latex(knowledge)
             degradations.extend(warns)
@@ -647,7 +650,8 @@ def build_lecture_latex(preview: dict, view: str = "jiexi") -> tuple[str, list[s
         outline_topics = section.get("topics") or []
         if outline_topics:
             lines.append(r"\lectpage")
-            lines.append(r"\lectsec{%s · 考向地图}" % escape_text(head))
+            lines.append(r"\lectsec{%s}" % escape_text(head))
+            lines.append(r"\lectsub{考向地图}")
             lines.append("\\begin{enumerate}")
             for outline in outline_topics:
                 lines.append(r"\item %s" % escape_text(str((outline or {}).get("name") or "")))
@@ -687,7 +691,7 @@ def build_lecture_latex(preview: dict, view: str = "jiexi") -> tuple[str, list[s
         extra_ids = [qid for qid in (entry.get("extra_ids") or []) if qid in questions_by_id]
         if extra_ids:
             lines.append(r"\lectpage")
-            lines.append(r"\lectsec{%s · 实战演练}" % escape_text(head))
+            lines.append(r"\lectsec{%s}" % escape_text(head))
             lines.append(r"\blockhead{实战演练}")
             for position, qid in enumerate(extra_ids, start=1):
                 lines.append(_question_block(questions_by_id[qid], str(position), include_answers))

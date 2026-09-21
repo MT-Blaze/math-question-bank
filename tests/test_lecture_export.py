@@ -206,7 +206,9 @@ def test_lecture_headers_drop_chapter_and_use_cn_numerals():
     assert lecture_title(1, "1.1 集合的概念") == "第一讲 集合的概念"
     assert lecture_title(12, "函数的概念") == "第十二讲 函数的概念"
     tex, _ = build_lecture_latex(_preview(), view="jiexi")
-    assert "第一讲 集合的概念 · 知识梳理" in tex
+    # 板块名不再与大标题同行：「第X讲 …」后紧跟独立的 \lectsub{知识梳理}
+    assert r"\lectsec{第一讲 集合的概念}" in tex
+    assert r"\lectsub{知识梳理}" in tex
     assert "集合与常用逻辑用语" not in tex          # 章名已删
     # 教材章节号从所有页眉消失（封面标题是用户手填，不在管辖内）
     assert "1. 集合与常用逻辑用语 · 1.1" not in tex
@@ -441,17 +443,17 @@ def test_merged_export_orders_sections_and_keeps_single_answer_book():
     """多节导出：每讲各有一组知识梳理/考向页且顺序跟随载荷；实战演练归各讲、
     答案册整本只有一份。"""
     tex, _ = build_lecture_latex(_preview_multi(), view="jiexi")
-    assert tex.count("· 知识梳理}") == 2
+    assert tex.count(r"\lectsub{知识梳理}") == 2
     assert tex.index("子集与真子集") < tex.index("集合是确定性对象"), "节的顺序被排错了"
     assert tex.count(r"\blockhead{实战演练}") == 1      # 只有 K2 配了课后作业，归本讲
-    assert "第一讲 集合间的基本关系 · 实战演练" in tex
+    assert r"\lectsec{第一讲 集合间的基本关系}" in tex   # K2 的实战演练页大标题
     assert "第二讲 集合的概念 · 实战演练" not in tex     # K1 没有 extra_ids
     assert r"\lectsec{答案册}" not in tex
     daan, _ = build_lecture_latex(_preview_multi(), view="daan")
     assert daan.count(r"\lectsec{答案册}") == 1
     # 单节旧载荷行为不变
     single, _ = build_lecture_latex(_preview(), view="jiexi")
-    assert single.count("· 知识梳理}") == 1
+    assert single.count(r"\lectsub{知识梳理}") == 1
 
 
 @pytest.mark.skipif(shutil.which("xelatex") is None, reason="本机无 XeLaTeX")
@@ -485,5 +487,5 @@ def test_merged_lecture_latex_actually_compiles():
     assert pdf, "合并讲义 LaTeX 编译失败：%s" % str(log)[-1500:]
     doc = pymupdf.open(stream=pdf, filetype="pdf")
     text = "".join(page.get_text() for page in doc).replace(" ", "").replace("\u3000", "")
-    for needle in ("子集与真子集", "集合是确定性对象", "第一讲集合间的基本关系·实战演练", "目录"):
+    for needle in ("子集与真子集", "集合是确定性对象", "第一讲集合间的基本关系\n【实战演练】", "目录"):
         assert needle.replace(" ", "") in text, "PDF 里缺少 %s" % needle

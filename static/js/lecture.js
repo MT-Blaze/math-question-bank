@@ -565,6 +565,12 @@
     }).join(':');
   }
 
+  /* 讲级页（知识梳理/考向地图）标题：大标题一行，板块名另起一行、左对齐。 */
+  function lectureHeadHtml(head, blockName) {
+    return '<div class="chapter-info">' + esc(head) + '</div>' +
+      '<div class="chapter-block">' + esc(blockName) + '</div>';
+  }
+
   function buildKnowledge(notes, compulsory, chapter, knowledge, headTitle) {
     var head = headTitle || (cleanChapterTitle(chapter) + ' · ' + knowledge);
     var key = noteKey('knowledge', compulsory, chapter, knowledge);
@@ -572,14 +578,14 @@
     if (src.indexOf('@mindmap') === 0) {
       var mm = parseMindmap(src);
       if (!mm) {
-        return '<div class="sheet" id="page-knowledge"><div class="chapter-info">' + esc(head) + ' · 知识梳理</div>' +
+        return '<div class="sheet" id="page-knowledge">' + lectureHeadHtml(head, '知识梳理') +
           '<div class="knowledge"><div class="kn-empty">' +
           '（思维导图数据无法解析，已停止输出原始源码；请在工具栏「知识梳理」中修复后重新保存）</div></div></div>';
       }
       return buildMindmapSheets(mm, compulsory, chapter, knowledge, src, head);
     }
     var body = src || '<div class="kn-empty">（尚未编写知识梳理，点击工具栏「知识梳理」开始编辑）</div>';
-    return '<div class="sheet" id="page-knowledge"><div class="chapter-info">' + esc(head) + ' · 知识梳理</div>' +
+    return '<div class="sheet" id="page-knowledge">' + lectureHeadHtml(head, '知识梳理') +
       '<div class="knowledge">' + body + '</div></div>';
   }
 
@@ -698,7 +704,7 @@
     });
     var html = '';
     pages.forEach(function (pg, pi) {
-      html += '<div class="sheet"><div class="chapter-info">' + esc(head) + ' · 知识梳理</div>';
+      html += '<div class="sheet">' + lectureHeadHtml(head, '知识梳理');
       html += '<div class="mind-hint">思维导图 · 点击任一文字块可直接编辑</div>';
       html += '<div class="mind-wrap">';
       if (pi === 0 && data.title) {
@@ -795,7 +801,7 @@
     var rows = (section.topics || []).map(function (t, i) {
       return '<div class="map-row"><span class="map-idx">' + cnNumeral(t.no || i + 1) + '</span><span class="map-name">' + esc(t.name) + '</span></div>';
     }).join('');
-    return '<div class="sheet" id="page-map"><div class="chapter-info">' + esc(head) + ' · 考向地图</div><div class="map">' + rows + '</div></div>';
+    return '<div class="sheet" id="page-map">' + lectureHeadHtml(head, '考向地图') + '<div class="map">' + rows + '</div></div>';
   }
 
   function buildSourceHtml(q) {
@@ -1133,7 +1139,8 @@
       '.cover-ver{position:absolute;bottom:112mm;left:0;right:0;text-align:center;font-size:16px;color:#000;z-index:2}',
       'body.view-yuan .cover-ver{display:none}',
       /* 知识梳理 */
-      '.chapter-info{font-size:24px;font-weight:700;color:#1f3a5f;text-align:center;margin-bottom:6mm}',
+      '.chapter-info{font-size:24px;font-weight:700;color:#1f3a5f;text-align:center;margin-bottom:2mm}',
+      '.chapter-block{font-size:19px;font-weight:700;color:#1f3a5f;text-align:left;margin:0 0 5mm}',
       '.section-title{font-size:22px;font-weight:700;color:#1e3a8a;text-align:center;margin:4mm 0 6mm;position:relative}',
       '.knowledge{font-size:14px;line-height:1.9}',
       '.knowledge .key{font-weight:700;color:#1e3a8a}',
