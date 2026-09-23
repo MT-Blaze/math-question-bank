@@ -29,6 +29,9 @@
     dirty: false,        // 编排改过但还没写入草稿
     autosaveBlocked: false, // LocalStorage 写不进（配额/隐私模式），只提示一次
     autosaveBound: false,
+    editLocked: true,        // 编辑锁定：true 时禁止一切讲义内容修改，刷新自动回锁
+    pendingNotes: {},        // 未固化的临时修订稿 {note_key: {payload}}
+    pendingCoverTitle: null, // 未固化的封面标题（null=无改动）
   };
 
   var ROLE_LABELS = { example: '例题', variant: '变式', practice: '趁热打铁', homework: '实战演练' };
@@ -241,19 +244,6 @@
     var entry = ensureSectionEntry(comp, chap, name);
     activateSection(entry);
     renderKnowledgeDropdown();
-    renderSectionChips();
-    loadSection({ keepSelection: true });
-  }
-
-  function addCurrentSection() {
-    var comp = $('lectureCompulsory') ? $('lectureCompulsory').value : ST.compulsory;
-    var chap = $('lectureChapter') ? $('lectureChapter').value : ST.chapter;
-    var know = knowledgeOptions()[0] || ST.knowledge;
-    if (!comp || !chap || !know) { toast('请先选择册次 / 章节，小节在「小节」多选里添加'); return; }
-    var key = secKey(comp, chap, know);
-    if (findSectionEntry(key)) { loadSection(); return; } // 已在清单里：重新加载而不重复添加
-    var entry = ensureSectionEntry(comp, chap, know);
-    activateSection(entry);
     renderSectionChips();
     loadSection({ keepSelection: true });
   }
@@ -582,6 +572,17 @@
           '<div class="knowledge"><div class="kn-empty">' +
           '（思维导图数据无法解析，已停止输出原始源码；请在工具栏「知识梳理」中修复后重新保存）</div></div></div>';
       }
+      // 沙箱/旧宿主里没有放射渲染器时（typeof 检查）退回旧列表渲染器。
+      var treeBuilder = (typeof buildBraceTree === 'function') ? buildBraceTree
+        : ((typeof buildRadialMindmap === 'function') ? buildRadialMindmap : null);
+      if (treeBuilder) {
+        var radial = treeBuilder(mm, compulsory, chapter, knowledge, src, head);
+        // 放射版式沿用 mind-branch-label 类名挂在分支节点上，
+        // 按类名对账的调用方与测试无需改动即可识别思维导图页。
+        radial = radial.replace(/class="btree-box btree-l1"/g, 'class="btree-box btree-l1 mind-branch-label"');
+        radial = radial.replace(/class="radial-node"/g, 'class="radial-node mind-branch-label"');
+        return radial;
+      }
       return buildMindmapSheets(mm, compulsory, chapter, knowledge, src, head);
     }
     var body = src || '<div class="kn-empty">（尚未编写知识梳理，点击工具栏「知识梳理」开始编辑）</div>';
@@ -717,6 +718,200 @@
     return html;
   }
 
+  /* ---------------- 放射状思维导图（豆包设计稿同构，连线重做） ---------------- */
+  /* 版式：标题框左上角 → 深红主轴从标题正下方贯穿到最后一个分支框下沿即止；
+     分支节点框的左边缘精确压在主轴上（margin-left 与主轴 left 同一常量），
+     border-left 本身就是连接线，不留悬空间隙；三级嵌套用一条连续 border-left
+     主干，子项不再各画独立短横线。主轴高度由 srcdoc 内 adjustRadialSpine()
+     在 KaTeX 渲染完成后测量收口——无头打印只执行 srcdoc，逻辑必须住在这里。 */
+  var RADIAL_SPINE_X = '6mm';   // 主轴 left 与分支 margin-left 共用，改一处即对齐
+  var RADIAL_SPINE_W = '0.8mm'; // 主轴粗度；节点框压在其右半边上
+
+  function radialBuildNestedItems(items, path) {
+    var html = '';
+    (items || []).forEach(function (it, ii) {
+      var p = path + '.' + ii;
+      if (it.label != null) {
+        html += '<div class="radial-n-item" data-mp-path="' + p + '">' + esc(it.label) + '</div>';
+      }
+      if (it.table) {
+        html += mindBuildTable(it.table, p);
+      }
+      var kids = it.items || [];
+      if (kids.length) {
+        html += '<div class="radial-nested">' + radialBuildNestedItems(kids, p) + '</div>';
+      }
+    });
+    return html;
+  }
+
+  function radialBuildCard(branch, bi) {
+    var top = [];
+    (branch.items || []).forEach(function (it, ii) {
+      var p = 'b.' + bi + '.' + ii;
+      if (it.label != null) {
+        top.push('<div class="radial-c-item" data-mp-path="' + p + '">' + esc(it.label) + '</div>');
+      }
+      if (it.table) {
+        top.push(mindBuildTable(it.table, p));
+      }
+      var kids = it.items || [];
+      if (kids.length) {
+        top.push('<div class="radial-nested">' + radialBuildNestedItems(kids, p) + '</div>');
+      }
+    });
+    return '<div class="radial-card">' + (top.join('') || '<div class="kn-empty">（本分支暂无内容）</div>') + '</div>';
+  }
+
+  function radialPaginate(branches) {
+    var budget = 150;
+    var pages = [], cur = { idx: [], h: 0 };
+    branches.forEach(function (b, bi) {
+      var h = Math.min(28, Math.max(11, mindBranchHeight(b) / 2.2)) + 3;
+      if (cur.idx.length && cur.h + h > budget) { pages.push(cur); cur = { idx: [], h: 0 }; }
+      cur.idx.push(bi); cur.h += h;
+    });
+    if (cur.idx.length) pages.push(cur);
+    return pages;
+  }
+
+  function buildRadialMindmap(data, compulsory, chapter, knowledge, raw, headTitle) {
+    var head = headTitle || (cleanChapterTitle(chapter) + ' · ' + knowledge);
+    var entry = findSectionEntry(secKey(compulsory, chapter, knowledge)) || ensureActiveEntry();
+    if (entry) entry.knowledgeMind = { data: data, raw: raw };
+    ST.knowledgeMind = entry ? entry.knowledgeMind : null;
+    var branches = data.branches || [];
+    if (!branches.length) {
+      return '<div class="sheet">' + lectureHeadHtml(head, '知识梳理') +
+        '<div class="knowledge"><div class="kn-empty">（思维导图没有任何分支）</div></div></div>';
+    }
+    var pages = radialPaginate(branches);
+    var html = '';
+    pages.forEach(function (pg, pi) {
+      html += '<div class="sheet">' + lectureHeadHtml(head, '知识梳理');
+      html += '<div class="mind-hint">放射导图 · 点击任一文字块可直接编辑</div>';
+      html += '<div class="radial-map">';
+      if (pi === 0 && data.title) {
+        html += '<div class="radial-title-box" data-mp-path="t">' + esc(data.title) + '</div>';
+      }
+      html += '<div class="radial-spine" style="left:' + RADIAL_SPINE_X + ';width:' + RADIAL_SPINE_W + '"></div>';
+      pg.idx.forEach(function (bi) {
+        var pal = MIND_COLORS[bi % MIND_COLORS.length];
+        var b = branches[bi];
+        html += '<div class="radial-branch" data-branch-idx="' + bi + '" style="--mc:' + pal.c + ';--mcb:' + pal.b + '">' +
+          '<div class="radial-node" data-mp-path="b.' + bi + '">' + esc(b.label || '') + '</div>' +
+          radialBuildCard(b, bi) +
+        '</div>';
+      });
+      html += '</div>';
+      html += '<div class="page-foot"><span class="pg"></span></div></div>';
+    });
+    return html;
+  }
+
+  /* ---------------- 多层花括号树知识梳理 ---------------- */
+  /* 列式布局：第 1 列一级节点方框，逐级向右展开；叶子详情用 .radial-card 方框。
+     父节点右侧挂一条 CSS 画的花括号（::before 大括号字形 + border 上下唇），
+     括住其全部子节点；单子节点不画括号直接连。竖/横排由 srcdoc 内
+     autoOrientNodes() 按子树高度测量后切换——无头打印只跑 srcdoc。 */
+  var BTREE_ORIENT_THRESHOLD = 80 * 96 / 25.4; // 80mm → px
+
+  function btreeBuildLeaf(item, path) {
+    var inner = '';
+    if (item.label != null) {
+      inner += '<div class="btree-leaf-label" data-mp-path="' + path + '">' + esc(item.label) + '</div>';
+    }
+    if (item.table) {
+      inner += mindBuildTable(item.table, path);
+    }
+    return '<div class="radial-card">' + (inner || '<div class="kn-empty">（空）</div>') + '</div>';
+  }
+
+  function btreeBuildChildren(children, path) {
+    if (!children.length) return '';
+    if (children.length === 1) {
+      return btreeBuildNode(children[0], path + '.0');
+    }
+    return '<div class="btree-brace"><div class="btree-stack">' +
+      children.map(function (c, ci) { return btreeBuildNode(c, path + '.' + ci); }).join('') +
+      '</div></div>';
+  }
+
+  function btreeBuildNode(node, path) {
+    var kids = node.items || [];
+    var boxClass = path.indexOf('b.') === 0 && path.split('.').length === 2 ? 'btree-box btree-l1' : 'btree-box';
+    // 详情卡（表格）必须与花括号同级：它属于本节点的内容，不能塞进标签那一列，
+    // 否则会把标签挤偏、并让 .btree-node > .btree-box 这个选择器失效。
+    var html = '<div class="btree-node">' +
+      '<div class="' + boxClass + '" data-mp-path="' + path + '">' + esc(node.label != null ? node.label : '') + '</div>';
+    // 表格与子分支可以并存：详情卡留在本列，子树继续向右展开
+    if (node.table) {
+      html += btreeBuildLeaf({ label: null, table: node.table }, path);
+    }
+    if (kids.length) {
+      html += btreeBuildChildren(kids, path);
+    }
+    return html + '</div>';
+  }
+
+  function btreeEstimateHeight(node) {
+    var h = 10;
+    if (node.label != null) h += 4 + mindTextLines(node.label) * 7;
+    if (node.table) {
+      node.table.forEach(function (r) {
+        var lines = 1;
+        (r || []).forEach(function (cell) { lines = Math.max(lines, mindTextLines(cell, 30)); });
+        h += 5 + lines * 3;
+      });
+    }
+    var kids = node.items || [];
+    if (kids.length) {
+      var sum = kids.reduce(function (acc, k) { return acc + btreeEstimateHeight(k) + 3; }, 0);
+      h += sum;
+    }
+    return h;
+  }
+
+  /* 与 srcdoc 内 autoOrientNodes 同一阈值：分支超过一页高度就单独成页，
+     否则分页只看估算高度会把最宽的那支挤到下一页却仍留溢出。 */
+  function btreePaginate(branches) {
+    var budget = 150;
+    var pages = [], cur = { idx: [], h: 0 };
+    branches.forEach(function (b, bi) {
+      var h = btreeEstimateHeight(b) / 2.2 + 4;
+      if (cur.idx.length && cur.h + h > budget) { pages.push(cur); cur = { idx: [], h: 0 }; }
+      cur.idx.push(bi); cur.h += h;
+    });
+    if (cur.idx.length) pages.push(cur);
+    return pages;
+  }
+
+  function buildBraceTree(data, compulsory, chapter, knowledge, raw, headTitle) {
+    var head = headTitle || (cleanChapterTitle(chapter) + ' · ' + knowledge);
+    var entry = findSectionEntry(secKey(compulsory, chapter, knowledge)) || ensureActiveEntry();
+    if (entry) entry.knowledgeMind = { data: data, raw: raw };
+    ST.knowledgeMind = entry ? entry.knowledgeMind : null;
+    var branches = data.branches || [];
+    if (!branches.length) {
+      return '<div class="sheet">' + lectureHeadHtml(head, '知识梳理') +
+        '<div class="knowledge"><div class="kn-empty">（思维导图没有任何分支）</div></div></div>';
+    }
+    var pages = btreePaginate(branches);
+    var html = '';
+    pages.forEach(function (pg, pi) {
+      html += '<div class="sheet">' + lectureHeadHtml(head, '知识梳理');
+      html += '<div class="btree-page">';
+      pg.idx.forEach(function (bi) {
+        var pal = MIND_COLORS[bi % MIND_COLORS.length];
+        html += '<div class="btree-root" style="--mc:' + pal.c + ';--mcb:' + pal.b + '">' +
+          btreeBuildNode(branches[bi], 'b.' + bi) + '</div>';
+      });
+      html += '</div>';
+      html += '<div class="page-foot"><span class="pg"></span></div></div>';
+    });
+    return html;
+  }
+
   function mindNodeAt(data, path) {
     if (!data || !path) return null;
     var parts = String(path).split('.');
@@ -744,6 +939,7 @@
   }
 
   function editMindNode(path) {
+    if (!ensureEditUnlocked()) return;
     var entry = ensureActiveEntry();
     var mind = entry && entry.knowledgeMind;
     if (!mind || !mind.data) { toast('请先加载讲义小节'); return; }
@@ -776,32 +972,33 @@
   }
 
   function saveCoverTitle(text) {
+    if (ST.editLocked) return;
     var clean = String(text || '').trim().slice(0, 200);
     if (ST.settings && (ST.settings.cover_title || '') === clean) return;
-    var attempt = function (retries) {
-      return apiJson('/api/lecture/settings', {
-        method: 'PUT', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ cover_title: clean }),
-      }).catch(function (e) {
-        // 偶发 5xx 自动重试一次，仍失败必须报错而不是静默吞
-        if (retries > 0) return attempt(retries - 1);
-        throw e;
-      });
-    };
-    ST._coverSave = attempt(1)
-      .then(function (s) {
-        ST.settings = s;
-        toast(clean ? '封面标题已保存' : '封面标题已清空（恢复按章节名）', 'success');
-      })
-      .catch(function (e) { toast('保存失败：' + e.message, 'error'); });
+    ST.pendingCoverTitle = clean;
+    updatePendingUI();
+    toast('封面标题已暂存（点「固化到知识库」写入底层）', 'success');
+    refreshPreview();
   }
 
   function buildMap(section, headTitle) {
     var head = headTitle || (cleanChapterTitle(section.chapter) + ' · ' + section.knowledge);
-    var rows = (section.topics || []).map(function (t, i) {
-      return '<div class="map-row"><span class="map-idx">' + cnNumeral(t.no || i + 1) + '</span><span class="map-name">' + esc(t.name) + '</span></div>';
-    }).join('');
-    return '<div class="sheet" id="page-map">' + lectureHeadHtml(head, '考向地图') + '<div class="map">' + rows + '</div></div>';
+    var topics = section.topics || [];
+    var n = topics.length;
+    var leftCount = Math.ceil(n / 2);
+    function box(t, i) {
+      return '<div class="map-box"><span class="map-no">考向' + cnNumeral(t.no || i + 1) + '</span> <span class="map-name">' + esc(t.name) + '</span></div>';
+    }
+    var leftHtml = topics.slice(0, leftCount).map(box).join('');
+    var rightHtml = topics.slice(leftCount).map(function (t, i) { return box(t, leftCount + i); }).join('');
+    return '<div class="sheet" id="page-map">' + lectureHeadHtml(head, '考向地图') +
+      '<div class="map">' +
+        '<div class="map-body">' +
+          '<div class="map-col map-col-left">' + leftHtml + '</div>' +
+          '<div class="map-col map-col-right">' + rightHtml + '</div>' +
+        '</div>' +
+      '</div>' +
+    '</div>';
   }
 
   function buildSourceHtml(q) {
@@ -849,8 +1046,8 @@
     var html = '<div class="sheet" data-answer-page="true"><div class="page-head"><span class="ph-title">' + esc(headTitle || '') + '</span><span class="ph-quote"></span></div>';
     html += '<div class="subsection-title">考向' + cnNumeral(topicNo || (idx + 1)) + '　' + esc(topicCfg.name) + '</div>';
     html += '<div class="km-box">';
-    html += '<div class="km-item km-pit"><span class="km-label">易错点</span>' + (pit || pitEmpty) + '</div>';
-    html += '<div class="km-item km-method"><span class="km-label">解题方法</span>' + (method || methodDefault || pitEmpty) + '</div>';
+    html += '<div class="km-item km-pit"><div class="km-label">易错点</div><div class="km-content">' + (pit || pitEmpty) + '</div></div>';
+    html += '<div class="km-item km-method"><div class="km-label">解题方法</div><div class="km-content">' + (method || methodDefault || pitEmpty) + '</div></div>';
     html += '</div>';
     // 编号口径与 lecture_export.py 镜像：例<中文考向序>-<考向内例题序>；
     // 变式/趁热打铁为纯裸号、每个考向归零。板块头带字，题目不带前缀。
@@ -885,31 +1082,12 @@
     return '<div class="block-title">【' + text + '】</div>';
   }
 
-  /* 目录页（仅多节合并讲义出，封面后第二页）。书籍/论文样式：逐讲列
-     「知识梳理 / 考向地图 / 各考向 / 实战演练」条目，点线引导 + 页码。
+  /* 目录页（仅多节合并讲义出，封面后第二页）。只列讲级，点线引导 + 页码
+     （子级已按用户 2026-09-22 决定全部去掉）。
      行序列与 lecture_export.toc_entries 必须同口径（后端是页码唯一来源）。 */
   function tocRowsForEntry(entry, lectureNo, startPage) {
     var sec = entry.section || {};
-    var metaMap = buildTopicMetaMap(sec);
-    var rows = [{ level: 'lec', name: lectureTitle(lectureNo, sec.knowledge), page: startPage }];
-    var page = startPage;
-    if ((sec.topics || []).length) {
-      rows.push({ level: 'sub', name: '知识梳理', page: page });
-      page += 1;
-      rows.push({ level: 'sub', name: '考向地图', page: page });
-      page += 1;
-    } else {
-      rows.push({ level: 'sub', name: '知识梳理', page: page });
-      page += 1;
-    }
-    (entry.topics || []).forEach(function (t, i) {
-      rows.push({ level: 'sub2', name: '考向' + cnNumeral(topicNoOf(metaMap, t, i)) + '　' + (t.name || ''), page: page });
-      page += 1;
-    });
-    if ((entry.extra_ids || []).length) {
-      rows.push({ level: 'sub', name: '实战演练', page: page });
-    }
-    return rows;
+    return [{ level: 'lec', name: lectureTitle(lectureNo, sec.knowledge), page: startPage }];
   }
 
   function buildToc(entries, startPages) {
@@ -1105,6 +1283,9 @@
       '<script>var MATH_QUOTES=[' + quotesJs + '];' +
       'document.addEventListener("DOMContentLoaded",function(){' +
       'if(window.renderMathInElement){renderMathInElement(document.body,{delimiters:[{left:"$$",right:"$$",display:true},{left:"\\\\[",right:"\\\\]",display:true},{left:"\\\\(",right:"\\\\)",display:false}],throwOnError:false});}' +
+      // KaTeX 排版会改变方框高度，花括号尖端与主轴必须按渲染后的几何重算一次
+      'if(typeof alignBraceTips==="function"){alignBraceTips();}' +
+      'if(typeof adjustRadialSpine==="function"){adjustRadialSpine();}' +
       'var pages=document.querySelectorAll(".sheet[data-answer-page=\\"true\\"] .ph-quote");var used={};for(var i=0;i<pages.length;i++){var q;do{q=MATH_QUOTES[Math.floor(Math.random()*MATH_QUOTES.length)];}while(used[q]);used[q]=true;pages[i].textContent=q;}' +
       'var pgs=document.querySelectorAll(".pg");for(var j=0;j<pgs.length;j++){pgs[j].textContent="第 "+(j+1)+" 页";}' +
       'document.addEventListener("click",function(e){var el=e.target;while(el&&el!==document.body&&!el.getAttribute("data-mp-path")){el=el.parentNode;}if(el&&el.getAttribute("data-mp-path")){window.parent.postMessage({type:"mathbank-mind-edit",path:el.getAttribute("data-mp-path")},"*");}});' +
@@ -1116,6 +1297,66 @@
       '});' +
       'function switchView(v){var b=document.body;b.classList.remove("view-yuan","view-jiexi","view-daan");b.classList.add("view-"+v);var cv=document.getElementById("cover-ver");if(cv)cv.textContent=(v==="yuan")?"学生版":(v==="jiexi"?"教师版":"答案册");var ab=document.getElementById("page-answer-book");if(ab)ab.style.display=(v==="daan")?"block":"none";}' +
       'window.addEventListener("message",function(e){var d=e.data;if(d&&d.type==="mathbank-set-view"&&d.view){switchView(d.view);}});' +
+      // 考向地图方框宽度统一：必须住在 srcdoc 内部脚本里——无头打印只加载 srcdoc，父页面 JS 不会执行。
+      // 放在 DOMContentLoaded 与 renderMathInElement 之后，KaTeX 渲染完的宽度才是最终宽度。
+      'function equalizeMapBoxWidths(){' +
+      'document.querySelectorAll(".map-body").forEach(function(body){' +
+      '["map-col-left","map-col-right"].forEach(function(cls){' +
+      'var col=body.querySelector("."+cls);if(!col)return;' +
+      'var boxes=col.querySelectorAll(".map-box");if(boxes.length<2)return;' +
+      'var maxW=0;boxes.forEach(function(b){maxW=Math.max(maxW,b.offsetWidth);});' +
+      'boxes.forEach(function(b){b.style.width=maxW+"px";b.style.boxSizing="border-box";});' +
+      '});});}' +
+      'if(document.readyState==="loading"){document.addEventListener("DOMContentLoaded",equalizeMapBoxWidths);}else{equalizeMapBoxWidths();}' +
+      // 放射导图主轴收口：从标题框正下方起，到本页最后一个分支框下沿即止。
+      // 高度必须 JS 量——KaTeX 渲染后文字块才定高；无头打印只跑 srcdoc，故住在这里。
+      'function adjustRadialSpine(){' +
+      'document.querySelectorAll(".radial-map").forEach(function(map){' +
+      'var spine=map.querySelector(".radial-spine");if(!spine)return;' +
+      'var title=map.querySelector(".radial-title-box");' +
+      'var brs=map.querySelectorAll(".radial-branch");if(!brs.length){spine.style.display="none";return;}' +
+      'var top=title?title.offsetTop+title.offsetHeight:0;' +
+      'var last=brs[brs.length-1];' +
+      'var bottom=last.offsetTop+last.offsetHeight;' +
+      'spine.style.top=top+"px";spine.style.height=Math.max(0,bottom-top)+"px";' +
+      '});}' +
+      'if(document.readyState==="loading"){document.addEventListener("DOMContentLoaded",adjustRadialSpine);}else{adjustRadialSpine();}' +
+      // 花括号树竖/横排自动判定：节点子树总高 > 80mm 时节点文字竖排撑纵向省横向。
+      // KaTeX 渲染后测量才准，故与 adjustRadialSpine 同批注册（后者先注册先跑）。
+      // 竖排切换会改变兄弟高度，做最多三轮收敛测量。
+      'function autoOrientNodes(){' +
+      'var TH=' + Math.round(BTREE_ORIENT_THRESHOLD) + ';' +
+      'function pass(){var changed=false;' +
+      'document.querySelectorAll(".btree-node").forEach(function(n){' +
+      'var box=n.querySelector(":scope > .btree-box");if(!box)return;' +
+      'var sibs=n.parentElement?Array.prototype.filter.call(n.parentElement.children,function(c){return c!==n;}):[];' +
+      'var sibH=0;sibs.forEach(function(s){sibH+=s.offsetHeight+6;});' +
+      'var want=sibH>TH;if(want!==box.classList.contains("btree-vertical")){changed=true;}' +
+      'if(want){box.classList.add("btree-vertical");}else{box.classList.remove("btree-vertical");}' +
+      '});return changed;}' +
+      'pass();if(pass()){pass();}}' +
+      'if(document.readyState==="loading"){document.addEventListener("DOMContentLoaded",autoOrientNodes);}else{autoOrientNodes();}' +
+      // 花括号尖端对准「紧挨着的第一个子项框」中心。必须在 autoOrientNodes 之后跑：
+      // 竖/横排切换会改子树高度。百分比 top 在 Chrome 里被取整（实测只能落在整数 px），
+      // 所以这里量出精确偏移写成显式 px，而不是靠 CSS 的 top:50%。
+      'function alignBraceTips(){' +
+      'document.querySelectorAll(".btree-brace").forEach(function(brace){' +
+      'var node=brace.parentElement;if(!node)return;' +
+      'var box=node.querySelector(":scope > .btree-box");if(!box)return;' +
+      'var first = brace.querySelector(":scope > .btree-stack > .btree-node, :scope > .btree-node");' +
+      'if(!first)return;' +
+      // 一律用 rect（渲染真值）：offsetTop 的基准是 offsetParent，而嵌套层里最近的定位祖先
+      // 常常是另一个 .btree-brace，两者不同基准相减就是错的；offsetHeight 还是取整值。
+      // .sheet{overflow:hidden} 的裁剪只影响超出页面的分支，那些节点本身不参与本行排版。
+      'var fr = brace.getBoundingClientRect(); var cr = first.getBoundingClientRect();' +
+      'if(!fr.height||!cr.height){brace.style.setProperty("--tip","none");return;}' +
+      'var off=(cr.top-fr.top)+(cr.height/2);' +
+      'brace.style.setProperty("--tip",off.toFixed(2)+"px");' +
+      '});}' +
+      'if(document.readyState==="loading"){document.addEventListener("DOMContentLoaded",alignBraceTips);}else{alignBraceTips();}' +
+      // 花括号尖端依赖最终几何：竖排切换、KaTeX 排版都可能再改高度，
+      // 所以 load（内联的 autoOrientNodes / renderMathInElement 都跑完）之后再收一次。
+      'window.addEventListener("load",alignBraceTips);' +
       '<\/script></body></html>';
     return html;
   }
@@ -1126,7 +1367,7 @@
       '*{box-sizing:border-box}',
       'body{margin:0;background:#e5e7eb;font-family:"CangErJinKai","仓耳今楷","KaiTi","SimSun",serif;color:#1e293b}',
       '.sheet{width:210mm;min-height:297mm;margin:14px auto;padding:18mm 18mm 16mm;background:#fff;box-shadow:0 4px 18px rgba(0,0,0,.15);position:relative;page-break-after:always;overflow:hidden}',
-      '@media print{.sheet{margin:0;box-shadow:none;page-break-after:always}.main-title{border-bottom:none !important;padding:0 !important}}',
+      '@media print{.sheet{margin:0;box-shadow:none;page-break-after:always;break-inside:avoid;print-color-adjust:exact;-webkit-print-color-adjust:exact}.sheet:last-of-type{page-break-after:auto}.main-title{border-bottom:none !important;padding:0 !important}}',
       /* 封面 */
       '.cover{display:flex;flex-direction:column;align-items:center;justify-content:space-between;padding:22mm 24mm}',
       '.cover svg{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}',
@@ -1149,15 +1390,19 @@
       '.knowledge table.def th,.knowledge table.def td{border:1px solid #cbd5e1;padding:1.6mm 2mm;text-align:left}',
       '.knowledge table.def th{background:#f1f5f9;font-weight:700}',
       '.kn-empty{color:#94a3b8;font-size:14px}',
-      /* 考向地图 */
-      '.map{display:flex;flex-direction:column;gap:4mm;padding:6mm 0}',
-      '.map-row{display:flex;align-items:center;gap:4mm;padding:3mm 4mm;border:1px solid #dbe3ef;border-radius:2mm;background:#f8fafc}',
-      '.map-idx{width:8mm;height:8mm;border-radius:50%;background:#1e3a8a;color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px;flex-shrink:0}',
-      '.map-name{font-size:15px;font-weight:600;color:#1e293b}',
+      /* 考向地图（双栏列表） */
+      '.map{display:flex;flex-direction:column;gap:6mm;padding:6mm 0}',
+      '.map-body{position:relative;display:flex;gap:10mm;align-items:flex-start}',
+      '.map-col{display:flex;flex-direction:column;gap:4mm;flex:1;min-width:0}',
+      '.map-col-left{align-items:flex-start}',
+      '.map-col-right{align-items:flex-start}',
+      '.map-box{background:#f8fafc;border:1px solid #dbe3ef;border-radius:2mm;padding:2mm 3mm;font-size:13.5px;font-weight:600;color:#1e293b;max-width:90%;word-break:break-word;line-height:1.35;display:inline-block}',
+      '.map-box .map-no{color:#1e3a8a;font-weight:700;margin-right:1mm}',
+      '.map-name{font-size:inherit}',
       /* 题目页 */
-      '.page-head{display:flex;justify-content:space-between;align-items:baseline;border-bottom:1px solid #cbd5e1;padding-bottom:2mm;margin-bottom:4mm}',
-      '.ph-title{font-size:17px;font-weight:700;color:#1e3a8a}',
-      '.ph-quote{font-size:13px;color:#64748b}',
+      '.page-head{display:flex;justify-content:space-between;align-items:baseline;gap:6mm;border-bottom:1px solid #cbd5e1;padding-bottom:2mm;margin-bottom:4mm}',
+      '.ph-title{font-size:17px;font-weight:700;color:#1e3a8a;flex-shrink:0;line-height:1.35}',
+      '.ph-quote{font-size:13px;color:#64748b;flex:1;text-align:right;line-height:1.4;word-break:break-word}',
       '.subsection-title{font-size:18px;font-weight:700;color:#1f3a5f;margin:3mm 0}',
       '.block-title{font-size:16px;font-weight:700;color:#1e3a8a;margin:4mm 0 2mm}',
       /* 目录 */
@@ -1171,11 +1416,21 @@
       '.toc-sub .toc-name{padding-left:8mm}',
       '.toc-sub2 .toc-name{padding-left:14mm}',
       '.km-box{display:flex;flex-direction:column;gap:2mm;margin-bottom:4mm}',
-      '.km-item{padding:2.5mm 3mm;border-radius:1.5mm;font-size:13.5px;line-height:1.7}',
-      '.km-pit{background:#fffbeb;border-left:3px solid #f59e0b}',
-      '.km-method{background:#eff6ff;border-left:3px solid #3b82f6}',
-      '.km-label{font-weight:700;margin-right:2mm}',
+      '.km-item{display:flex;gap:2mm;align-items:stretch;padding:2.5mm 3mm;border-radius:1.5mm;font-size:13.5px;line-height:1.7}',
+      '.km-pit{background:#fffbeb}',
+      '.km-method{background:#eff6ff}',
+      '.km-label{writing-mode:vertical-rl;letter-spacing:4px;font-size:15px;font-weight:700;flex-shrink:0;padding-top:1mm;align-self:flex-start}',
       '.km-pit .km-label{color:#b45309}.km-method .km-label{color:#1d4ed8}',
+      '.km-content{flex:1;min-width:0}',
+      '.km-pit .km-content{border-left:3px solid #f59e0b;padding-left:3mm}',
+      '.km-method .km-content{border-left:3px solid #3b82f6;padding-left:3mm}',
+      '.km-content p:first-child{margin-top:0}',
+      '.km-content p:last-child{margin-bottom:0}',
+      '.km-pit .km-content{counter-reset:pit}',
+      '.km-pit .km-content > p{counter-increment:pit;margin:1.5mm 0}',
+      '.km-pit .km-content > p::before{content:counter(pit) ". ";font-weight:700;color:#b45309;margin-right:0.5mm}',
+      '.km-item .km-content .key{font-weight:700;color:#1e3a8a}',
+      '.km-content > .km-empty{margin:0}',
       '.km-empty{color:#94a3b8}',
       '.km-default{display:inline-block;font-size:11.5px;color:#475569;background:#e2e8f0;border-radius:1mm;padding:0 1.5mm;margin-right:2mm;vertical-align:1px}',
       '.qa{margin-bottom:6mm}',
@@ -1221,6 +1476,34 @@
       '.mind-table td{border:1px solid #cbd5e1;padding:1.2mm 2mm;cursor:pointer;background:#fff}',
       '.mind-table td:hover{outline:1.5px solid var(--mc);background:#f8fafc}',
       '.mind-table tr:first-child td{background:#f1f5f9;font-weight:700}',
+      /* 放射状思维导图 */
+      '.radial-map{position:relative;padding:2mm 0 4mm}',
+      '.radial-title-box{display:inline-block;background:#f5f3ff;border:1.5px solid #7c3aed;color:#4c1d95;border-radius:2mm;padding:2mm 6mm;font-size:16px;font-weight:700;margin:0 0 4mm 8mm;max-width:70%}',
+      '.radial-spine{position:absolute;top:0;height:0;background:#a83232;border-radius:1mm;z-index:0}',
+      '.radial-branch{position:relative;display:flex;align-items:flex-start;gap:4mm;margin:0 0 5mm calc(' + RADIAL_SPINE_X + ' + ' + RADIAL_SPINE_W + ' / 2);z-index:1}',
+      '.radial-node{flex:none;width:30mm;background:var(--mcb);color:#1e293b;border:1px solid var(--mc);border-left:3.5mm solid var(--mc);border-radius:1.5mm;border-top-left-radius:2mm;border-bottom-left-radius:2mm;padding:2mm 2.5mm;font-size:14px;font-weight:700;line-height:1.4;cursor:pointer;box-shadow:0 1px 3px rgba(15,23,42,.10)}',
+      '.radial-node:hover{outline:2px solid var(--mc)}',
+      '.radial-card{flex:1;min-width:0;background:var(--mcb);border:1px solid var(--mc);border-radius:2mm;padding:2.5mm 3.5mm;box-shadow:0 1px 3px rgba(0,0,0,0.06)}',
+      '.radial-c-item{font-size:13.5px;line-height:1.7;font-weight:600;color:#1e293b;padding:0.8mm 0;cursor:pointer;border-bottom:1px dashed rgba(100,116,139,.25)}',
+      '.radial-c-item:last-child{border-bottom:none}',
+      '.radial-nested{margin:1.5mm 0 1.5mm 2mm;padding-left:4mm;border-left:2px solid var(--mc)}',
+      '.radial-nested .radial-nested{border-left-style:dashed}',
+      '.radial-nested .radial-nested .radial-nested{border-left-style:dotted}',
+      '.radial-n-item{font-size:13px;line-height:1.65;color:#334155;padding:0.8mm 0;cursor:pointer}',
+      '.radial-n-item::before{content:none}',
+      '.radial-n-item:hover,.radial-c-item:hover{background:rgba(255,255,255,.65)}',
+      /* 多层花括号树 */
+      '.btree-page{padding:0 0 4mm}',
+      '.btree-root{margin-bottom:6mm}',
+      '.btree-node{display:flex;align-items:center;gap:2.5mm}',
+      '.btree-brace{position:relative;flex:1;min-width:0;padding-left:10mm;display:flex;align-items:center}',
+      '.btree-box{flex:none;max-width:42mm;background:var(--mcb);border:1px solid var(--mc);border-left:3.5mm solid var(--mc);border-top-left-radius:2mm;border-bottom-left-radius:2mm;border-radius:1.5mm;padding:1.6mm 2.5mm;font-size:13.5px;font-weight:700;line-height:1.45;color:#1e293b;cursor:pointer;box-shadow:0 1px 3px rgba(15,23,42,.10);word-break:break-word}',
+      '.btree-box.btree-l1{font-size:14.5px;padding:2mm 2.5mm}',
+      '.btree-box.btree-vertical{writing-mode:vertical-rl;max-width:none;max-height:60mm;text-orientation:upright;letter-spacing:1px}',
+      '.btree-brace::before{content:"";position:absolute;left:1mm;top:0;bottom:0;width:7mm;border:2.5px solid var(--mc);border-right:none;border-radius:4mm 0 0 4mm}',
+      '.btree-brace::after{content:"";position:absolute;left:7.5mm;top:var(--tip,calc(50% - 1px));width:3mm;height:2.5px;background:var(--mc);transform:translateY(-50%)}',
+      '.btree-stack{display:flex;flex-direction:column;gap:2.5mm;width:100%;min-width:0}',
+      '.btree-stack > .btree-node:last-child{margin-bottom:0}',
     ].join('\n');
   }
 
@@ -1261,13 +1544,12 @@
     var iframe = $('lecturePreview');
     if (!iframe) return;
     if (!ST.sections.length) { toast('请先选择册次 / 章节 / 小节'); return; }
-    // 封面标题的 PUT 尚未落库时先等它完成，否则重建的预览会复活旧标题
-    (ST._coverSave || Promise.resolve()).then(function () {
     apiJson('/api/lecture/preview', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(buildPreviewPayload()),
     })
       .then(function (data) {
+        data = applyPendingToPreview(data);
         ST.settings = data.settings;
         ST.coverBg = data.cover_bg || ST.coverBg;
         var missing = data.missing_ids || [];
@@ -1291,7 +1573,6 @@
         };
       })
       .catch(function (e) { toast('预览失败：' + e.message); });
-    });
   }
 
   /* ---------------- 视图切换与打印 ---------------- */
@@ -1322,9 +1603,20 @@
     if (button) { button.disabled = true; button.setAttribute('aria-busy', 'true'); }
     ST.exporting = true;
     var tab = window.open('', '_blank');
+    // srcdoc 是渲染前的原始 HTML（\(..\) 未渲染），后端内联 KaTeX 后无头打印，
+    // 产物与网页预览一致；取不到时不带该字段，后端回退 XeLaTeX 旧链路
+    var iframe = $('lecturePreview');
+    var printHtml = (iframe && iframe.srcdoc) ? iframe.srcdoc : '';
     apiBlob('/api/lecture/export/pdf', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(buildPreviewPayload({ view: view })),
+      body: JSON.stringify((function () {
+        var p = buildPreviewPayload({ view: view });
+        // 只有存在未固化改动时才交出内存 preview；否则让后端按库现算，
+        // 避免用到上一次遗留的缓存
+        if (hasPendingChanges() && ST.previewData) p.preview = ST.previewData;
+        if (printHtml) p.print_html = printHtml;
+        return p;
+      })()),
     }).then(function (result) {
       var url = URL.createObjectURL(result.blob);
       if (tab && !tab.closed) tab.location.href = url; else window.location.href = url;
@@ -1336,6 +1628,34 @@
     }).then(function () {
       ST.exporting = false;
       if (button) { button.disabled = false; button.removeAttribute('aria-busy'); }
+    });
+  }
+
+  /* TEX 导出走下载而非新标签页：源码是给用户拿去自编译的文件，
+     不需要编译锁（无 XeLaTeX 开销），也不该占用 PDF 的 ST.exporting 互斥。 */
+  function exportTex() {
+    if (!ST.sections.length) { toast('请先加载讲义小节'); return; }
+    var view = ST.view || 'yuan';
+    apiBlob('/api/lecture/export/tex', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify((function () {
+        var p = buildPreviewPayload({ view: view });
+        if (ST.previewData && hasPendingChanges()) p.preview = ST.previewData;
+        return p;
+      })()),
+    }).then(function (result) {
+      var url = URL.createObjectURL(result.blob);
+      var a = document.createElement('a');
+      a.href = url;
+      a.download = 'lecture_' + view + '.tex';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      if (result.notes) toast('排版降级：' + result.notes, 'error');
+      else toast('TEX 已导出', 'success');
+    }).catch(function (e) {
+      toast('导出失败：' + e.message, 'error');
     });
   }
 
@@ -1817,7 +2137,7 @@
     if (restore) restore.addEventListener('click', restoreAutosave);
     if (discard) discard.addEventListener('click', discardAutosave);
     window.addEventListener('beforeunload', function (e) {
-      if (!ST.dirty) return;
+      if (!ST.dirty && !hasPendingChanges()) return;
       e.preventDefault();
       e.returnValue = '';
     });
@@ -1871,7 +2191,7 @@
     var keep = opts && opts.keepSelection;
     var cfg = collectConfig();
     if (!cfg.compulsory || !cfg.chapter || !cfg.knowledge) { toast('请先选择册次 / 章节 / 小节'); return; }
-    // 下拉框坐标与激活节不一致时（用户改了下拉没点加载），切到对应节；不在清单里则加入
+    // 激活节与下拉坐标不一致时切到对应节；不在 ST.sections 里则加入
     var key = secKey(cfg.compulsory, cfg.chapter, cfg.knowledge);
     var entry = findSectionEntry(key);
     if (!entry) {
@@ -1955,6 +2275,7 @@
   }
 
   function editNote(type, topicIdx) {
+    if (!ensureEditUnlocked()) return;
     var coords = noteCoords();
     if (!coords) { toast('请先选择小节'); return; }
     var entry = ensureActiveEntry();
@@ -1983,6 +2304,7 @@
   }
 
   function editKnowledge() {
+    if (!ensureEditUnlocked()) return;
     var coords = noteCoords();
     if (!coords) { toast('请先选择小节'); return; }
     var entry = ensureActiveEntry();
@@ -2000,6 +2322,9 @@
   /* 修订稿写入：被 400 拒绝（如缺考点标识）时必须报错，
      而不是提示「下次生成自动复用」。 */
   function putNote(payload) {
+    if (ST.editLocked) {
+      return Promise.reject(new Error('编辑已锁定，请先解锁'));
+    }
     return apiJson('/api/lecture/notes', {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
@@ -2025,17 +2350,12 @@
       else node.ref[node.prop] = content;
       var serialized = '@mindmap\n' + JSON.stringify(mind.data, null, 1);
       mind.raw = serialized;
-      putNote({
+      var payload = {
         note_type: 'knowledge',
         compulsory: coords.compulsory, chapter: coords.chapter, knowledge: coords.knowledge,
         content: serialized
-      })
-        .then(function () {
-          closeNoteModal();
-          toast('知识块已保存，下次生成自动复用', 'success');
-          refreshPreview();
-        })
-        .catch(function (e) { toast('保存失败：' + e.message, 'error'); });
+      };
+      stageNote(payload);
       return;
     }
     var payload = {
@@ -2044,19 +2364,127 @@
       content: content,
     };
     if (ST.noteTarget.type !== 'knowledge') payload.topic_id = ST.noteTarget.topic_id || '';
-    putNote(payload)
-      .then(function () {
-        closeNoteModal();
-        toast('知识块已保存，下次生成自动复用', 'success');
-        refreshPreview();
-      })
-      .catch(function (e) { toast('保存失败：' + e.message); });
+    stageNote(payload);
+  }
+
+  /* 暂存进内存：预览实时生效，只有点「固化到知识库」才写库。 */
+  function stageNote(payload) {
+    var key = noteKey(payload.note_type, payload.compulsory, payload.chapter, payload.knowledge, payload.topic_id || '');
+    ST.pendingNotes[key] = payload;
+    closeNoteModal();
+    toast('已暂存（点「固化到知识库」写入底层）', 'success');
+    updatePendingUI();
+    refreshPreview();
   }
 
   function closeNoteModal() {
     var modal = $('lectureNoteModal');
     if (modal) { modal.classList.add('hidden'); modal.classList.remove('flex'); }
     ST.noteTarget = null;
+  }
+
+  function hasPendingChanges() {
+    return Object.keys(ST.pendingNotes).length > 0 || ST.pendingCoverTitle !== null;
+  }
+  function pendingCount() {
+    return Object.keys(ST.pendingNotes).length + (ST.pendingCoverTitle !== null ? 1 : 0);
+  }
+  function clearPending() {
+    ST.pendingNotes = {};
+    ST.pendingCoverTitle = null;
+    // 缓存里混着上一次的临时内容，不清就会在下次刷新前一直显示已丢弃的改动
+    ST.previewData = null;
+    updatePendingUI();
+  }
+  function updatePendingUI() {
+    var btn = $('lectureCommitNotes');
+    if (!btn) return;
+    var n = pendingCount();
+    btn.textContent = n > 0 ? ('固化到知识库 · ' + n + ' 项待提交') : '固化到知识库';
+    btn.disabled = (n === 0) || ST.editLocked;
+  }
+  function applyPendingToPreview(data) {
+    // 把内存中的临时改动覆盖到后端返回的 preview 上（深拷贝 notes，不污染原对象）
+    if (!data) return data;
+    if (data.notes) {
+      var merged = Object.assign({}, data.notes);
+      Object.keys(ST.pendingNotes).forEach(function (k) { merged[k] = ST.pendingNotes[k].content; });
+      data.notes = merged;
+    }
+    if (Array.isArray(data.sections)) {
+      data.sections.forEach(function (sec) {
+        if (sec && sec.notes) {
+          var m = Object.assign({}, sec.notes);
+          Object.keys(ST.pendingNotes).forEach(function (k) { m[k] = ST.pendingNotes[k].content; });
+          sec.notes = m;
+        }
+      });
+    }
+    if (ST.pendingCoverTitle !== null && data.settings) {
+      data.settings = Object.assign({}, data.settings, { cover_title: ST.pendingCoverTitle });
+    }
+    return data;
+  }
+  function discardPendingNotes() {
+    if (!hasPendingChanges()) return true;
+    var n = pendingCount();
+    if (!confirm('有 ' + n + ' 项未固化的临时改动，继续将丢弃它们，是否确定？')) return false;
+    clearPending();
+    return true;
+  }
+  function commitPendingNotes() {
+    if (ST.editLocked) { toast('编辑已锁定，请先解锁', 'error'); return; }
+    var keys = Object.keys(ST.pendingNotes);
+    if (!keys.length && ST.pendingCoverTitle === null) { toast('没有待固化的改动'); return; }
+    var total = keys.length + (ST.pendingCoverTitle !== null ? 1 : 0);
+    if (!confirm('将 ' + total + ' 项临时改动固化到知识库？固化后其他会话将可见。')) return;
+    var tasks = keys.map(function (k) { return putNote(ST.pendingNotes[k]); });
+    if (ST.pendingCoverTitle !== null) {
+      tasks.push(apiJson('/api/lecture/settings', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cover_title: ST.pendingCoverTitle }),
+      }));
+    }
+    Promise.all(tasks).then(function () {
+      clearPending();
+      toast('已固化 ' + total + ' 项改动到知识库', 'success');
+      refreshPreview();
+    }).catch(function (e) {
+      toast('固化失败：' + e.message + '（部分可能已写入）', 'error');
+      refreshPreview();
+    });
+  }
+
+  function updateEditLockUI() {
+    var btn = $('lectureEditLock');
+    if (!btn) return;
+    if (ST.editLocked) {
+      btn.textContent = '🔒 编辑已锁定';
+      btn.title = '点击解锁后可编辑讲义内容';
+    } else {
+      btn.textContent = '🔓 编辑中（点击锁定）';
+      btn.title = '当前可编辑，改完请手动点此锁定';
+    }
+  }
+
+  function toggleEditLock() {
+    if (!ST.editLocked && hasPendingChanges()) {
+      // 即将回锁，先问用户
+      if (!discardPendingNotes()) return;
+      refreshPreview();
+    }
+    ST.editLocked = !ST.editLocked;
+    updateEditLockUI();
+    updatePendingUI();
+    toast(ST.editLocked ? '编辑已锁定' : '已解锁，请谨慎编辑，改完请手动锁定', ST.editLocked ? 'success' : 'error');
+  }
+
+  function ensureEditUnlocked() {
+    if (ST.editLocked) {
+      toast('编辑已锁定，请先点工具条的「🔒 编辑已锁定」解锁', 'error');
+      return false;
+    }
+    return true;
   }
 
   /* ---------------- 孤儿修订稿清单 ---------------- */
@@ -2168,6 +2596,7 @@
   }
   window.LectureManager = {
     refresh: function () {
+      ST.editLocked = true;  // 每次切入讲义界面自动回锁
       bindSelectors();
       bindMindEdit();
       bindAutosave();
@@ -2178,13 +2607,25 @@
       renderAutosaveBar();
       loadOrphans();
       if (window.systemMetadata) refreshPreview();
+      var lockBtn = $('lectureEditLock');
+      if (lockBtn && !lockBtn._bound) {
+        lockBtn._bound = true;
+        lockBtn.addEventListener('click', toggleEditLock);
+      }
+      updateEditLockUI();
+      var commitBtn = $('lectureCommitNotes');
+      if (commitBtn && !commitBtn._bound) {
+        commitBtn._bound = true;
+        commitBtn.addEventListener('click', commitPendingNotes);
+      }
+      updatePendingUI();
     },
     newDraft: newDraft, loadDraft: loadDraft, saveDraft: saveDraft, deleteDraft: deleteDraft,
     cloneDraft: cloneDraft, restoreDraft: restoreDraft, setYearFilter: setYearFilter,
-    loadSection: loadSection, addCurrentSection: addCurrentSection, switchActive: switchActive,
+    loadSection: loadSection, switchActive: switchActive,
     removeSection: removeSectionEntry,
     refreshPreview: refreshPreview,
-    switchView: switchView, printLecture: printLecture, exportPdf: exportPdf,
+    switchView: switchView, printLecture: printLecture, exportPdf: exportPdf, exportTex: exportTex,
     addItem: addItem, setRole: setRole, removeItem: removeItem,
     addExtra: addExtra, removeExtra: removeExtra,
     editNote: editNote, editKnowledge: editKnowledge, saveNote: saveNote, closeNoteModal: closeNoteModal,

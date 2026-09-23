@@ -211,16 +211,40 @@ def lecture_preview(
 
 @router.post("/api/lecture/export/pdf")
 def export_lecture_pdf(payload: dict, db: Session = Depends(get_db)):
-    """把当前讲义编排交给组卷引擎（exam-zh + XeLaTeX）编译 PDF。
+    """导出讲义 PDF。两条出口按载荷自动分派：
 
-    载荷与 preview 同口径：``sections`` 多节合并，或旧的单节三坐标字段。
-    知识块存的是 HTML / @mindmap JSON，按保守规则转换；转换不了的部分经
-    ``X-MathBank-Export-Notes`` 响应头回传（URL 编码、分号分隔），前端必须
-    显示而不是静默吞掉。编译失败返回本地 LaTeX 诊断，不触碰任何付费模型。
+    - 载荷带 ``print_html``（前端预览 iframe 的 srcdoc，渲染前原始 HTML）：
+      走无头 Chrome/Edge 打印（``mathbank.lecture_print``），产物与网页预览
+      所见即所得；浏览器缺失或打印失败返回 4xx/5xx，不静默回退——用户要能
+      看出这次没出 PDF 而不是拿到一份样式完全不同的兜底件。
+    - 不带 ``print_html``：旧的 exam-zh + XeLaTeX 编译链路，保留给试卷口径
+      与手动调用。知识块存的是 HTML / @mindmap JSON，按保守规则转换；转换
+      不了的部分经 ``X-MathBank-Export-Notes`` 响应头回传（URL 编码、分号
+      分隔），前端必须显示而不是静默吞掉。编译失败返回本地 LaTeX 诊断，
+      不触碰任何付费模型。
     """
     view = str(payload.get("view") or "jiexi")
     if view not in ("yuan", "jiexi", "daan"):
         raise HTTPException(status_code=400, detail="view 仅支持 yuan / jiexi / daan")
+
+    print_html = payload.get("print_html")
+    if print_html:
+        from mathbank.lecture_print import build_print_html, detect_chrome, print_to_pdf
+
+        if not detect_chrome():
+            raise HTTPException(
+                status_code=400,
+                detail="未找到 Chrome/Edge，无法用无头浏览器导出 PDF。"
+                       "请安装 Chrome 或改用【导出 TEX】。")
+        try:
+            pdf_bytes = print_to_pdf(build_print_html(str(print_html)))
+        except Exception as exc:
+            raise HTTPException(
+                status_code=500, detail="无头浏览器打印失败：%s" % exc)
+        headers = {
+            "Content-Disposition": 'inline; filename="lecture_%s.pdf"' % view,
+        }
+        return Response(content=pdf_bytes, media_type="application/pdf", headers=headers)
 
     preview = payload.get("preview") or _preview_payload(payload, db)
     tex_content, degradations = build_lecture_latex(preview, view=view)
@@ -234,8 +258,13 @@ def export_lecture_pdf(payload: dict, db: Session = Depends(get_db)):
     questions_pool = list((preview.get("questions") or []))
     for entry in (preview.get("sections") or []):
         questions_pool.extend(entry.get("questions") or [])
+    # 知识梳理正文（HTML / @mindmap）引用的插图同样进 ledger，否则 TEX 导出缺文件
+    notes_pool: dict = {}
+    for scope in [preview] + list(preview.get("sections") or []):
+        notes_pool.update(scope.get("notes") or {})
     image_paths = collect_lecture_images(
-        questions_pool, _main.UPLOAD_DIR, _main.UPLOAD_DIR_REL
+        questions_pool, _main.UPLOAD_DIR, _main.UPLOAD_DIR_REL,
+        notes=notes_pool,
     )
     pdf_bytes, log_or_err = _main.compile_tex_to_pdf(tex_content, image_paths)
     if not pdf_bytes:
@@ -256,6 +285,32 @@ def export_lecture_pdf(payload: dict, db: Session = Depends(get_db)):
     if degradations:
         headers["X-MathBank-Export-Notes"] = quote("；".join(degradations))
     return Response(content=pdf_bytes, media_type="application/pdf", headers=headers)
+
+
+@router.post("/api/lecture/export/tex")
+def export_lecture_tex(payload: dict, db: Session = Depends(get_db)):
+    """导出讲义 LaTeX 源码（.tex 文件）。与 PDF 同一份源码，供用户自编译。"""
+    view = str(payload.get("view") or "jiexi")
+    if view not in ("yuan", "jiexi", "daan"):
+        raise HTTPException(status_code=400, detail="view 仅支持 yuan / jiexi / daan")
+    preview = payload.get("preview") or _preview_payload(payload, db)
+    tex_content, degradations = build_lecture_latex(preview, view=view)
+    # 与 PDF 出口同口径：死图引用降级成可见占位，两条出口的源码才可能是同一份
+    from mathbank.lecture_export import sanitize_dead_image_references
+
+    tex_content, dead_img_notes = sanitize_dead_image_references(
+        tex_content, str(_main.UPLOAD_DIR))
+    degradations.extend(dead_img_notes)
+    headers = {
+        "Content-Disposition": 'attachment; filename="lecture_%s.tex"' % view,
+    }
+    if degradations:
+        headers["X-MathBank-Export-Notes"] = quote("；".join(degradations))
+    return Response(
+        content=tex_content.encode("utf-8"),
+        media_type="text/plain; charset=utf-8",
+        headers=headers,
+    )
 
 
 @router.get("/api/lecture/drafts")

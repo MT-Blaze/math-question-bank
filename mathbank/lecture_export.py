@@ -20,6 +20,12 @@ from mathbank.paper_helper import clean_content_for_latex, extract_choice_answer
 
 MIND_PREFIX = "@mindmap"
 
+# 知识块正文的图片引用三形态（collect_lecture_images 扫 notes 用）
+_NOTE_IMG_SRC_RE = re.compile(r"<img\b[^>]*?\bsrc\s*=\s*[\"']([^\"']+)[\"']", re.I)
+_NOTE_MARKDOWN_IMG_RE = re.compile(r"!\[[^\]]*\]\(\s*([^)\s]+)")
+_NOTE_INCLUDEGRAPHICS_RE = re.compile(
+    r"\\includegraphics\s*(?:\[[^\]]*\])?\s*\{([^}]*)\}")
+
 # 数学定界符与 mathbank.math_markdown 保持在同一集合上
 _MATH_DELIMITERS = (("$$", "$$"), (r"\[", r"\]"), (r"\(", r"\)"), ("$", "$"))
 
@@ -295,10 +301,50 @@ def note_body_to_latex(content: str) -> tuple[str, list[str]]:
     return html_to_latex(text)
 
 
+def iter_note_image_references(content: str) -> list:
+    r"""知识块正文里的插图引用：``<img src>``、Markdown ``![]()``、
+    ``\includegraphics{}``，以及 @mindmap JSON 的 "image" 字段（前向兼容）。
+
+    只吐原始引用字符串；校验与归一化交给 resolve_upload_asset。
+    """
+    text = str(content or "")
+    refs: list[str] = []
+    if not text:
+        return refs
+    if text.startswith(MIND_PREFIX):
+        try:
+            data = json.loads(text[len(MIND_PREFIX):].strip())
+        except ValueError:
+            data = None
+
+        def walk(node) -> None:
+            if isinstance(node, dict):
+                image = node.get("image")
+                if isinstance(image, str) and image.strip():
+                    refs.append(image.strip())
+                for value in node.values():
+                    walk(value)
+            elif isinstance(node, list):
+                for value in node:
+                    walk(value)
+
+        walk(data)
+        # 表格单元格里可能手滑贴了 markdown 图片，同一条正文继续走文本扫描
+    refs.extend(_NOTE_IMG_SRC_RE.findall(text))
+    refs.extend(_NOTE_MARKDOWN_IMG_RE.findall(text))
+    refs.extend(_NOTE_INCLUDEGRAPHICS_RE.findall(text))
+    return [r for r in refs if r]
+
+
 def collect_lecture_images(
-    questions: list, uploads_dir: str, url_prefix: str = "static/uploads"
+    questions: list, uploads_dir: str, url_prefix: str = "static/uploads",
+    notes: dict | None = None,
 ) -> list:
-    r"""题干/解析里的图片（Markdown 与 ``\includegraphics`` 两种形态）→ 绝对路径。"""
+    r"""题干/解析与知识梳理正文里的图片 → 绝对路径。
+
+    ``notes`` 是 ``note_key → content`` 映射（preview 原样携带）；知识梳理
+    将来会引用上传图，ledger 缺文件会让【导出 TEX】的 PDF 静默丢图。
+    """
     paths: list[str] = []
 
     def add(reference: str) -> None:
@@ -320,6 +366,9 @@ def collect_lecture_images(
             for group in match.groups():
                 if group:
                     add(group.strip())
+    for content in ((notes or {}) if isinstance(notes, dict) else {}).values():
+        for reference in iter_note_image_references(content):
+            add(reference)
     return paths
 
 
@@ -403,8 +452,8 @@ def lecture_page_counts(entry: dict) -> int:
 
 
 def toc_entries(entries: list) -> list:
-    """书籍/论文式目录的行序列 [(level, name, page)]：讲级粗体顶格，
-    子级缩进列「知识梳理 / 考向地图 / 各考向 / 实战演练」。
+    """目录行序列 [(level, name, page)]：仅讲级（用户 2026-09-22 决定，
+    知识梳理 / 考向地图 / 各考向 / 实战演练等子级一律不进目录）。
 
     行序列与前端 lecture.js 的 tocRowsForEntry 必须同口径；页码从第 3 页起
     （标题页 1 + 目录页 1），每讲占 lecture_page_counts 页。"""
@@ -414,23 +463,46 @@ def toc_entries(entries: list) -> list:
         section = entry.get("section") or {}
         lecture_no = index + 1
         rows.append(("lec", lecture_title(lecture_no, section.get("knowledge") or ""), start))
-        page = start
-        has_map = bool(section.get("topics"))
-        rows.append(("sub", "知识梳理", page))
-        page += 1
-        if has_map:
-            rows.append(("sub", "考向地图", page))
-            page += 1
-        outline_index = {str(t.get("id") or ""): t for t in (section.get("topics") or [])}
-        for topic_index, topic in enumerate(entry.get("topics") or []):
-            outline = outline_index.get(str(topic.get("topic_id") or "")) or {}
-            number = outline.get("no") or (topic_index + 1)
-            rows.append(("sub2", "考向%s　%s" % (cn_numeral(number), str(topic.get("name") or "")), page))
-            page += 1
-        if entry.get("extra_ids"):
-            rows.append(("sub", "实战演练", page))
         start += lecture_page_counts(entry)
     return rows
+
+
+def _map_box(outline: dict, order: int) -> str:
+    """考向地图的单个方框：「考向N 名字」，N 取大纲 no（与前端同一口径）。"""
+    name = escape_text(str((outline or {}).get("name") or ""))
+    label = r"\textbf{考向%s}" % cn_numeral(order)
+    return (r"\begin{tcolorbox}[colback=blue!4!white,colframe=blue!35!gray,"
+            r"boxrule=0.4pt,arc=1mm,left=2mm,right=2mm,top=1.5mm,bottom=1.5mm,"
+            r"halign=left,valign=center]"
+            + "%s\\ %s" % (label, name) +
+            r"\end{tcolorbox}")
+
+
+def _topic_map_boxes(outline_topics: list) -> list:
+    """考向地图页正文：左右两栏方框，左列 ceil(n/2)、右列其余。
+
+    与前端 lecture.js 的 buildMap 同一分配口径。整块只占一页，不分页。
+    """
+    total = len(outline_topics)
+    left_count = (total + 1) // 2
+    columns = []
+    for start, stop in ((0, left_count), (left_count, total)):
+        cells = [_map_box(outline_topics[i], i + 1) for i in range(start, stop)]
+        if not cells:
+            continue
+        col = [r"\noindent\begin{minipage}[t]{0.48\textwidth}"]
+        for index, cell in enumerate(cells):
+            if index:
+                col.append(r"\par\vspace{2mm}")
+            col.append(cell)
+        col.append(r"\end{minipage}")
+        columns.append(col)
+    lines: list[str] = []
+    lines.extend(columns[0])
+    if len(columns) > 1:
+        lines[-1] = lines[-1] + r"\hfill"
+        lines.extend(columns[1])
+    return lines
 
 
 def _question_block(question: dict, label: str, include_answers: bool) -> str:
@@ -447,6 +519,7 @@ def _question_block(question: dict, label: str, include_answers: bool) -> str:
         question.get("content") or "",
         _q_type,
         answer_letter=_answer_letter,
+        option_columns=int(question.get("option_columns") or 0),
     )
     lines = [r"\noindent\textbf{%s}\quad %s" % (escape_text(label), body.strip()), ""]
     answer = (question.get("answer") or "").strip()
@@ -652,10 +725,7 @@ def build_lecture_latex(preview: dict, view: str = "jiexi") -> tuple[str, list[s
             lines.append(r"\lectpage")
             lines.append(r"\lectsec{%s}" % escape_text(head))
             lines.append(r"\lectsub{考向地图}")
-            lines.append("\\begin{enumerate}")
-            for outline in outline_topics:
-                lines.append(r"\item %s" % escape_text(str((outline or {}).get("name") or "")))
-            lines.append("\\end{enumerate}")
+            lines.extend(_topic_map_boxes(outline_topics))
             lines.append("")
 
         # 逐考向出题：考向标题 → 易错点/解题方法 → 【典型例题】/【趁热打铁】板块。

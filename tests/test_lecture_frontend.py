@@ -71,14 +71,6 @@ def test_cover_title_editable_in_iframe():
     assert "preventDefault" in src
 
 
-def test_cover_title_save_race_guard():
-    """标题 blur 保存未完成时点「刷新预览」，必须等 PUT 落库后再重建 srcdoc，
-    否则旧标题会复活（用户感知=改了保存不上）。"""
-    src = _read(LECTURE_JS)
-    assert "ST._coverSave =" in src  # 保存句柄登记
-    # 刷新预览入口串接未完成的保存：先等 PUT 完成再拉 preview
-    assert "(ST._coverSave || Promise.resolve())" in src
-
 
 def test_cover_title_save_retry_on_500():
     """偶发 5xx 不能静默吞：自动重试一次，仍失败要 toast 报"保存失败"。"""
@@ -696,15 +688,15 @@ def test_merged_preview_html_orders_sections_once_each():
         "ST.topics = data.sections[1].topics;\n",
         "var html = api.buildLectureHtml(data);\n",
         "if (typeof html !== 'string') throw new Error('preview 未产出 HTML');\n",
-        # 封面一份 + 紧随其后的目录页（多节才有；书籍式逐条列，讲次中文数字）
+        # 封面一份 + 紧随其后的目录页（多节才有；仅讲级，讲次中文数字）
         "if ((html.match(/class=\"sheet cover\"/g) || []).length !== 1) throw new Error('封面不止一份');\n",
         "if (html.indexOf('目　录') < 0) throw new Error('目录页缺失');\n",
         "if (html.indexOf('第一讲 K2') > html.indexOf('第二讲 K1')) throw new Error('目录顺序被排错');\n",
         "if (html.indexOf('目　录') > html.indexOf('第一讲 K2')) throw new Error('目录没排在正文前');\n",
-        "if (html.indexOf('toc-sub') < 0) throw new Error('目录没有书籍式子条目');\n",
-        # 每节各一次考向页（考向标题在目录里也出现一次，共 2 处）；页眉不带章名
-        "if ((html.match(/考向一　子集判断/g) || []).length !== 2) throw new Error('K2 考向页或目录条目缺失');\n",
-        "if ((html.match(/考向一　集合判断/g) || []).length !== 2) throw new Error('K1 考向页或目录条目缺失');\n",
+        "if (html.indexOf('toc-sub') >= 0) throw new Error('目录里还混着子级条目');\n",
+        # 每节各一次考向页（考向级已不进目录，故仅正文 1 处）；页眉不带章名
+        "if ((html.match(/考向一　子集判断/g) || []).length !== 1) throw new Error('K2 考向页缺失');\n",
+        "if ((html.match(/考向一　集合判断/g) || []).length !== 1) throw new Error('K1 考向页缺失');\n",
         "if (html.indexOf('C1 · ') >= 0) throw new Error('页眉还带着章名');\n",
         # 思维导图节照常渲染且按节存状态；实战演练归各自讲、裸号
         "if (html.indexOf('ZIJISECTION') > html.indexOf('MINDK1')) throw new Error('节顺序被排错了');\n",

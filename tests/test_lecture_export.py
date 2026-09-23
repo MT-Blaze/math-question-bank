@@ -216,11 +216,11 @@ def test_lecture_headers_drop_chapter_and_use_cn_numerals():
 
 
 def test_toc_page_lists_lectures_after_cover():
-    """多节才出目录；书籍式逐条列（知识梳理/考向地图/考向/实战演练）。"""
+    """多节才出目录；目录仅列讲级（子级已全部去掉）。"""
     tex, _ = build_lecture_latex(_preview_multi(), view="yuan")
     assert "目　录" in tex
     head = tex[tex.index("目　录"):tex.index("\\lectpage", tex.index("目　录"))]
-    for needle in ("第一讲 集合间的基本关系", "第二讲 集合的概念", "考向一　子集判断"):
+    for needle in ("第一讲 集合间的基本关系", "第二讲 集合的概念"):
         assert needle in head
     # 单节旧载荷不出目录页
     single, _ = build_lecture_latex(_preview(), view="yuan")
