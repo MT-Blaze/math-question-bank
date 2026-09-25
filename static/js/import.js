@@ -7031,7 +7031,12 @@ function saveParsedQuestion(index) {
                 }
 
                 if (!isParsedQuestionSaveContextCurrent(saveGeneration, index, q)) return false;
-                if (expectedLocalSnapshot) {
+                // DOM 快照复核只服务单题入口：那里查重与保存之间隔着用户可能改卡片的
+                // 弹窗交互。批量入口的决策（含「仍作为独立题保存」）正是基于这份快照
+                // 做出的，再用当前 DOM 二次自我否决会让整批成功数被算成假 0/N；实测
+                // 「批量导入已完成！成功: 0/1」而服务端一条错误都没有，就是这个分支。
+                // 并发改动的窗口由 duplicate_snapshot_hash 交给后端写库前复查把关。
+                if (expectedLocalSnapshot && !options.duplicateDecisionResolved) {
                     const currentItem = buildParsedQuestionDuplicateItem(index, saveGeneration);
                     if (!currentItem || serializeQuestionDuplicateItem(currentItem) !== expectedLocalSnapshot) {
                         showToast(`第 ${index + 1} 题的内容已变化，本次未保存，请重新导入。`, 'info');

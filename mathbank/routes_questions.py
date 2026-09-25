@@ -19,6 +19,7 @@ from typing import Optional
 
 from mathbank.asset_security import (
     AssetSecurityError,
+    SAFE_IMAGE_EXTENSIONS,
     normalize_answer_tikz_assets,
     normalize_content_tikz_assets,
     normalize_optional_upload_asset_reference,
@@ -818,6 +819,93 @@ def committed_question_response(
         return {"status": "success", "question": {"id": question_id}}
 
 
+def _tikz_asset_field(raw: Optional[str]) -> list:
+    """把 tikz assets JSON 字段安全摊平成对象数组（坏数据按空处理，不在此处报错）。"""
+
+    if not raw or not str(raw).strip():
+        return []
+    try:
+        data = json.loads(str(raw))
+    except (TypeError, ValueError):
+        return []
+    return [item for item in data if isinstance(item, dict)] if isinstance(data, list) else []
+
+
+def _referenced_image_basenames(*texts: str) -> set:
+    """正文里被引用到的图片文件名集合。
+
+    三种形态都要认：Markdown `![x](/static/uploads/a.png)`、LaTeX
+    `\\includegraphics[...]{a.png}`、以及 TikZ 工作台插入的裸 URL。
+    扩展名一律取 asset_security 的同一份白名单，禁止另抄一份。
+    """
+
+    pattern = r"[A-Za-z0-9][A-Za-z0-9_.\-]*(?:" + "|".join(
+        re.escape(ext) for ext in sorted(SAFE_IMAGE_EXTENSIONS)
+    ) + r")"
+    found: set = set()
+    for text in texts:
+        value = str(text or "")
+        for match in re.finditer(r"!\[[^\]]*\]\(([^)\s]+)\)", value):
+            found.add(match.group(1).rsplit("/", 1)[-1])
+        for match in re.finditer(r"\\includegraphics(?:\[[^\]]*\])?\{([^}]+)\}", value):
+            found.add(match.group(1).rsplit("/", 1)[-1])
+        for match in re.finditer(r"/static/(?:uploads|test_uploads)/(" + pattern + r")", value):
+            found.add(match.group(1))
+    return {name for name in found if name}
+
+
+def reconcile_image_paths_with_text(
+    parsed_img_paths: list,
+    content: str,
+    answer_markdown: str,
+    *,
+    content_tikz_assets: Optional[str],
+    answer_tikz_assets: str,
+    tikz_reference_image_path: str,
+    tikz_code: str = "",
+) -> list:
+    """剔除磁盘上**已不存在**的 image_path 条目，再送去 require_file 校验。
+
+    「转 TikZ」每次重试都生成新 uuid 文件名并**追加**登记；旧名字对应的文件会在下次
+    启动孤儿清理时被删除，而它仍留在卡片的 image_paths 里——于是保存报「插图文件不存在
+    或不是普通文件」，用户看着配图一切正常却存不下去。判据只能是**文件是否还在**：
+    拆卷卡片的题干截图按设计就只登记在 image_paths、由配图条统一展示，正文里根本不
+    引用它（`import.js` 的 `appendParsedCardImageStrip` / `assignParsedUnassignedImages`，
+    以及 `parsing_pipeline` 的 `q["image_paths"] = owned_crops`），后端
+    `select_visible_question_images` 与 `_referenced_question_assets` 也都认这种形态。
+    若改成「无引用方即剔除」，会把这类合法配图静默丢掉、并把刚晋升的文件回滚成孤儿。
+
+    引用方信息（正文 + 两组 tikz assets 渲染图/参考图 + 旧版单幅兼容字段）**只用于
+    日志理由**，绝不参与去留判定；宁留不错删（误删会让图片生命周期失控）。
+    """
+
+    referenced = _referenced_image_basenames(content, answer_markdown)
+    for raw in (content_tikz_assets, answer_tikz_assets):
+        for asset in _tikz_asset_field(raw):
+            for key in ("image_path", "reference_image_path"):
+                value = str(asset.get(key) or "").strip()
+                if value:
+                    referenced.add(value.rsplit("/", 1)[-1])
+    legacy_reference = str(tikz_reference_image_path or "").strip()
+    if legacy_reference:
+        referenced.add(legacy_reference.rsplit("/", 1)[-1])
+
+    kept: list = []
+    for reference in parsed_img_paths:
+        basename = str(reference or "").strip().replace("\\", "/").rsplit("/", 1)[-1]
+        if not basename:
+            continue
+        if Path(UPLOAD_DIR).joinpath(basename).is_file():
+            kept.append(reference)
+            continue
+        reason = "正文/绘图槽有引用" if basename in referenced else "无任何引用方"
+        print(
+            f"[asset-reconcile] drop stale image_path: {basename}"
+            f"（文件已不在 uploads 根目录；{reason}）"
+        )
+    return kept
+
+
 def prepare_question_assets(
     content: str,
     answer_markdown: str,
@@ -845,6 +933,17 @@ def prepare_question_assets(
         answer_markdown,
         parsed_img_paths,
         promotion_log=promotion_log,
+    )
+    # 对账必须放在 require_file 校验之前、晋升之后：晋升会把 tmp 引用换成正式名，
+    # 换完才是「正文里最终会出现的文件名」。
+    parsed_img_paths = reconcile_image_paths_with_text(
+        parsed_img_paths,
+        content,
+        answer_markdown,
+        content_tikz_assets=content_tikz_assets,
+        answer_tikz_assets=answer_tikz_assets,
+        tikz_reference_image_path=tikz_reference_image_path,
+        tikz_code=tikz_code,
     )
     parsed_img_paths = normalize_upload_asset_references(
         parsed_img_paths,
