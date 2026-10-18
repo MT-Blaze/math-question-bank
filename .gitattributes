@@ -1,2 +1,9 @@
 # cmd.exe batch files must keep Windows line endings on every build host.
 *.bat text eol=crlf
+
+# 前端源码在所有构建主机上统一用 LF：core.autocrlf=true 会把 .js/.css/.html 检出成
+# CRLF，导致一次普通编辑就冒出几千行「整文件换行符变更」的假 diff（本项目踩过）。
+# 显式钉死 eol=lf 后，git 存取都不再改写换行符，diff 只反映真实改动。
+*.css text eol=lf
+*.js text eol=lf
+*.html text eol=lf

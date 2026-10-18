@@ -89,3 +89,11 @@ tests/artifacts/*
 
 # 第三方代理本地工作区（含 7MB 归档与日志，非项目源码）
 .workbuddy/
+
+# 12. 忽略本地一次性备份、编辑器草稿与运行时数据（非项目源码，防误提交）
+.qoder-scratch/
+.qoder-backup-*.js
+*.bak-*
+data/
+output/
+nul
