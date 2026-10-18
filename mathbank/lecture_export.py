@@ -12,13 +12,38 @@ from __future__ import annotations
 import json
 import re
 from html.parser import HTMLParser
+from pathlib import Path
 from typing import Iterator
 
 from mathbank.asset_security import AssetSecurityError, resolve_upload_asset
 from mathbank.latex_normalize import _convert_one_table
-from mathbank.paper_helper import clean_content_for_latex, extract_choice_answer_letter
+from mathbank.paper_helper import (
+    _apply_option_columns,
+    clean_content_for_latex,
+    extract_choice_answer_letter,
+)
 
 MIND_PREFIX = "@mindmap"
+
+# 排版口径（待办 #8 P1 拍板）：讲义导出并存两套 LaTeX 类。默认仍是与组卷同款的
+# exam-zh 试卷体；elegantbook 书本体由前端「排版口径」下拉选择，路由层负责校验。
+EXPORT_FMT_EXAM = "exam-zh"
+EXPORT_FMT_BOOK = "elegantbook"
+
+# 书本体垫片：唯一来源是 resources/mblecture.sty（编译冒烟测试同样钉它）。
+# 导出时把垫片正文直接内联进导言区：TEX 导出的 .tex 自解释、换台机器也能编译；
+# 编译临时目录不用多塞 .sty 文件，compile_tex_to_pdf 管线一行不动。
+_MB_SHIM_PATH = Path(__file__).resolve().parent / "resources" / "mblecture.sty"
+# \NeedsTeXFormat / \ProvidesPackage / \endinput 只允许出现在真正的包文件里
+_MB_SHIM_SKIP = (r"\NeedsTeXFormat", r"\ProvidesPackage", r"\endinput")
+_MB_SHIM_LINES: list = []
+
+# 书本体列数估算的版心参数（ElegantBook 12pt + a4 + 默认 normal device）：
+# 实测 \the\textwidth=483.7pt，12pt 下折约 40.3em；垫片里 columnsep=1em、
+# enumerate leftmargin=1.7em+labelsep=0.2em，再留余量合计 2em 作标号与取整。
+_BOOK_TEXTW_EM = 40.3
+_BOOK_COLSEP_EM = 1.0
+_BOOK_LIST_INSET_EM = 2.0
 
 # 知识块正文的图片引用三形态（collect_lecture_images 扫 notes 用）
 _NOTE_IMG_SRC_RE = re.compile(r"<img\b[^>]*?\bsrc\s*=\s*[\"']([^\"']+)[\"']", re.I)
@@ -538,7 +563,112 @@ def _topic_map_boxes(outline_topics: list) -> list:
     return lines
 
 
-def _question_block(question: dict, label: str, include_answers: bool) -> str:
+def _mb_shim_lines() -> list:
+    r"""读取书本体垫片正文，进程内缓存。两类行不进导出源码：
+
+    ① \NeedsTeXFormat/\ProvidesPackage/\endinput —— 只允许出现在真正的包文件里，
+       \endinput 混进 .tex 会让 XeLaTeX 把整份讲义后面全部当文件结尾吞掉；
+    ② 整行注释 —— TeX 本来就不读注释，留着反而会被导出前预检层当成脏数据
+       「修复」（垫片注释里的 ``\fillin、`` 实测触发过宏补 {} 的假告警 Toast）。
+    """
+    if not _MB_SHIM_LINES:
+        raw = _MB_SHIM_PATH.read_text(encoding="utf-8")
+        for line in raw.splitlines():
+            stripped = line.strip()
+            if stripped.startswith(_MB_SHIM_SKIP) or stripped.startswith("%"):
+                continue
+            _MB_SHIM_LINES.append(line)
+    return list(_MB_SHIM_LINES)
+
+
+def _book_preamble(title: str) -> list:
+    r"""书本体（ElegantBook）导言区：类选项 + 垫片正文内联。
+
+    lang=cn 才会加载 ctex（汉字通道）；chinesefont=nofont 让类跳过自带字体，
+    由垫片统一焊 Fandol，与组卷侧 fontset=fandol 同一口径。答案可见性在书本体
+    不需要全局开关：答案/解析本来就是正文自己排印的，include_answers 只影响
+    正文装不装【答案】段，与导言区无关。
+    """
+    lines = [r"\documentclass[12pt,lang=cn,chinesefont=nofont]{elegantbook}"]
+    lines.extend(_mb_shim_lines())
+    lines.append(r"\everymath{\displaystyle}")
+    lines.append(r"\title{%s}" % escape_text(title))
+    lines.append("")
+    return lines
+
+
+_CHOICES_BLOCK_RE = re.compile(r"\\begin\{choices\}.*?\\end\{choices\}", re.S)
+_CHOICE_ITEM_SPLIT_RE = re.compile(r"\\item(?:\[[^\]]*\])?")
+_MACRO_NAME_RE = re.compile(r"\\[a-zA-Z@]+\*?")
+
+
+def _option_width_em(text: str) -> float:
+    """粗估一段选项源码排出来的宽度（em）。只用于选列数，宁可保守不收宽。"""
+    stripped = _MACRO_NAME_RE.sub("", text)
+    stripped = stripped.replace("$", "").replace("{", "").replace("}", "").replace("\\", "")
+    width = 0.0
+    for ch in stripped:
+        code = ord(ch)
+        if ch == " ":
+            width += 0.3
+        elif code < 128:
+            width += 0.5
+        elif code >= 0x2E80 or 0xFF00 <= code <= 0xFFEF:
+            width += 1.0
+        else:
+            width += 0.6
+    return width
+
+
+def _book_col_available_em(columns: int) -> float:
+    """N 列版式下单个选项可用的宽度（em）：版心先切列，再扣列表左缩进。"""
+    return ((_BOOK_TEXTW_EM - (columns - 1) * _BOOK_COLSEP_EM) / columns
+            - _BOOK_LIST_INSET_EM)
+
+
+def _estimate_choice_columns(block: str) -> int:
+    """按最宽选项估一个 choices 块的列数（书本体专用，exam-zh 自己有实测算法）。
+
+    含图选项一律单列（multicols 里位图撑爆列宽比挤成两行难看得多）；
+    4 个及以上选项才允许试 4 列，其余最多 2 列——与试卷排版习惯一致。
+    返回 0 表示块里根本没有可测的选项，调用方不必注入列数。
+    """
+    if r"\includegraphics" in block:
+        return 1
+    chunks = _CHOICE_ITEM_SPLIT_RE.split(block)
+    widths = [_option_width_em(chunk) for chunk in chunks[1:] if chunk.strip()]
+    if not widths:
+        return 0
+    if len(widths) < 2:
+        return 1
+    longest = max(widths)
+    candidates = [4, 2, 1] if len(widths) >= 4 else [2, 1]
+    for cols in candidates:
+        if longest <= _book_col_available_em(cols):
+            return cols
+    return 1
+
+
+def _book_fit_choice_columns(body: str) -> str:
+    """给书本体正文里每个「未显式标列数」的 choices 块注入 [columns=N]。
+
+    题目字段 option_columns>0 时 clean_content_for_latex 已经注入过列数，绝不
+    重猜；注入复用 paper_helper._apply_option_columns，与试卷体强制列数同一实现
+    （含选项图放宽宽度那半段），两条链路不允许分叉。
+    """
+    def _repl(match: "re.Match[str]") -> str:
+        block = match.group(0)
+        if r"[columns" in block:
+            return block
+        est = _estimate_choice_columns(block)
+        if est <= 0:
+            return block
+        return _apply_option_columns(block, est)
+
+    return _CHOICES_BLOCK_RE.sub(_repl, body)
+
+
+def _question_block(question: dict, label: str, include_answers: bool, book: bool = False) -> str:
     _q_type = question.get("question_type") or ""
     # 教师版选择题：把答案字母印进作答括号；学生版留空。
     # ⚠️ 讲义数据源里答案键是 ``answer``（前端 preview 数据），与组卷链路的
@@ -554,6 +684,9 @@ def _question_block(question: dict, label: str, include_answers: bool) -> str:
         answer_letter=_answer_letter,
         option_columns=int(question.get("option_columns") or 0),
     )
+    if book:
+        # 书本体没有 exam-zh 的实测自动列数：Python 侧按选项宽度估 N 注入 [columns=N]
+        body = _book_fit_choice_columns(body)
     lines = [r"\noindent\textbf{%s}\quad %s" % (escape_text(label), body.strip()), ""]
     answer = (question.get("answer") or "").strip()
     if include_answers:
@@ -651,10 +784,11 @@ def _numbered_rows(rows):
     return out
 
 
-def build_lecture_latex(preview: dict, view: str = "jiexi") -> tuple[str, list[str]]:
+def build_lecture_latex(preview: dict, view: str = "jiexi", fmt: str = EXPORT_FMT_EXAM) -> tuple[str, list[str]]:
     """把 preview 数据组装成完整 LaTeX 源码，返回 (源码, 降级说明)。
 
     view：yuan 学生版（不含答案）/ jiexi 教师版（含答案）/ daan 答案册。
+    fmt：exam-zh 试卷体（默认，与组卷同款）/ elegantbook 书本体（ElegantBook+垫片）。
     一个小节 = 一讲（中文数字），每讲输出知识梳理 → 考向页 → 本讲实战演练
     （课后作业，裸号归零）；答案册整本一份、只它带「第X讲」定位前缀。
     目录页紧跟标题页。单节旧载荷行为不变。
@@ -669,27 +803,32 @@ def build_lecture_latex(preview: dict, view: str = "jiexi") -> tuple[str, list[s
     for q in (preview.get("questions") or []):
         questions_by_id.setdefault(q.get("id"), q)
     include_answers = view in ("jiexi", "daan")
+    book_fmt = fmt == EXPORT_FMT_BOOK
     degradations: list[str] = []
 
     title = (settings.get("cover_title") or first_section.get("chapter") or first_section.get("knowledge") or "讲义").strip()
     subtitle = (settings.get("cover_subtitle") or "同步讲义").strip()
 
-    lines = _preamble(include_answers=include_answers, title=title)
+    lines = _preamble(include_answers=include_answers, title=title, book=book_fmt)
     # exam-zh 的 \section* 会画装饰竖条并自动补「【XX】」，讲义里换用无装饰宏；
     # 标题页/目录/每讲各板块单独起页，由 \lectpage 控制
-    lines.append(r"\newcommand{\lectsec}[1]{\par\vspace{4mm}{\Large\bfseries #1}\par\nopagebreak\vspace{2mm}}")
+    # 书本体下垫片已经 provide 过同名宏，这里同步换成 \providecommand 才不炸；
+    # 试卷体维持 \newcommand 原状（历史断言钉着）。
+    macro_def = r"\providecommand" if book_fmt else r"\newcommand"
+    lines.append(macro_def + r"{\lectsec}[1]{\par\vspace{4mm}{\Large\bfseries #1}\par\nopagebreak\vspace{2mm}}")
     # 讲级页的板块名（知识梳理/考向地图）：大标题下另起一行、左对齐
-    lines.append(r"\newcommand{\lectsub}[1]{\par\vspace{-1mm}{\large\bfseries #1}\par\nopagebreak\vspace{2mm}}")
-    lines.append(r"\newcommand{\blockhead}[1]{\par\vspace{2.5mm}{\normalsize\bfseries 【#1】}\par\vspace{1mm}}")
-    lines.append(r"\newcommand{\lectpage}{\clearpage}")
+    lines.append(macro_def + r"{\lectsub}[1]{\par\vspace{-1mm}{\large\bfseries #1}\par\nopagebreak\vspace{2mm}}")
+    lines.append(macro_def + r"{\blockhead}[1]{\par\vspace{2.5mm}{\normalsize\bfseries 【#1】}\par\vspace{1mm}}")
+    lines.append(macro_def + r"{\lectpage}{\clearpage}")
     lines.append("")
 
     lines.append("\\begin{document}")
     lines.append(r"\raggedbottom")
     # 讲义不用试卷的密封线/注意事项：标题页直接居中排，并显式开启页码
     # （exam-zh 默认 \pagestyle{empty}，不打开的话「第 N 页（共 M 页）」不会出现，
-    # 目录页码就无从对照）
-    lines.append(r"\pagestyle{plain}")
+    # 目录页码就无从对照）；ElegantBook 自带页眉页脚与页码，书本体绝不能被 plain 顶掉
+    if not book_fmt:
+        lines.append(r"\pagestyle{plain}")
     lines.append(r"\begin{center}{\Large\bfseries %s}\\[1mm]{\normalsize %s}\end{center}" % (
         escape_text(title), escape_text(subtitle)))
     lines.append("")
@@ -788,7 +927,7 @@ def build_lecture_latex(preview: dict, view: str = "jiexi") -> tuple[str, list[s
                 _, _, role, question, label, block_head = pending
                 if block_head:
                     lines.append(r"\blockhead{%s}" % block_head)
-                lines.append(_question_block(question, label, include_answers))
+                lines.append(_question_block(question, label, include_answers, book=book_fmt))
                 pending = next(rows_iter, None)
 
         extra_ids = [qid for qid in (entry.get("extra_ids") or []) if qid in questions_by_id]
@@ -797,13 +936,15 @@ def build_lecture_latex(preview: dict, view: str = "jiexi") -> tuple[str, list[s
             lines.append(r"\lectsec{%s}" % escape_text(head))
             lines.append(r"\blockhead{实战演练}")
             for position, qid in enumerate(extra_ids, start=1):
-                lines.append(_question_block(questions_by_id[qid], str(position), include_answers))
+                lines.append(_question_block(questions_by_id[qid], str(position), include_answers, book=book_fmt))
 
     lines.append("\\end{document}")
     return "\n".join(lines), degradations
 
 
-def _preamble(include_answers: bool, title: str) -> list:
+def _preamble(include_answers: bool, title: str, book: bool = False) -> list:
+    if book:
+        return _book_preamble(title)
     from mathbank.paper_helper import build_exam_preamble
 
     lines = build_exam_preamble(include_answers=include_answers, title=title)

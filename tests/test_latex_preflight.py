@@ -58,11 +58,36 @@ LOST_ROWBREAK_PAREN = (
     r"故 \(M(x)=\begin{cases}(x+1)^2,&x\le -1\text{ 或 }x\ge 0,"
     r"\x+1,&-1<x<0.\end{cases}\)"
 )
+# id=340（2026-10-18 全库书本体压测翻出）：cases 里 \\ 掉成 \a。
+# \a 在 LaTeX 里「有定义」（NFSS 重音切换宏），不报 Undefined 反而悄悄改写 \, 的
+# 定义，把后续所有 \fillin 之类含 \, 的宏打成「Command \, unavailable in encoding TU」——
+# 整本书 rc=1。R3 因此把行式环境的单字母表放开到全部 A-Za-z。
+LOST_ROWBREAK_ALPHA = (
+    r"对 $a,b\in R$，记 $\min\{a,b\}=\begin{cases}b,a\geq b\a,a<b\end{cases}$，"
+    r"若函数 $f(x)=\min\left\{4-|3x-1|,2x^{2}-5x-7\right\}$，则下列说法正确的是"
+)
+# 数学区直写 Unicode 符号（id=32/97/114/138 等实测形态）：EB 与 exam-zh 的
+# 数学字体都没字形，XeLaTeX 静默缺字。R6 换成等价宏。
+UNICODE_MATH_SYMBOLS = (
+    r"故 $f(x)$ 在 $(-∞,0)$ 上为增函数，解集为 $（0,1）∪（1,2）$，则 ① 对 $x∈A$ 成立。"
+)
 # id=105：库里存的是 CRLF，写盘时默认换行翻译再把 \n 变成 \r\n，行尾翻倍成空行，
 # 行内公式跨段 → Missing $ inserted。这里用「数学段内出现 CR」这一指纹复现。
 CRLF_DOUBLED = "若 $m \\leq -5\r\n\r\n\\Rightarrow m < 0$ 成立，则结论得证。"
 # 行内公式跨段落（R4）
 CROSS_PARAGRAPH = "因为 $a=1\n\n所以结论成立。"
+
+# 讲义方法卡（lecture_notes id=31/165/171）实测形态：正文里的蕴含箭头在 Termes
+# 与 Fandol 都没有字形，字符类也救不了——R7 换成 \ensuremath 宏；数学区里的 ⇒
+# 由 R6 换 \Rightarrow。
+GLYPHLESS_ARROWS = (
+    "③“存在”⇒有解，“给定区间”⇒恒成立。等价式 \\((x_1-x_2)[f(x_1)-f(x_2)]\\gt 0\\) ⇔ 增，"
+    "反之 ⇐ 不一定。"
+)
+
+# 答案里手滑打出的双井号（库内 id=132/329，2026-10-18 全库压测炸点）：正文裸 #
+# 直接 "macro parameter character #" 中断编译。R8 只转义正文区，导言区 #1 不动。
+BARE_HASH_ANSWER = r"【答案】$\frac{1}{2}$ ##0.5。【分析】利用立方和公式化简求值。"
 
 ALL_DIRTY = (
     SPLIT_DELIMITER,
@@ -70,6 +95,10 @@ ALL_DIRTY = (
     MACRO_EATEN_IN_ANSWER,
     LOST_ROWBREAK_CASES,
     LOST_ROWBREAK_PAREN,
+    LOST_ROWBREAK_ALPHA,
+    UNICODE_MATH_SYMBOLS,
+    GLYPHLESS_ARROWS,
+    BARE_HASH_ANSWER,
     CRLF_DOUBLED,
     CROSS_PARAGRAPH,
 )
@@ -118,6 +147,101 @@ def test_r3_restores_lost_row_breaks_inside_row_envs():
 
         assert r"\x" not in fixed, fixed
         assert "\\\\ x" in fixed, fixed
+
+
+def test_r3_restores_alpha_single_letter_macros_id340():
+    r"""id=340：\a 必须按「丢失的行分隔」补回 \\ a。
+
+    只认 \x \y \z 的旧口径会漏掉这类「kernel 恰好有定义」的单字母宏，
+    放行的 \a 不改名不报错，却把 \, 的定义悄悄毁掉（NFSS 重音切换宏），
+    整本书在后面每一处 \fillin 上炸 rc=1——比 Undefined control sequence
+    恶劣得多，必须一并收口。
+    """
+    fixed, notes = repair_latex_before_compile(LOST_ROWBREAK_ALPHA)
+
+    assert r"b\a," not in fixed, fixed
+    assert r"\\ a,a<b" in fixed, fixed
+    assert "行分隔" in _notes_text(notes), notes
+    again, second = repair_latex_before_compile(fixed)
+    assert again == fixed and second == [], (again, second)
+
+
+def test_r3_multiletter_macros_survive_the_alpha_table():
+    r"""字母表放开后，多字母宏与真 \\ 必须一根毫毛都不动。"""
+    healthy = (
+        r"$\begin{cases}\complement_R A & x\le 0\\ \lvert x\rvert, & x>0"
+        r"\end{cases}$"
+    )
+    fixed, notes = repair_latex_before_compile(healthy)
+
+    assert fixed == healthy, fixed
+    assert notes == [], notes
+
+
+def test_r6_swaps_unicode_math_symbols_to_macros():
+    fixed, notes = repair_latex_before_compile(UNICODE_MATH_SYMBOLS)
+
+    assert r"\infty" in fixed and "∞" not in fixed
+    assert fixed.count(r"\cup") == 1, fixed
+    # 库内实测 ① 都在文本区（列表标号）：不许 R6 越权吃掉，归垫片字符类兜底；
+    # 数学区里真出现圈号时才换 \textcircled 宏。两个边界一起钉死。
+    assert "①" in fixed, fixed
+    assert r"\textcircled{1}" in repair_latex_before_compile("求 $①$ 的值")[0], fixed
+    assert r"\in A" in fixed and "∈" not in fixed
+    assert "（" not in fixed and "）" not in fixed      # 全角括号归半角
+    assert "Unicode 符号" in _notes_text(notes), notes
+    again, second = repair_latex_before_compile(fixed)
+    assert again == fixed and second == [], (again, second)
+
+
+def test_r6_leaves_text_mode_symbols_alone():
+    r"""R6 只吃数学区：文本里的 ①△Ⅱ 归垫片 xeCJK 字符类管，源码不许动。"""
+    body = "如图 ①，在 Rt△ABC 中，$a=1$。第Ⅱ象限。"
+    fixed, notes = repair_latex_before_compile(body)
+
+    assert fixed == body, fixed
+    assert notes == [], notes
+
+
+def test_r7_replaces_glyphless_arrows_in_text_mode():
+    r"""方法卡「“存在”⇒有解」：R6 管数学区、R7 收文本区，产物无 Unicode 箭头且幂等。"""
+    src = "“存在”⇒有解，$a⇒b$ 恒成立。"
+    fixed, notes = repair_latex_before_compile(src)
+
+    assert "⇒" not in fixed
+    assert r"$a\Rightarrow b$" in fixed, fixed      # 数学区走 R6 纯宏，不套 \ensuremath
+    assert fixed.count(r"\ensuremath{\Rightarrow}") == 1, fixed  # 文本区只剩这一处
+    assert "蕴含箭头" in _notes_text(notes), notes
+    again, second = repair_latex_before_compile(fixed)
+    assert again == fixed and second == [], (again, second)
+
+
+def test_r7_covers_left_and_iff_but_not_plain_arrow():
+    r"""⇐ ⇔ 一并换宏；→ 有 Fandol 兜底（垫片字符类），不许 R7 越权动它。"""
+    fixed, notes = repair_latex_before_compile("⇐ 逆、⇔ 等价、→ 方向。")
+
+    assert r"\ensuremath{\Leftarrow}" in fixed
+    assert r"\ensuremath{\Leftrightarrow}" in fixed
+    assert "→" in fixed, fixed
+
+
+def test_r8_escapes_bare_hashes_in_body_only():
+    r"""正文裸 ## 转义；导言区宏定义 #1 与已转义 \# 都不许碰；产物幂等。"""
+    src = (
+        "\\documentclass{exam-zh}\n"
+        "\\newcommand{\\pa}[1]{X#1}\n"
+        "\\begin{document}\n"
+        "答案 ##0.5 与已转义 \\# 混排。\n"
+        "\\end{document}"
+    )
+    fixed, notes = repair_latex_before_compile(src)
+
+    assert r"\newcommand{\pa}[1]{X#1}" in fixed, "导言区参数引用被误伤"
+    assert r"\#\#0.5" in fixed, fixed
+    assert fixed.split(r"\begin{document}")[1].count(r"\#") == 3, fixed
+    assert "裸 #" in _notes_text(notes), notes
+    again, second = repair_latex_before_compile(fixed)
+    assert again == fixed and second == [], (again, second)
 
 
 def test_r4_joins_cross_paragraph_inline_math():

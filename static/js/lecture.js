@@ -1838,10 +1838,29 @@
 
   /* 高清 PDF 走组卷引擎编译（十秒级），期间禁用按钮并置 aria-busy，
      否则用户会连点触发多次 XeLaTeX 编译。降级说明经响应头回传，必须说出来。 */
+  /* \u6392\u7248\u53e3\u5f84\uff08\u5f85\u529e #8 P1\uff09\uff1a\u9ed8\u8ba4\u8bd5\u5377\u4f53 exam-zh\uff1b\u4e66\u672c\u4f53 elegantbook \u5f3a\u5236\u8d70 XeLaTeX\u3002
+     \u4e0b\u62c9\u9009\u62e9\u8bb0\u5fc6\u5728 LocalStorage \u91cc\uff0c\u4e0b\u6b21\u8fdb\u5165\u5de5\u4f5c\u53f0\u81ea\u52a8\u6062\u590d\u3002
+     \u53d6\u503c\u5fc5\u987b\u4e0e\u540e\u7aef routes_lecture._FORMAT_ALIASES \u9010\u5b57\u4e00\u81f4\uff08\u6709\u9759\u6001\u6d4b\u8bd5\u9489\u6b7b\uff09\u3002 */
+  var EXPORT_FORMAT_VALUES = ['exam-zh', 'elegantbook'];
+
+  function currentExportFormat() {
+    var sel = $('lectureExportFormat');
+    if (sel && EXPORT_FORMAT_VALUES.indexOf(sel.value) >= 0) return sel.value;
+    try {
+      var saved = localStorage.getItem('lectureExportFormat');
+      return EXPORT_FORMAT_VALUES.indexOf(saved) >= 0 ? saved : 'exam-zh';
+    } catch (e) { return 'exam-zh'; }
+  }
+
+  function rememberExportFormat(value) {
+    try { localStorage.setItem('lectureExportFormat', value); } catch (e) { /* \u9690\u79c1\u6a21\u5f0f\u5b58\u4e0d\u8fdb\u4e0d\u5f71\u54cd\u5bfc\u51fa */ }
+  }
+
   function exportPdf() {
     if (!ST.sections.length) { toast('请先加载讲义小节'); return; }
     if (ST.exporting) { toast('已有讲义 PDF 在编译，请稍候'); return; }
     var view = ST.view || 'yuan';
+    var format = currentExportFormat();
     var button = $('lectureExportPdf');
     if (button) { button.disabled = true; button.setAttribute('aria-busy', 'true'); }
     ST.exporting = true;
@@ -1853,11 +1872,12 @@
     apiBlob('/api/lecture/export/pdf', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify((function () {
-        var p = buildPreviewPayload({ view: view });
+        var p = buildPreviewPayload({ view: view, format: format });
         // 只有存在未固化改动时才交出内存 preview；否则让后端按库现算，
         // 避免用到上一次遗留的缓存
         if (hasPendingChanges() && ST.previewData) p.preview = ST.previewData;
-        if (printHtml) p.print_html = printHtml;
+        // 书本体是 LaTeX 专属口径：不带 print_html，逼后端走 ElegantBook + XeLaTeX 编译链
+        if (printHtml && format !== 'elegantbook') p.print_html = printHtml;
         return p;
       })()),
     }).then(function (result) {
@@ -1882,7 +1902,7 @@
     apiBlob('/api/lecture/export/tex', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify((function () {
-        var p = buildPreviewPayload({ view: view });
+        var p = buildPreviewPayload({ view: view, format: currentExportFormat() });
         if (ST.previewData && hasPendingChanges()) p.preview = ST.previewData;
         return p;
       })()),
@@ -1890,7 +1910,7 @@
       var url = URL.createObjectURL(result.blob);
       var a = document.createElement('a');
       a.href = url;
-      a.download = 'lecture_' + view + '.tex';
+      a.download = 'lecture_' + view + (currentExportFormat() === 'elegantbook' ? '_book' : '_exam') + '.tex';
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -2864,6 +2884,14 @@
     ch.addEventListener('change', function () { ST.chapter = ch.value; renderKnowledgeDropdown(); });
     var s = $('lectureSeries');
     if (s) s.addEventListener('change', function () { renderDrawerOptions(); });
+    var fmtSel = $('lectureExportFormat');
+    if (fmtSel) {
+      try {
+        var savedFmt = localStorage.getItem('lectureExportFormat');
+        if (EXPORT_FORMAT_VALUES.indexOf(savedFmt) >= 0) fmtSel.value = savedFmt;
+      } catch (e) { /* 存储不可用就用默认值 */ }
+      fmtSel.addEventListener('change', function () { rememberExportFormat(fmtSel.value); });
+    }
     bindSectionBar();
     _bound = true;
   }

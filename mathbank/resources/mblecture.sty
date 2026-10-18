@@ -1,20 +1,28 @@
-% mblecture.sty —— 讲义「书本体」（ElegantBook）导出用的最小垫片层
+% mblecture.sty —— 讲义「书本体」（ElegantBook）导出用的垫片层
 %
 % 由来：题库正文与试卷导出都按 exam-zh 的方言写作（\begin{choices}、\fillin、\paren
 % 等），而 ElegantBook 不提供这些。用户拍板「排版口径并存」：试卷体继续走 exam-zh，
 % 讲义多一个书本体选项。本垫片把 exam-zh 方言在 ElegantBook 里补齐，让同一份 TeX 源码
 % 两套类都能编译，避免为讲义另写一条渲染链（两条链迟早分叉，缺图事故已经演示过一次）。
 %
+% 用法（书本体导言区，见 lecture_export._book_preamble）：
+%   \documentclass[12pt,lang=cn,chinesefont=nofont]{elegantbook}
+%   \usepackage{mblecture}          % 或导出时直接把本文件正文内联进导言区
+% lang=cn 才会加载 ctex（汉字通道）；chinesefont=nofont 让类不配它自带的方正字体，
+% 由本垫片统一焊上 Fandol —— 与组卷侧 fontset=fandol 同一口径。
+%
 % 只 \providecommand / \providepackage：宿主类已经定义的东西一律不覆盖，
 % 将来 ElegantBook 或 exam-zh 自己补上了，本垫片自动让路。
+% 例外：中文字体族是「P1 拍板强制 Fandol」，属于有意覆盖，见下方注释。
 \NeedsTeXFormat{LaTeX2e}
-\ProvidesPackage{mblecture}[2026-10-18 MathBank lecture shim for ElegantBook]
+\ProvidesPackage{mblecture}[2026-10-18b MathBank lecture shim for ElegantBook]
 
 % 题库正文里会出现的资源与数学宏包（与 exam-zh 导言区同一口径）
 \RequirePackage{graphicx}
 \RequirePackage[export]{adjustbox}
 \RequirePackage{amsmath,mathtools,cancel,cases,mhchem,siunitx,extarrows,bm}
 \RequirePackage{array,booktabs,multirow,makecell,tabularx,longtable}
+\RequirePackage{diagbox,colortbl,threeparttable}
 \RequirePackage{tikz,tkz-euclide}
 \RequirePackage{enumitem,multicol,keyval}
 
@@ -24,14 +32,73 @@
 \setlength{\columnsep}{1em}
 \setlist[enumerate,1]{itemsep=2pt,parsep=0pt,topsep=1pt,leftmargin=1.7em,labelsep=0.2em}
 
-% 题库正文里的 exam-zh 专有宏的最小替身：填空作答线 / 作答空括号。
+% —— 中文字体（P1 拍板：强制 Fandol 全家桶）——
+% ElegantBook 自带的中文方案不是方正系列（本机与多数服务器都没装，导出=豆腐块废纸），
+% 就是 ctex 按机器自动猜字体（两台机器两种字形）。书本体导言区固定 chinesefont=nofont：
+% ctex 只加载 xeCJK 不配字体，这里把 exam-zh 同款 Fandol 焊死，导出的 .tex 拿到任何
+% 装了 TeX Live 的机器都出同一套字形。若宿主根本没加载 xeCJK（类选项忘了 lang=cn），
+% 明确告警而不是让用户默默收到一张缺字废纸。
+\ifcsname setCJKmainfont\endcsname
+  \setCJKmainfont{FandolSong-Regular.otf}%
+    [BoldFont=FandolHei-Regular.otf, ItalicFont=FandolKai-Regular.otf]
+  \setCJKsansfont{FandolHei-Regular.otf}[BoldFont=FandolHei-Bold.otf]
+  \setCJKmonofont{FandolFang-Regular.otf}
+  \setCJKfamilyfont{zhsong}{FandolSong-Regular.otf}
+  \setCJKfamilyfont{zhhei}{FandolHei-Regular.otf}
+  \setCJKfamilyfont{zhkai}{FandolKai-Regular.otf}
+  \setCJKfamilyfont{zhfs}{FandolFang-Regular.otf}
+  % nofont 分支的宿主类不定义这四个 family 别名，正文万一用到得有的放矢
+  \providecommand*{\songti}{\CJKfamily{zhsong}}
+  \providecommand*{\heiti}{\CJKfamily{zhhei}}
+  \providecommand*{\kaishu}{\CJKfamily{zhkai}}
+  \providecommand*{\fangsong}{\CJKfamily{zhfs}}
+  % GB 符号区里「不是汉字、却属中文语境」的字符（Ⅱ Ⅲ、①—⑩、△、∴∵、→）：
+  % Termes/CM 拉丁字体没有它们的字形，正文里会静默缺字；xeCJK 默认只管汉字与
+  % CJK 标点，这里补字符类让它们落进 Fandol 兜底。区间分隔符是 xeCJK 的 LaTeX3
+  % 箭头 "->"（写成别家样式会 "Missing number" 当场炸掉整条声明，2026-10-18 实测）。
+  % 数学模式里的同批符号导出预检 R6 已换成等价宏，两条路互不重叠；⇒⇐⇔ 连 Fandol
+  % 都没有字形，不进本表——预检 R7 会把它们换成 \ensuremath 宏。
+  \ifcsname xeCJKDeclareCharClass\endcsname
+    \xeCJKDeclareCharClass{CJK}{"2150 -> "21FF, "2234 -> "2235, "2460 -> "24FF, "25A0 -> "25FF}%
+    % 数学模式里的汉字/顿号（库内实测脏数据形态 `$或$`、`$，且当 $`）默认走 cmr
+    % 缺字，开启 CJKmath 让它们进 Fandol。
+    \xeCJKsetup{CJKmath=true}%
+  \fi
+\else
+  \PackageWarning{mblecture}{未检测到 xeCJK：ElegantBook 需要 lang=cn 类选项，否则中文缺字}
+\fi
+
+% 题库正文里的 exam-zh 专有宏的最小替身：填空作答线 / 作答括号。
 % 两个宏都必须**不带参数**：入库归一化产出的是「…（　）\paren\n\begin{choices}」这种
-% 裸写法，\paren 一旦声明必选参数，就会把紧随的 \begin 当参数吃掉，选择题环境当场崩。
+% 裸写法，\paren 一旦声明必选参数，就会把紧随的 \begin 当参数吃掉，选择题环境当场崩
+% （2026-10-18 全库压测 94 处 Counter too large 的根因：旧实验垫片 v3 的 \paren[1]
+% 吞掉 \begin 后环境残缺，enumerate 的 enumi 跨题累加，26 个一溢出）。
 \providecommand{\fillin}{\,\underline{\hspace{2.5em}}\,}
 \providecommand{\paren}{（\hspace{2em}）}
 
-% choices：exam-zh 的选择题环境。columns 可选参数与试卷侧同一套键名；
-% 书本体里用 multicol 复刻多列选项，0 视为缺省两列（照 exam-zh 的宽松写法）。
+% 数学区裸 < > 在导出侧被换成 \lt \gt（裸 < 会被预览的 HTML 解析器当标签开吃掉，
+% 整段公式丢失；见 lecture_export._lt_gt_in_math）。LaTeX kernel 也就算了，exam-zh
+% 同样没有这对宏（探针实测 \ifdefined\lt=N，类注释里的 unicode-math 假设已失效）
+% ——真实小节压测就是炸在这（Undefined control sequence）。组卷侧同款兜底见
+% paper_helper.build_exam_preamble。
+% provide 补位：宿主已有定义时自动让路。
+\providecommand{\lt}{\mathopen{<}}%
+\providecommand{\gt}{\mathclose{>}}%
+
+% 函数曲线小图：定义与 exam-zh 导言区逐字一致，防止「预览能画、书本体报错」的分叉
+\providecommand{\customcurve}[1][1]{%
+  \tikz[baseline,yshift=3,scale=0.05,thick,line width=0.8pt,
+        line cap=round, domain=-1:2.832, samples=300]{
+    \draw plot (\x,{sqrt(16/(\x+2)^2 - (\x-2)^2)});
+    \draw plot (\x,{-sqrt(16/(\x+2)^2 - (\x-2)^2)});
+    }
+}
+
+% choices：exam-zh 的选择题环境。columns 可选参数与试卷侧同一套键名。
+% 列数口径：0=缺省两列（照 exam-zh 的宽松写法）；1=竖排单列——**绝不能**把 1 交给
+% multicols（它对 1 列先告警"Using `1' columns..."再偷偷折成两栏，全库压测日志里
+% 一大片假告警就是这个）；>=2 才进 multicols。书本体没有 exam-zh 的实测列数算法，
+% 导言区构建方（lecture_export._book_fit_choice_columns）会按选项宽度估出 N 注进来。
 \makeatletter
 \newcommand\mb@cols{2}
 \define@key{mbchoices}{columns}{\renewcommand\mb@cols{#1}}
@@ -40,16 +107,19 @@
   \setkeys{mbchoices}{#1}%
   \ifnum\mb@cols=0 \renewcommand\mb@cols{2}\fi
   \par\nopagebreak\vspace{2pt}%
-  \begin{multicols}{\mb@cols}
+  \ifnum\mb@cols>1 \begin{multicols}{\mb@cols}\fi
   \begin{enumerate}[label=\textbf{\Alph*．}]%
 }{%
-  \end{enumerate}\end{multicols}\vspace{4pt}%
+  \end{enumerate}%
+  \ifnum\mb@cols>1 \end{multicols}\fi
+  \vspace{4pt}%
 }
 \makeatother
 
 % 讲义结构宏（build_lecture_latex 书本体分支会用到）：节 / 小节 / 块标题 / 换页
+% 四条定义与 lecture_export.py 试卷体内联的 \newcommand 版逐字一致，只多不少
 \providecommand{\lectsec}[1]{\par\vspace{4mm}{\Large\bfseries #1}\par\nopagebreak\vspace{2mm}}
 \providecommand{\lectsub}[1]{\par\vspace{-1mm}{\large\bfseries #1}\par\nopagebreak\vspace{2mm}}
-\providecommand{\blockhead}[1]{\par\vspace{2.5mm}{\normalsize\bfseries 【#1】\par\vspace{1mm}}}
+\providecommand{\blockhead}[1]{\par\vspace{2.5mm}{\normalsize\bfseries 【#1】}\par\vspace{1mm}}
 \providecommand{\lectpage}{\clearpage}
 \endinput

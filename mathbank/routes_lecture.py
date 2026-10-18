@@ -19,7 +19,12 @@ from sqlalchemy.orm import Session
 from mathbank.auth import require_local_token
 from mathbank.database import LectureDraft, LectureNote, get_db
 from mathbank.latex_diagnostics import build_local_latex_diagnostic
-from mathbank.lecture_export import build_lecture_latex, collect_lecture_images
+from mathbank.lecture_export import (
+    EXPORT_FMT_BOOK,
+    EXPORT_FMT_EXAM,
+    build_lecture_latex,
+    collect_lecture_images,
+)
 from mathbank.lecture_helper import (
     build_merged_preview,
     build_preview,
@@ -55,6 +60,29 @@ def _preview_payload(payload: dict, db: Session) -> dict:
     )
 
 router = APIRouter(tags=["lecture"])
+
+
+# 排版口径（待办 #8 P1）：试卷体与书本体并存，默认试卷体。别名收宽容的历史写法，
+# 但未知取值一律 400 —— 静默换排版等于给用户发一份他没点过的卷子。
+_FORMAT_ALIASES = {
+    "exam-zh": EXPORT_FMT_EXAM,
+    "exam": EXPORT_FMT_EXAM,
+    "elegantbook": EXPORT_FMT_BOOK,
+    "book": EXPORT_FMT_BOOK,
+}
+
+
+def _export_format(payload: dict) -> str:
+    raw = str(payload.get("format") or "").strip().lower() or EXPORT_FMT_EXAM
+    fmt = _FORMAT_ALIASES.get(raw)
+    if fmt is None:
+        raise HTTPException(status_code=400, detail="format 仅支持 exam-zh / elegantbook")
+    return fmt
+
+
+def _fmt_tag(fmt: str) -> str:
+    """文件名后缀：书本体 book、试卷体 exam，用户从文件名就能看出口径。"""
+    return "book" if fmt == EXPORT_FMT_BOOK else "exam"
 
 
 @router.get("/api/lecture/settings")
@@ -217,7 +245,8 @@ def export_lecture_pdf(payload: dict, db: Session = Depends(get_db)):
       走无头 Chrome/Edge 打印（``mathbank.lecture_print``），产物与网页预览
       所见即所得；浏览器缺失或打印失败返回 4xx/5xx，不静默回退——用户要能
       看出这次没出 PDF 而不是拿到一份样式完全不同的兜底件。
-    - 不带 ``print_html``：旧的 exam-zh + XeLaTeX 编译链路，保留给试卷口径
+    - 不带 ``print_html``（或 ``format=elegantbook`` 强制不走 Chrome）：exam-zh /
+      ElegantBook + XeLaTeX 编译链路，排版口径由 ``format`` 决定，默认试卷体
       与手动调用。知识块存的是 HTML / @mindmap JSON，按保守规则转换；转换
       不了的部分经 ``X-MathBank-Export-Notes`` 响应头回传（URL 编码、分号
       分隔），前端必须显示而不是静默吞掉。编译失败返回本地 LaTeX 诊断，
@@ -226,8 +255,11 @@ def export_lecture_pdf(payload: dict, db: Session = Depends(get_db)):
     view = str(payload.get("view") or "jiexi")
     if view not in ("yuan", "jiexi", "daan"):
         raise HTTPException(status_code=400, detail="view 仅支持 yuan / jiexi / daan")
+    fmt = _export_format(payload)
 
-    print_html = payload.get("print_html")
+    # 书本体是 LaTeX 专属口径：必须走 XeLaTeX，绝不能被无头 Chrome 分支截走，
+    # 否则 format 参数形同虚设（Chrome 打的是网页预览，跟 ElegantBook 无关）。
+    print_html = payload.get("print_html") if fmt == EXPORT_FMT_EXAM else None
     if print_html:
         from mathbank.lecture_print import build_print_html, detect_chrome, print_to_pdf
 
@@ -247,7 +279,7 @@ def export_lecture_pdf(payload: dict, db: Session = Depends(get_db)):
         return Response(content=pdf_bytes, media_type="application/pdf", headers=headers)
 
     preview = payload.get("preview") or _preview_payload(payload, db)
-    tex_content, degradations = build_lecture_latex(preview, view=view)
+    tex_content, degradations = build_lecture_latex(preview, view=view, fmt=fmt)
     # 死图引用（存量题指向已清理的上传文件）先降级成可见占位，再进编译：
     # 不处理的话 XeLaTeX 会因缺文件崩掉整本讲义
     from mathbank.lecture_export import sanitize_dead_image_references
@@ -286,8 +318,8 @@ def export_lecture_pdf(payload: dict, db: Session = Depends(get_db)):
             },
         )
     headers = {
-        "Content-Disposition": 'inline; filename="lecture_%s_%s.pdf"'
-        % (view, datetime.now().strftime("%Y%m%d_%H%M%S")),
+        "Content-Disposition": 'inline; filename="lecture_%s_%s_%s.pdf"'
+        % (view, _fmt_tag(fmt), datetime.now().strftime("%Y%m%d_%H%M%S")),
     }
     if degradations:
         headers["X-MathBank-Export-Notes"] = quote("；".join(degradations))
@@ -300,8 +332,9 @@ def export_lecture_tex(payload: dict, db: Session = Depends(get_db)):
     view = str(payload.get("view") or "jiexi")
     if view not in ("yuan", "jiexi", "daan"):
         raise HTTPException(status_code=400, detail="view 仅支持 yuan / jiexi / daan")
+    fmt = _export_format(payload)
     preview = payload.get("preview") or _preview_payload(payload, db)
-    tex_content, degradations = build_lecture_latex(preview, view=view)
+    tex_content, degradations = build_lecture_latex(preview, view=view, fmt=fmt)
     # 与 PDF 出口同口径：死图引用降级成可见占位，两条出口的源码才可能是同一份
     from mathbank.lecture_export import sanitize_dead_image_references
 
@@ -316,7 +349,7 @@ def export_lecture_tex(payload: dict, db: Session = Depends(get_db)):
     tex_content, preflight_notes = repair_latex_before_compile(tex_content)
     degradations.extend(preflight_notes)
     headers = {
-        "Content-Disposition": 'attachment; filename="lecture_%s.tex"' % view,
+        "Content-Disposition": 'attachment; filename="lecture_%s_%s.tex"' % (view, _fmt_tag(fmt)),
     }
     if degradations:
         headers["X-MathBank-Export-Notes"] = quote("；".join(degradations))

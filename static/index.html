@@ -3089,10 +3089,14 @@
             <button onclick="LectureManager.printLecture()" class="rounded-lg border border-violet-600 px-3 py-1.5 text-sm font-bold text-violet-700 dark:text-violet-300 hover:bg-violet-50 dark:hover:bg-violet-900/20" data-tooltip="用浏览器打印对话框输出当前视图">
                 <i class="fa-solid fa-print mr-1"></i>浏览器打印
             </button>
+            <select id="lectureExportFormat" class="glass-select rounded-lg border border-slate-300 dark:border-slate-700 px-2 py-1.5 text-sm" title="LaTeX 导出排版口径：试卷体＝exam-zh（与组卷同款）；书本体＝ElegantBook + 垫片（强制走 XeLaTeX，中文字体固定 Fandol）" aria-label="排版口径">
+                <option value="exam-zh">试卷体</option>
+                <option value="elegantbook">书本体</option>
+            </select>
             <button id="lectureExportTex" onclick="LectureManager.exportTex()" class="rounded-lg border border-slate-300 dark:border-slate-700 px-3 py-1.5 text-sm hover:bg-slate-100 dark:hover:bg-slate-800" data-tooltip="导出与 PDF 同一份 LaTeX 源码（.tex），可自行编译">
                 <i class="fa-solid fa-file-code mr-1"></i>导出 TEX
             </button>
-            <button id="lectureExportPdf" onclick="LectureManager.exportPdf()" class="rounded-lg bg-violet-600 px-3 py-1.5 text-sm font-bold text-white hover:bg-violet-700 disabled:opacity-50" data-tooltip="走组卷引擎（exam-zh + XeLaTeX）编译高清 PDF，按当前视图决定含不含答案">
+            <button id="lectureExportPdf" onclick="LectureManager.exportPdf()" class="rounded-lg bg-violet-600 px-3 py-1.5 text-sm font-bold text-white hover:bg-violet-700 disabled:opacity-50" data-tooltip="导出 PDF：试卷体优先无头浏览器打印网页预览（无浏览器时走 exam-zh + XeLaTeX）；书本体强制 ElegantBook + XeLaTeX；按当前视图决定含不含答案">
                 <i class="fa-solid fa-file-pdf mr-1"></i>导出 PDF
             </button>
         </div>

@@ -39,15 +39,19 @@ _CJK_LIKE = r"[\u2e80-\u9fff\uf900-\ufaff\u3000-\u303f\uff00-\uffef]"
 # 其它题型漏展开的存量数据；补 {} 对可选参数型宏是无害空组。
 _CJK_EATEN_MACROS = ("fillin", "paren")
 
-# 行式数学环境：这些环境里「单个反斜杠 + x/y/z」几乎必然是丢失的行分隔 \\。
-# \x \y \z 在 LaTeX 里都不是合法单字母宏，误伤面为零；其它字母（\i \j \o …）
-# 确实存在，一律不碰，只上报。
+# 行式数学环境：这些环境里「单个反斜杠 + 一个字母」几乎必然是丢失的行分隔 \\。
+# 曾只认 \x \y \z（LaTeX 无此宏、误伤面为零）；2026-10-18 全库书本体压测翻出
+# id=340 的 \a——kernel 恰好把 \a 定义成 NFSS 重音切换宏（\a#1 会改写 \, 的定义），
+# 不报错、不崩宏，却悄悄毁掉后续全部 \fillin 之类含 \, 的排版，整本书 rc=1。
+# cases/array 一类环境是纯数学区，单字母重音宏（\a \b \c \d \H \k \r \u \v）与
+# \i \j \o 都是文本模式产物，数学内容里不存在合法用法；mhchem v4 也不再预定义
+# 单字母元素宏。因此字母表放开到全部 A-Za-z：真 \\ 由 (?<!\\) 挡住，多字母宏
+# （\left \complement \lvert …）由 (?![A-Za-z]) 挡住。
 _ROW_ENVS = (
     "cases", "dcases", "rcases", "aligned", "align", "alignat", "gather",
     "split", "array", "matrix", "pmatrix", "bmatrix", "vmatrix", "Vmatrix",
     "smallmatrix", "subarray",
 )
-_LOST_ROWBREAK_LETTERS = "xyz"
 
 _DOLLAR_RE = re.compile(r"(?<!\\)\$")
 _LEFT_RE = re.compile(r"\\left\b")
@@ -59,12 +63,168 @@ _SPLIT_DELIM_RE = re.compile(
 _MACRO_CJK_RE = re.compile(
     r"(\\(?:%s))(?=%s)" % ("|".join(_CJK_EATEN_MACROS), _CJK_LIKE)
 )
+# 数学区里直接写 Unicode 符号（∞ ① ∪ ≤…）：exam-zh 与书本体的拉丁/CM 数学字体
+# 都没有这些字形，XeLaTeX 只报 Missing character 警告就静默丢字，教师拿到 PDF 才
+# 发现缺了一角。源头换成等价的纯宏（宏名后补空格终止），产物不含 Unicode，天然幂等。
+# 带 ASCII 同位符的全角符号顺手归半角。顿号、全角逗号需要 \text{} 兜底、会把 Unicode
+# 留在产物里破坏幂等，不进本表——那两类留给入库清洗（待办 #30 家族）从源头治。
+_UNICODE_MATH_TO_MACRO = {
+    "\u221e": r"\infty ", "\u222a": r"\cup ", "\u2229": r"\cap ",
+    "\u2208": r"\in ", "\u2209": r"\notin ", "\u2286": r"\subseteq ",
+    "\u2287": r"\supseteq ", "\u2282": r"\subset ", "\u2283": r"\supset ",
+    "\u2264": r"\leq ", "\u2265": r"\geq ", "\u2260": r"\neq ",
+    "\u2248": r"\approx ", "\u00d7": r"\times ", "\u00f7": r"\div ",
+    "\u00b1": r"\pm ", "\u2213": r"\mp ", "\u00b7": r"\cdot ",
+    "\u221a": r"\surd ", "\u2211": r"\sum ", "\u220f": r"\prod ",
+    "\u2234": r"\therefore ", "\u2235": r"\because ", "\u25b3": r"\triangle ",
+    "\u00b0": r"^{\circ} ",
+    "\u21d2": r"\Rightarrow ", "\u21d0": r"\Leftarrow ", "\u21d4": r"\Leftrightarrow ",
+    "\u2460": r"\textcircled{1}", "\u2461": r"\textcircled{2}",
+    "\u2462": r"\textcircled{3}", "\u2463": r"\textcircled{4}",
+    "\u2464": r"\textcircled{5}", "\u2465": r"\textcircled{6}",
+    "\u2466": r"\textcircled{7}", "\u2467": r"\textcircled{8}",
+    "\u2468": r"\textcircled{9}", "\u2469": r"\textcircled{10}",
+    "\uff0d": "-", "\uff0b": "+", "\uff1d": "=", "\uff1c": "<", "\uff1e": ">",
+    "\uff08": "(", "\uff09": ")", "\uff3b": "[", "\uff3d": "]",
+}
+
+
+def _restore_unicode_math_symbols(text: str) -> tuple[str, int, list[str]]:
+    r"""把数学区（$…$ / $$…$$ / \(…\) / \[…\]）里的 Unicode 符号换成等价宏。
+
+    必须排在 R5 之后跑：R5 把未配对的收尾 $ 全部转义后，剩下的 $ 才一定成对，
+    「按未转义 $ 配对」的扫描模型才成立。被 R5 降级段落里的符号留在文本模式，
+    本就不该进数学宏，保持原样由宿主字体决定。
+    """
+    if not any(ch in text for ch in _UNICODE_MATH_TO_MACRO):
+        return text, 0, []
+
+    out: list = []
+    samples: list = []
+    count = 0
+    closers: list = []  # 当前数学区的闭合定界符栈：display 可套 inline
+    index = 0
+    length = len(text)
+    while index < length:
+        char = text[index]
+        if char == "\\":
+            two = text[index:index + 2]
+            if closers and len(closers[-1]) == 2 and two == closers[-1]:
+                closers.pop()
+                out.append(two)
+                index += 2
+                continue
+            nxt = text[index + 1:index + 2]
+            if nxt == "(":
+                closers.append(r"\)")
+                out.append(two)
+                index += 2
+                continue
+            if nxt == "[":
+                closers.append(r"\]")
+                out.append(two)
+                index += 2
+                continue
+            out.append(two)
+            index += 2
+            continue
+        if char == "$" and index + 1 < length and text[index + 1] == "$":
+            if not closers:
+                closers.append("$$")
+                out.append("$$")
+            elif closers[-1] == "$$":
+                closers.pop()
+                out.append("$$")
+            elif closers[-1] == "$":
+                closers.pop()
+                out.append("$")
+                out.append("$")
+            else:
+                out.append("$$")
+            index += 2
+            continue
+        if char == "$":
+            if not closers:
+                closers.append("$")
+                out.append("$")
+            elif closers[-1] == "$":
+                closers.pop()
+                out.append("$")
+            else:
+                out.append("$")
+            index += 1
+            continue
+        if closers and char in _UNICODE_MATH_TO_MACRO:
+            macro = _UNICODE_MATH_TO_MACRO[char]
+            count += 1
+            if len(samples) < MAX_NOTE_SAMPLES:
+                samples.append("%s→%s" % (char, macro.strip()))
+            out.append(macro)
+            index += 1
+            continue
+        out.append(char)
+        index += 1
+    return "".join(out), count, samples
+
+
+# 蕴含箭头 ⇒ ⇐ ⇔：拉丁正文（Termes）、中文兜底（Fandol）、CM 正文都没有字形，
+# 字符类/字体配置救不了（2026-10-18 讲义压测实测：charclass 修好后 ⇒/⇔ 仍缺字）。
+# 数学区里的已由 R6 换成 \Rightarrow 等纯宏，本函数只收文本区的漏网——整句
+# str.replace，产物不含 Unicode 箭头，对整条流水线幂等。
+_GLYPHLESS_ARROWS = {
+    "\u21d2": r"\ensuremath{\Rightarrow}",
+    "\u21d0": r"\ensuremath{\Leftarrow}",
+    "\u21d4": r"\ensuremath{\Leftrightarrow}",
+}
+
+
+def _replace_glyphless_arrows(text: str) -> tuple[str, int, list[str]]:
+    r"""把中拉丁字体通缺字形的蕴含箭头换成 \ensuremath 宏（R7）。"""
+    count = 0
+    samples: list = []
+    for char, macro in _GLYPHLESS_ARROWS.items():
+        hit = text.count(char)
+        if not hit:
+            continue
+        count += hit
+        if len(samples) < MAX_NOTE_SAMPLES:
+            samples.append("%s→%s" % (char, macro))
+        text = text.replace(char, macro)
+    return text, count, samples
+
+
+_BEGIN_DOC_RE = re.compile(r"\\begin\{document\}")
+_BARE_HASH_RE = re.compile(r"(?<!\\)#")
+
+
+def _escape_bare_hashes(text: str) -> tuple[str, int, list[str]]:
+    r"""把正文区的裸 # 转义成 \#（R8）。
+
+    库内实测脏数据（id=132「$...$ ##0.5」、id=329「##$\{...\}$」，2026-10-18 全库
+    压测翻出）：正文里裸 # 是 LaTeX 保留字符，XeLaTeX 当场报 "macro parameter
+    character # in horizontal mode"。只处理 \begin{document} 之后——垫片/导言区的
+    宏定义参数引用（#1）绝不能碰，碰了整条渲染链就散架。"""
+    anchor = _BEGIN_DOC_RE.search(text)
+    if not anchor:
+        return text, 0, []
+    head, body = text[: anchor.start()], text[anchor.start():]
+    positions = [m.start() for m in _BARE_HASH_RE.finditer(body)]
+    if not positions:
+        return text, 0, []
+    samples: list = []
+    for pos in positions[:MAX_NOTE_SAMPLES]:
+        start = max(0, pos - 8)
+        samples.append(body[start:pos + 9].strip())
+    body = _BARE_HASH_RE.sub(r"\\#", body)
+    return head + body, len(positions), samples
+
+
 _ROW_ENV_RE = re.compile(
     r"(\\begin\{(?:%s)\}\*?(?:\[[^\]]*\])?)(.*?)(\\end\{(?:%s)\}\*?)"
     % ("|".join(_ROW_ENVS), "|".join(_ROW_ENVS)),
     re.S,
 )
-_LOST_ROWBREAK_RE = re.compile(r"(?<!\\)\\([%s])(?![A-Za-z])" % _LOST_ROWBREAK_LETTERS)
+_LOST_ROWBREAK_RE = re.compile(r"(?<!\\)\\([A-Za-z])(?![A-Za-z])")
 _PARAGRAPH_RE = re.compile(r"\n[ \t]*\n")
 # 段落开头是命令/结构件时不许并段：那说明奇数个 $ 属于「正常跨段的展示公式」
 # 或下一段是 choices 环境，并进去反而制造新错误。
@@ -346,5 +506,22 @@ def repair_latex_before_compile(tex_content: str) -> tuple[str, list[str]]:
         notes.append(_note(
             "公式在库里就缺少收尾的 $（无法安全补全），已降级成卷面字面符号以免整卷编译中断", n, samples
         ))
+
+    # R6 放最后：它依赖 R5 之后「剩下的 $ 必成对」这个不变量。
+    text, n, samples = _restore_unicode_math_symbols(text)
+    if n:
+        notes.append(_note("数学区里的 Unicode 符号在试卷字体中缺字形，已换成等价宏以免静默缺字", n, samples))
+
+    # R7 必须排在 R6 后：数学区里的 ⇒⇔ 已被 R6 换成纯宏，这里只收文本区的漏网。
+    text, n, samples = _replace_glyphless_arrows(text)
+    if n:
+        notes.append(_note(
+            r"蕴含箭头 ⇒⇔ 在中文字体里亦缺字形，已换成 \ensuremath 等价宏以免静默缺字", n, samples))
+
+    # R8 的裸 # 判据按「\begin{document} 之后」划界，放在最后与前面规则互不干扰。
+    text, n, samples = _escape_bare_hashes(text)
+    if n:
+        notes.append(_note(
+            r"答案正文里的裸 # 是 LaTeX 保留字符，已转义为 \# 以免编译中断", n, samples))
 
     return text, notes

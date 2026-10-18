@@ -489,3 +489,136 @@ def test_merged_lecture_latex_actually_compiles():
     text = "".join(page.get_text() for page in doc).replace(" ", "").replace("\u3000", "")
     for needle in ("子集与真子集", "集合是确定性对象", "第一讲集合间的基本关系\n【实战演练】", "目录"):
         assert needle.replace(" ", "") in text, "PDF 里缺少 %s" % needle
+
+
+# ============ 书本体（待办 #8 P1） ============
+
+
+def test_book_preamble_swaps_class_and_inlines_shim():
+    """书本体：导言区换 ElegantBook + 垫片内联，exam-zh 痕迹清零，页码样式让位给类。"""
+    import re as _re
+
+    tex, _ = build_lecture_latex(_preview(), view="yuan", fmt="elegantbook")
+    assert r"\documentclass[12pt,lang=cn,chinesefont=nofont]{elegantbook}" in tex
+    assert r"\setCJKmainfont{FandolSong-Regular.otf}" in tex      # 垫片正文已内联
+    assert r"\newenvironment{choices}" in tex
+    assert r"{exam-zh}" not in tex and r"\examsetup" not in tex
+    # 包文件专属三行绝不能进 .tex：\endinput 会把整份讲义后半截当文件尾吞掉
+    assert r"\NeedsTeXFormat" not in tex and r"\ProvidesPackage" not in tex
+    assert r"\endinput" not in tex
+    # 注释行也不能进：TeX 不读注释，进了反而被导出预检层误「修复」成假告警
+    preamble = tex.split("\\begin{document}")[0]
+    assert not _re.search(r"^\s*%", preamble, _re.M), preamble[:400]
+    # ElegantBook 自带页眉页脚，\pagestyle{plain} 会把书的版式顶掉
+    assert r"\pagestyle{plain}" not in tex
+    # 版式宏与垫片同名：书本体必须 provide，不能 new 出「已定义」报错
+    assert r"\providecommand{\lectsec}" in tex and r"\newcommand{\lectsec}" not in tex
+
+
+def test_exam_default_branch_is_untouched_by_book_flag():
+    """默认口径逐字不变：书本体是加分支，不是改老路（历史断言全部继续有效）。"""
+    tex, _ = build_lecture_latex(_preview(), view="yuan")
+    assert r"\documentclass[fontset=fandol]{exam-zh}" in tex
+    assert r"\newcommand{\lectsec}" in tex and r"\pagestyle{plain}" in tex
+    assert "elegantbook" not in tex
+
+
+def test_book_choice_column_estimation():
+    r"""Python 侧列数估算：短选项 4 列、中等 2 列、长/含图 1 列、显式值不重猜。"""
+    from mathbank.lecture_export import _book_fit_choice_columns, _estimate_choice_columns
+
+    def _block(items):
+        return "\\begin{choices}\n" + "".join("\\item %s\n" % it for it in items) + "\\end{choices}"
+
+    short = _block(["$1$", "$2$", "$3$", "$4$"])
+    assert _estimate_choice_columns(short) == 4
+    assert r"[columns=4]" in _book_fit_choice_columns(short)
+
+    medium = _block([u"充分不必要条件且需要课堂讨论", u"必要不充分条件且需要课堂讨论",
+                     u"充要条件且需要课堂讨论", u"既不充分也不必要条件"])
+    assert _estimate_choice_columns(medium) == 2
+
+    long = _block([u"存在实数使得该结论在全体实数范围内都不成立需要进一步讨论验证其真伪" * 2,
+                   u"$x$ 的取值范围如解析所示", u"$y$ 的取值范围如解析所示", u"以上都不对"])
+    assert _estimate_choice_columns(long) == 1
+    assert r"[columns=1]" in _book_fit_choice_columns(long)
+
+    img = _block([r"$1$", r"$2$", r"$3$", r"\includegraphics[width=3cm]{a.png}"])
+    assert _estimate_choice_columns(img) == 1
+
+    explicit = r"\begin{choices}[columns=2]" + "\n\\item $1$\n\\item $2$\n\\end{choices}"
+    assert _book_fit_choice_columns(explicit) == explicit
+
+    assert _estimate_choice_columns(r"\begin{choices}" + "\n无 item 的坏块\n" + r"\end{choices}") == 0
+
+
+def test_book_respects_explicit_option_columns_field():
+    r"""题目字段显式标了 2 列：即使选项短到能塞 4 列，也绝不覆盖老师的手动口径。"""
+    p = _preview()
+    p["questions"][1]["content"] = (
+        "则 $A\\cap B=$（　）\n\\begin{choices}\n\\item $1$\n\\item $2$\n\\item $3$\n\\item $4$\n\\end{choices}")
+    p["questions"][1]["option_columns"] = 2
+    tex, _ = build_lecture_latex(p, view="yuan", fmt="elegantbook")
+    assert r"\begin{choices}[columns=2]" in tex
+    assert r"[columns=4]" not in tex
+
+
+def test_export_tex_route_carries_format(client):
+    r"""TEX 出口：format 决定源码口径，文件名带 book/exam 后缀让用户一眼分辨。"""
+    r = client.post("/api/lecture/export/tex", headers=_headers(),
+                    json=dict(SEC, view="yuan", format="elegantbook", preview=_preview()))
+    assert r.status_code == 200
+    body = r.text
+    assert "elegantbook" in body and "exam-zh" not in body
+    assert "lecture_yuan_book.tex" in r.headers["content-disposition"]
+
+    r2 = client.post("/api/lecture/export/tex", headers=_headers(),
+                     json=dict(SEC, view="yuan", preview=_preview()))
+    assert r2.status_code == 200
+    assert "lecture_yuan_exam.tex" in r2.headers["content-disposition"]
+
+
+def test_export_pdf_route_book_skips_headless_chrome(client, monkeypatch):
+    r"""书本体 + print_html 同车：必须无视网页打印支路，逼 XeLaTeX 出 ElegantBook。"""
+    captured = {}
+
+    def fake_compile(tex, image_paths):
+        captured["tex"] = tex
+        return b"%PDF-1.4 fake", ""
+
+    monkeypatch.setattr(_main, "compile_tex_to_pdf", fake_compile)
+    r = client.post("/api/lecture/export/pdf", headers=_headers(), json=dict(
+        SEC, view="jiexi", format="elegantbook", preview=_preview(),
+        print_html="<html><body>网页预览</body></html>"))
+    assert r.status_code == 200
+    assert captured.get("tex") and "elegantbook" in captured["tex"]
+    assert "_book_" in r.headers["content-disposition"]
+
+
+def test_export_routes_reject_unknown_format(client):
+    r"""未知口径一律 400：静默换排版等于给用户发一份他没点过的讲义。"""
+    bad = dict(SEC, view="yuan", format="kindle", preview=_preview())
+    assert client.post("/api/lecture/export/pdf", headers=_headers(), json=bad).status_code == 400
+    assert client.post("/api/lecture/export/tex", headers=_headers(), json=bad).status_code == 400
+
+
+def test_frontend_format_lock():
+    r"""前端下拉取值与后端白名单逐字一致（和 X-MathBank-Export-Notes 头同一招数）。"""
+    from pathlib import Path
+
+    from mathbank import routes_lecture
+
+    root = Path(__file__).resolve().parents[1]
+    html = (root / "static" / "index.html").read_text(encoding="utf-8")
+    js = (root / "static" / "js" / "lecture.js").read_text(encoding="utf-8")
+
+    import re as _re
+    m = _re.search(r'<select id="lectureExportFormat".*?</select>', html, _re.S)
+    assert m, "讲义工具条必须有 lectureExportFormat 下拉"
+    values = set(_re.findall(r'<option value="([^"]+)"', m.group(0)))
+    assert values == {"exam-zh", "elegantbook"}
+    assert values <= set(routes_lecture._FORMAT_ALIASES), "下拉取值必须都在后端白名单里"
+
+    assert "format !== 'elegantbook'" in js, "书本体必须跳过 print_html 支路"
+    assert "format: format" in js and "format: currentExportFormat()" in js
+    assert "'_book' : '_exam'" in js, "TEX 下载名要能分辨口径"
