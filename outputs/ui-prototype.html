@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>数学题库 · 视觉升级原型（现代简洁·浅色）</title>
+<!-- KaTeX 用于原型中公式实时预览；离线时公式回退为源码文本，不影响布局判断 -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css" crossorigin="anonymous" />
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js" crossorigin="anonymous"></script>
+<style>
+  :root{
+    /* —— 色彩令牌 —— */
+    --bg: #f6f7f9;            /* 页面底色：极浅灰 */
+    --surface: #ffffff;       /* 卡片/面板 */
+    --surface-2: #fbfbfc;     /* 次级面（输入框等） */
+    --brand: #4f46e5;         /* 主品牌色：沉静靛蓝 */
+    --brand-weak: #eef0fe;    /* 品牌弱色（选中/浅底） */
+    --brand-hover: #4338ca;
+    --ink: #1f2430;           /* 主文字 */
+    --ink-2: #5b6472;         /* 次文字 */
+    --ink-3: #9aa3b2;         /* 弱文字/占位 */
+    --line: #eceef2;          /* 描边 */
+    --line-strong: #e1e4ea;
+    --ok: #16a34a; --warn: #d97706; --danger: #dc2626;
+    --ok-bg:#eafaf0; --warn-bg:#fdf3e7; --danger-bg:#fdecec;
+    --radius: 14px; --radius-sm: 10px; --radius-xs: 8px;
+    --shadow-sm: 0 1px 2px rgba(16,24,40,.04);
+    --shadow: 0 4px 16px rgba(16,24,40,.06);
+    --shadow-lg: 0 12px 40px rgba(16,24,40,.10);
+    --font: -apple-system, BlinkMacSystemFont, "Inter", "Outfit", "Segoe UI", system-ui, "PingFang SC", "Microsoft YaHei", sans-serif;
+    --mono: "SFMono-Regular", ui-monospace, "JetBrains Mono", Consolas, monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{font-family:var(--font);background:var(--bg);color:var(--ink);
+    -webkit-font-smoothing:antialiased;line-height:1.6;font-size:15px}
+  a{color:inherit;text-decoration:none}
+  .wrap{max-width:1180px;margin:0 auto;padding:40px 28px 80px}
+  h1{font-size:30px;font-weight:700;letter-spacing:-.02em;margin:0 0 6px}
+  h2{font-size:20px;font-weight:650;margin:48px 0 16px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+  .sub{color:var(--ink-2);margin:0 0 4px}
+  .tag-note{display:inline-block;margin-top:8px;font-size:12.5px;color:var(--ink-3);
+    background:var(--surface);border:1px solid var(--line);padding:5px 10px;border-radius:999px}
+
+  /* —— 设计令牌展示 —— */
+  .tokens{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:14px;margin-top:18px}
+  .sw{height:64px;border-radius:var(--radius-sm);border:1px solid var(--line)}
+  .sw-cap{font-size:12px;color:var(--ink-2);margin-top:6px}
+  .sw-cap b{color:var(--ink);font-weight:600;display:block;font-size:12.5px}
+  .type-row{display:flex;align-items:baseline;gap:16px;padding:8px 0;border-bottom:1px dashed var(--line)}
+  .type-row .sz{color:var(--ink-3);font-family:var(--mono);font-size:12px;width:64px}
+  .comp{display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin-top:14px}
+
+  /* —— 组件 —— */
+  .btn{display:inline-flex;align-items:center;gap:6px;font:inherit;font-weight:600;font-size:14px;
+    padding:9px 16px;border-radius:var(--radius-xs);border:1px solid transparent;cursor:pointer;transition:.15s}
+  .btn-primary{background:var(--brand);color:#fff}
+  .btn-primary:hover{background:var(--brand-hover)}
+  .btn-ghost{background:var(--surface);border-color:var(--line-strong);color:var(--ink)}
+  .btn-ghost:hover{border-color:var(--brand);color:var(--brand)}
+  .btn-soft{background:var(--brand-weak);color:var(--brand)}
+  .input{font:inherit;font-size:14px;padding:10px 12px;border:1px solid var(--line-strong);
+    border-radius:var(--radius-xs);background:var(--surface-2);color:var(--ink);min-width:220px}
+  .input:focus{outline:none;border-color:var(--brand);background:#fff;box-shadow:0 0 0 3px var(--brand-weak)}
+  .chip{font-size:12.5px;font-weight:600;padding:4px 10px;border-radius:999px;background:var(--brand-weak);color:var(--brand)}
+  .chip-gray{background:var(--surface-2);color:var(--ink-2);border:1px solid var(--line)}
+  .badge{font-size:11.5px;font-weight:700;padding:3px 9px;border-radius:6px}
+  .badge-ok{background:var(--ok-bg);color:var(--ok)}
+  .badge-warn{background:var(--warn-bg);color:var(--warn)}
+  .badge-danger{background:var(--danger-bg);color:var(--danger)}
+  .seg{display:inline-flex;background:var(--surface-2);border:1px solid var(--line);border-radius:var(--radius-xs);padding:3px}
+  .seg button{font:inherit;font-size:13px;font-weight:600;border:0;background:transparent;color:var(--ink-2);
+    padding:6px 14px;border-radius:7px;cursor:pointer}
+  .seg button.on{background:#fff;color:var(--brand);box-shadow:var(--shadow-sm)}
+  .row{display:flex;align-items:center;gap:10px}
+
+  /* —— 应用外壳 —— */
+  .shell{margin-top:18px;border:1px solid var(--line);border-radius:18px;overflow:hidden;
+    background:var(--surface);box-shadow:var(--shadow-lg);display:grid;grid-template-columns:232px 1fr;min-height:560px}
+  .side{background:linear-gradient(180deg,#fbfbfd,#f7f8fb);border-right:1px solid var(--line);padding:18px 14px}
+  .logo{display:flex;align-items:center;gap:10px;font-weight:750;font-size:16px;padding:6px 8px 16px}
+  .logo .dot{width:30px;height:30px;border-radius:9px;background:var(--brand);color:#fff;
+    display:grid;place-items:center;font-size:15px;box-shadow:var(--shadow-sm)}
+  .nav{display:flex;flex-direction:column;gap:3px}
+  .nav a{display:flex;align-items:center;gap:11px;padding:10px 12px;border-radius:var(--radius-xs);
+    color:var(--ink-2);font-weight:550;font-size:14px}
+  .nav a .ic{width:18px;text-align:center;color:var(--ink-3)}
+  .nav a:hover{background:var(--surface-2);color:var(--ink)}
+  .nav a.on{background:var(--brand-weak);color:var(--brand);font-weight:650}
+  .nav .sec{font-size:11px;letter-spacing:.08em;color:var(--ink-3);text-transform:uppercase;margin:14px 12px 4px}
+  .main{display:flex;flex-direction:column}
+  .topbar{display:flex;align-items:center;gap:14px;padding:14px 22px;border-bottom:1px solid var(--line);background:var(--surface)}
+  .topbar .search{flex:1;max-width:420px;position:relative}
+  .topbar .search input{width:100%;font:inherit;font-size:14px;padding:9px 12px 9px 34px;
+    border:1px solid var(--line-strong);border-radius:999px;background:var(--surface-2)}
+  .topbar .search input:focus{outline:none;border-color:var(--brand);background:#fff;box-shadow:0 0 0 3px var(--brand-weak)}
+  .topbar .search .mag{position:absolute;left:12px;top:50%;transform:translateY(-50%);color:var(--ink-3)}
+  .avatar{width:34px;height:34px;border-radius:50%;background:var(--brand-weak);color:var(--brand);
+    display:grid;place-items:center;font-weight:700;font-size:14px}
+  .content{padding:22px;overflow:auto}
+  .filterbar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:18px}
+  .filterbar .input{min-width:0;flex:0 0 auto;padding:8px 12px}
+
+  /* —— 题目卡片 —— */
+  .qcard{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);
+    padding:18px 20px;margin-bottom:14px;box-shadow:var(--shadow-sm);transition:.15s}
+  .qcard:hover{border-color:var(--line-strong);box-shadow:var(--shadow)}
+  .qhead{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+  .qhead .no{font-family:var(--mono);font-size:12.5px;color:var(--ink-3)}
+  .qmeta{margin-left:auto;display:flex;gap:8px;align-items:center}
+  .qbody{font-size:15.5px}
+  .qstem{margin:0 0 12px;display:flex;gap:10px}
+  .qstem .qnum{color:var(--brand);font-weight:700}
+  .opts{display:grid;grid-template-columns:1fr 1fr;gap:8px 22px;margin:8px 0 12px}
+  .opt{display:flex;gap:9px;align-items:flex-start;font-size:14.5px}
+  .opt .lab{width:22px;height:22px;border-radius:7px;background:var(--surface-2);border:1px solid var(--line);
+    display:grid;place-items:center;font-size:12.5px;font-weight:700;color:var(--ink-2);flex:0 0 auto}
+  .qfoot{display:flex;align-items:center;gap:8px;border-top:1px dashed var(--line);padding-top:11px;margin-top:4px}
+  .qfoot .src{margin-left:auto;font-size:12.5px;color:var(--ink-3)}
+
+  .formula{font-size:16px}
+  .card2{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:18px 20px;box-shadow:var(--shadow-sm)}
+  .grid2{display:grid;grid-template-columns:1.4fr 1fr;gap:18px}
+  .palette{display:flex;flex-direction:column;gap:8px}
+  .palette .pitem{display:flex;align-items:center;gap:10px;padding:11px 13px;border:1px solid var(--line);
+    border-radius:var(--radius-xs);background:var(--surface-2);font-size:14px}
+  .palette .pitem .grip{color:var(--ink-3)}
+  .canvas{border:1.5px dashed var(--line-strong);border-radius:var(--radius);padding:18px;min-height:240px;
+    background:repeating-linear-gradient(45deg,#fafbfc,#fafbfc 12px,#f4f5f7 12px,#f4f5f7 24px)}
+  .canvas .ph{color:var(--ink-3);text-align:center;padding-top:90px;font-size:14px}
+  .modal-mask{position:fixed;inset:0;background:rgba(16,24,40,.32);display:grid;place-items:center;backdrop-filter:blur(2px)}
+  .modal{width:440px;max-width:92vw;background:var(--surface);border-radius:18px;box-shadow:var(--shadow-lg);overflow:hidden}
+  .modal .mh{padding:18px 20px;border-bottom:1px solid var(--line);font-weight:700;font-size:16px}
+  .modal .mb{padding:20px;color:var(--ink-2);font-size:14px}
+  .modal .mf{padding:14px 20px;border-top:1px solid var(--line);display:flex;justify-content:flex-end;gap:10px}
+  .showcase-note{font-size:12.5px;color:var(--ink-3);margin-top:10px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>数学题库 · 视觉升级原型</h1>
+  <p class="sub">方向：<b>整站视觉升级 · 现代简洁·浅色</b> —— 保留现有页面结构与全部功能，重做设计语言。</p>
+  <span class="tag-note">原型仅用于确认风格方向，非最终代码；公式由 KaTeX 实时渲染（离线回退为源码）</span>
+
+  <!-- ============ 设计语言 ============ -->
+  <h2>① 设计语言（Design Tokens）</h2>
+  <div class="tokens">
+    <div><div class="sw" style="background:var(--bg)"></div><div class="sw-cap"><b>页面底</b>#f6f7f9</div></div>
+    <div><div class="sw" style="background:var(--surface)"></div><div class="sw-cap"><b>卡片</b>#ffffff</div></div>
+    <div><div class="sw" style="background:var(--brand)"></div><div class="sw-cap"><b>品牌</b>#4f46e5</div></div>
+    <div><div class="sw" style="background:var(--brand-weak)"></div><div class="sw-cap"><b>品牌弱</b>#eef0fe</div></div>
+    <div><div class="sw" style="background:var(--ink)"></div><div class="sw-cap"><b>主文字</b>#1f2430</div></div>
+    <div><div class="sw" style="background:var(--ink-2)"></div><div class="sw-cap"><b>次文字</b>#5b6472</div></div>
+    <div><div class="sw" style="background:var(--line)"></div><div class="sw-cap"><b>描边</b>#eceef2</div></div>
+    <div><div class="sw" style="background:var(--ok)"></div><div class="sw-cap"><b>成功</b>#16a34a</div></div>
+    <div><div class="sw" style="background:var(--warn)"></div><div class="sw-cap"><b>提醒</b>#d97706</div></div>
+    <div><div class="sw" style="background:var(--danger)"></div><div class="sw-cap"><b>危险</b>#dc2626</div></div>
+  </div>
+
+  <h3 style="margin:26px 0 6px;font-size:15px;color:var(--ink-2)">字号阶梯</h3>
+  <div>
+    <div class="type-row"><span class="sz">30/700</span><span style="font-size:30px;font-weight:700">标题 H1</span></div>
+    <div class="type-row"><span class="sz">20/650</span><span style="font-size:20px;font-weight:650">区块标题 H2</span></div>
+    <div class="type-row"><span class="sz">16/600</span><span style="font-size:16px;font-weight:600">强调文字</span></div>
+    <div class="type-row"><span class="sz">15/400</span><span style="font-size:15px">正文正文正文</span></div>
+    <div class="type-row"><span class="sz">12.5/600</span><span style="font-size:12.5px;font-weight:600;color:var(--ink-2)">辅助/标签</span></div>
+  </div>
+
+  <h3 style="margin:26px 0 6px;font-size:15px;color:var(--ink-2)">基础组件</h3>
+  <div class="comp">
+    <button class="btn btn-primary">+ 新建题目</button>
+    <button class="btn btn-soft">AI 拆题</button>
+    <button class="btn btn-ghost">导出 PDF</button>
+    <input class="input" placeholder="搜索题目、知识点…" />
+    <span class="chip">三角函数</span>
+    <span class="chip-gray">L3 应用</span>
+    <span class="badge badge-ok">已入库</span>
+    <span class="badge badge-warn">待审核</span>
+    <span class="badge badge-danger">查重命中</span>
+  </div>
+  <div class="comp" style="margin-top:14px">
+    <div class="seg"><button class="on">全部</button><button>选择题</button><button>填空</button><button>解答</button></div>
+    <span class="tag-note">圆角卡片 · 浅描边 · 柔和阴影 · 单一靛蓝强调色</span>
+  </div>
+
+  <!-- ============ 应用外壳 + 题库列表 ============ -->
+  <h2>② 应用外壳 · 题库列表</h2>
+  <div class="shell">
+    <aside class="side">
+      <div class="logo"><span class="dot">∑</span> 数学题库</div>
+      <nav class="nav">
+        <a class="on"><span class="ic">▦</span> 题库</a>
+        <a><span class="ic">↧</span> 导入</a>
+        <a><span class="ic">▤</span> 组卷排版</a>
+        <a><span class="ic">❏</span> 讲义</a>
+        <a><span class="ic">✎</span> 教案</a>
+        <div class="sec">其他</div>
+        <a><span class="ic">✎</span> 草稿箱</a>
+        <a><span class="ic">⌥</span> 考向树</a>
+        <a><span class="ic">⚙</span> 设置</a>
+      </nav>
+    </aside>
+    <section class="main">
+      <div class="topbar">
+        <div class="search"><span class="mag">⌕</span><input placeholder="搜索题目、知识点、来源…" /></div>
+        <button class="btn btn-soft">筛选</button>
+        <span class="avatar">师</span>
+      </div>
+      <div class="content">
+        <div class="filterbar">
+          <input class="input" placeholder="知识点：三角函数" style="max-width:200px" />
+          <div class="seg"><button class="on">全部</button><button>选择</button><button>填空</button><button>解答</button></div>
+          <div class="seg"><button class="on">全部难度</button><button>L2</button><button>L3</button><button>L4</button></div>
+          <span class="chip-gray">共 38,412 题</span>
+        </div>
+
+        <!-- 题目卡片 -->
+        <article class="qcard">
+          <div class="qhead">
+            <span class="no">#10293</span>
+            <span class="badge badge-ok">已入库</span>
+            <div class="qmeta">
+              <span class="chip">三角函数</span>
+              <span class="chip-gray">L3 应用</span>
+            </div>
+          </div>
+          <div class="qbody">
+            <div class="qstem"><span class="qnum">1.</span>
+              <span>已知函数 <span class="formula" data-tex="f(x)=x^2-2x+1"></span>，求其最小值及取得最小值时 <span class="formula" data-tex="x"></span> 的值。</span>
+            </div>
+            <div class="opts">
+              <div class="opt"><span class="lab">A</span><span>最小值为 <span class="formula" data-tex="0"></span>，<span class="formula" data-tex="x=1"></span></span></div>
+              <div class="opt"><span class="lab">B</span><span>最小值为 <span class="formula" data-tex="1"></span>，<span class="formula" data-tex="x=0"></span></span></div>
+              <div class="opt"><span class="lab">C</span><span>最小值为 <span class="formula" data-tex="-1"></span>，<span class="formula" data-tex="x=1"></span></span></div>
+              <div class="opt"><span class="lab">D</span><span>无最小值</span></div>
+            </div>
+          </div>
+          <div class="qfoot">
+            <span class="badge badge-warn">待审核解析</span>
+            <span class="src">来源：2024 新高考 I 卷 · 数学</span>
+          </div>
+        </article>
+
+        <article class="qcard">
+          <div class="qhead">
+            <span class="no">#10294</span>
+            <span class="badge badge-danger">查重命中</span>
+            <div class="qmeta">
+              <span class="chip">导数</span>
+              <span class="chip-gray">L4 综合</span>
+            </div>
+          </div>
+          <div class="qbody">
+            <div class="qstem"><span class="qnum">2.</span>
+              <span>设 <span class="formula" data-tex="f(x)=e^x\sin x"></span>，则 <span class="formula" data-tex="f'(0)="></span><span class="formula" data-tex="1"></span>。</span>
+            </div>
+            <div class="opts">
+              <div class="opt"><span class="lab">A</span><span><span class="formula" data-tex="0"></span></span></div>
+              <div class="opt"><span class="lab">B</span><span><span class="formula" data-tex="1"></span></span></div>
+              <div class="opt"><span class="lab">C</span><span><span class="formula" data-tex="e"></span></span></div>
+              <div class="opt"><span class="lab">D</span><span><span class="formula" data-tex="-1"></span></span></div>
+            </div>
+          </div>
+          <div class="qfoot">
+            <span class="badge badge-ok">已入库</span>
+            <span class="src">来源：2023 八省联考题库</span>
+          </div>
+        </article>
+      </div>
+    </section>
+  </div>
+
+  <!-- ============ 组卷工作台 ============ -->
+  <h2>③ 组卷排版工作台（草图）</h2>
+  <div class="grid2">
+    <div class="card2">
+      <div style="font-weight:650;margin-bottom:12px">试卷结构</div>
+      <div class="palette">
+        <div class="pitem"><span class="grip">⠿</span> 一、选择题（共 8 题）</div>
+        <div class="pitem"><span class="grip">⠿</span> 二、填空题（共 4 题）</div>
+        <div class="pitem"><span class="grip">⠿</span> 三、解答题（共 6 题）</div>
+        <div class="pitem" style="border-style:dashed;color:var(--ink-3)"><span class="grip">＋</span> 添加题型区块</div>
+      </div>
+      <div class="row" style="margin-top:16px">
+        <button class="btn btn-primary">生成试卷</button>
+        <button class="btn btn-ghost">导出 LaTeX</button>
+        <button class="btn btn-soft">智能抽题</button>
+      </div>
+    </div>
+    <div class="card2">
+      <div style="font-weight:650;margin-bottom:12px">预览画布</div>
+      <div class="canvas"><div class="ph">从左侧拖入题型区块，<br/>或从题库按条件抽取题目</div></div>
+    </div>
+  </div>
+
+  <!-- ============ 模态/弹窗 ============ -->
+  <h2>④ 弹窗示例（新建 / 确认）</h2>
+  <div class="modal-mask">
+    <div class="modal">
+      <div class="mh">新建题目</div>
+      <div class="mb">将按当前活跃大纲（人教 A 版）自动归类。可稍后在编辑器中补充解析与配图。</div>
+      <div class="mf">
+        <button class="btn btn-ghost">取消</button>
+        <button class="btn btn-primary">创建</button>
+      </div>
+    </div>
+  </div>
+
+  <p class="showcase-note">原型到此为止。确认风格后，我会把以上设计令牌落地为 <code>static/css/app.css</code> 的 CSS 变量体系，并逐屏重做题库列表 / 导入 / 组卷 / 讲义 / 设置 的布局与组件，保持纯 HTML+JS、无构建、级联加载顺序不变。</p>
+</div>
+
+<script>
+  // 公式实时渲染（KaTeX 加载完成后）
+  function renderFormulas(){
+    if(!window.katex) return;
+    document.querySelectorAll('.formula[data-tex]').forEach(el=>{
+      try{ katex.render(el.getAttribute('data-tex'), el, {throwOnError:false, displayMode:false}); }
+      catch(e){ el.textContent = el.getAttribute('data-tex'); }
+    });
+  }
+  if(window.katex) renderFormulas();
+  else window.addEventListener('load', ()=>setTimeout(renderFormulas,300));
+</script>
+</body>
+</html>
