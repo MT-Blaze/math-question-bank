@@ -7,3 +7,8 @@
 *.css text eol=lf
 *.js text eol=lf
 *.html text eol=lf
+
+# Python 源码与 Markdown 同样钉死 LF：这两个类型曾以 CRLF 检出，git 每次 add/diff 都要
+# 刷一行「LF will be replaced by CRLF」，且真实改动会被淹没在换行符噪声里。
+*.py text eol=lf
+*.md text eol=lf
