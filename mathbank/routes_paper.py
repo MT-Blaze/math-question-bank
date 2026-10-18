@@ -16,6 +16,7 @@ from mathbank.asset_security import AssetSecurityError, InvalidImageError, Uploa
 from mathbank.content_locks import ContentLockIntegrityError, lock_visible_math, restore_visible_math
 from mathbank.database import Paper, PaperQuestion, Question, get_db
 from mathbank.latex_diagnostics import build_local_latex_diagnostic, merge_ai_latex_diagnostic
+from mathbank.latex_preflight import repair_latex_before_compile
 from mathbank.metadata import _decorate_topic_field, get_metadata_cache, schedule_database_export
 from mathbank.paper_helper import build_answer_sheet_latex, build_latex_document, collect_referenced_images, create_full_bundle_zip_package, create_tex_zip_package, patch_missing_latex_images, restore_storage_images_to_markdown
 from mathbank.pdf_inspector_helper import inspect_and_extract_pdf, merge_pdf_page_texts
@@ -2120,6 +2121,10 @@ def delete_paper(paper_id: int, background_tasks: BackgroundTasks, db: Session =
         return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
 
 
+# 响应头里说明正文的编码后预算：留足余量给 Content-Disposition 等其它头。
+MAX_NOTES_HEADER_CHARS = 6000
+
+
 def _patch_export_tex_images(documents: list, image_paths: list) -> tuple:
     """把正文/答案册/答题卡的缺图引用统一降级成卷面红字占位。
 
@@ -2153,6 +2158,58 @@ def _missing_image_headers(missing_images: list) -> dict:
     if missing_images:
         headers["X-Paper-Missing-Image-Files"] = quote(",".join(missing_images), safe="")
     return headers
+
+
+def _preflight_export_tex(documents: list) -> tuple:
+    """把入库即坏的公式形态在导出前自愈一遍（待办 #8 P0）。
+
+    返回 ``(改写后的文档列表, 人话说明列表)``。与 compile_tex_to_pdf 内置的那道网是同一
+    函数、重复调用幂等；在这里先做一遍，是为了把「系统替你改了什么」拿出来放进响应头，
+    而不是让用户以为卷面一切正常——这些题的原文仍该回题库修。
+    """
+    patched: list = []
+    notes: list = []
+    for tex in documents:
+        if not tex:
+            patched.append(tex)
+            continue
+        item, item_notes = repair_latex_before_compile(tex)
+        patched.append(item)
+        for note in item_notes:
+            if note not in notes:
+                notes.append(note)
+    return patched, notes
+
+
+def _export_notes_headers(notes: list) -> dict:
+    """自愈/降级说明上报头（条数 + 原文）。
+
+    头值必须是 ASCII，中文一律百分号编码（与讲义导出 X-MathBank-Export-Notes 同一路子），
+    前端 decode 后可直接拼进 Toast。条数单独给一个头：说明正文里本来就带「；」
+    （样例之间用它分隔），让前端去拆字符串必数错。
+
+    长度护栏不是洁癖：每条说明都带公式样例，百分号编码后中文按三倍膨胀，四十题的
+    长卷能把响应头撑到近 10KB——那种响应会被代理层直接掐掉，用户看到的是「导出失败」
+    而不是「有几道题被救过」。超限时保留前面的说明并在计数头里如实给出总条数。
+    """
+    from urllib.parse import quote
+
+    if not notes:
+        return {}
+    kept: list = []
+    budget = MAX_NOTES_HEADER_CHARS
+    separator = quote("；", safe="")  # 分隔符自己也要编码，一条就占九个字符
+    for note in notes:
+        cost = len(quote(note, safe="")) + len(separator)
+        if cost > budget:
+            break
+        kept.append(note)
+        budget -= cost
+    return {
+        "X-MathBank-Export-Notes": quote("；".join(kept), safe=""),
+        "X-MathBank-Export-Note-Count": str(len(notes)),
+        "X-MathBank-Export-Notes-Shown": str(len(kept)),
+    }
 
 
 def _build_paper_questions_data(questions_input, db):
@@ -2232,6 +2289,11 @@ def export_paper_tex(payload: dict, db: Session = Depends(get_db)):
         (tex_main, tex_ans, tex_answer_sheet), missing_images = _patch_export_tex_images(
             [tex_main, tex_ans, tex_answer_sheet], image_paths
         )
+        # 公式自愈：ZIP / 归档里的 .tex 与编译用的 PDF 必须同一口径，且拿去别处
+        # 编译也不该因为入库脏数据炸掉（待办 #8 P0）。
+        (tex_main, tex_ans, tex_answer_sheet), export_notes = _preflight_export_tex(
+            [tex_main, tex_ans, tex_answer_sheet]
+        )
         zip_bytes = create_tex_zip_package(title, tex_main, tex_ans, image_paths, answer_sheet_tex=tex_answer_sheet)
         
         from urllib.parse import quote
@@ -2240,6 +2302,7 @@ def export_paper_tex(payload: dict, db: Session = Depends(get_db)):
         return Response(content=zip_bytes, media_type="application/zip", headers={
             "Content-Disposition": f"attachment; filename=\"paper_export.zip\"; filename*=utf-8''{encoded_filename}",
             **_missing_image_headers(missing_images),
+            **_export_notes_headers(export_notes),
         })
     except Exception as e:
         return JSONResponse(content={"status": "error", "message": f"生成 LaTeX 源码失败: {str(e)}"}, status_code=500)
@@ -2271,6 +2334,11 @@ def export_paper_bundle(payload: dict, db: Session = Depends(get_db)):
         (tex_main, tex_ans, tex_answer_sheet), missing_images = _patch_export_tex_images(
             [tex_main, tex_ans, tex_answer_sheet], image_paths
         )
+        # 公式自愈：ZIP / 归档里的 .tex 与编译用的 PDF 必须同一口径，且拿去别处
+        # 编译也不该因为入库脏数据炸掉（待办 #8 P0）。
+        (tex_main, tex_ans, tex_answer_sheet), export_notes = _preflight_export_tex(
+            [tex_main, tex_ans, tex_answer_sheet]
+        )
 
         # Pre-compile PDFs
         main_pdf_bytes, _ = _main.compile_tex_to_pdf(tex_main, image_paths)
@@ -2295,6 +2363,7 @@ def export_paper_bundle(payload: dict, db: Session = Depends(get_db)):
         return Response(content=zip_bytes, media_type="application/zip", headers={
             "Content-Disposition": f"attachment; filename=\"paper_bundle.zip\"; filename*=utf-8''{encoded_filename}",
             **_missing_image_headers(missing_images),
+            **_export_notes_headers(export_notes),
         })
     except Exception as e:
         return JSONResponse(content={"status": "error", "message": f"生成全套合并包失败: {str(e)}"}, status_code=500)
@@ -2378,6 +2447,8 @@ def export_paper_pdf(payload: dict, db: Session = Depends(get_db)):
         # 缺图先降级成红字占位：宁可卷面上少一张图并写明原因，也不能让一张死链
         # 触发 -halt-on-error 把整卷编译干掉。
         (tex_content,), missing_images = _patch_export_tex_images([tex_content], image_paths)
+        # 同样先自愈再编译；上报文案自己拿，成功与否都要让前端知道改了什么。
+        (tex_content,), export_notes = _preflight_export_tex([tex_content])
         pdf_bytes, log_or_err = _main.compile_tex_to_pdf(tex_content, image_paths)
         
         if pdf_bytes:
@@ -2385,6 +2456,7 @@ def export_paper_pdf(payload: dict, db: Session = Depends(get_db)):
             return Response(content=pdf_bytes, media_type="application/pdf", headers={
                 "Content-Disposition": f'inline; filename="{filename}"',
                 **_missing_image_headers(missing_images),
+                **_export_notes_headers(export_notes),
             })
         else:
             diagnostic = _main.explain_latex_compile_error(log_or_err, tex_content)
@@ -2395,6 +2467,7 @@ def export_paper_pdf(payload: dict, db: Session = Depends(get_db)):
                     "diagnostic": diagnostic,
                     # 缺图清单单独回传：即使编译因别的原因失败，用户也要一眼看到哪些图没进卷。
                     "missing_images": missing_images,
+                    "export_notes": export_notes,
                 },
                 status_code=400,
             )

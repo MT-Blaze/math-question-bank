@@ -2409,6 +2409,28 @@
         return count;
     }
 
+    // 导出说明上报：后端把「入库即坏、导出前被自动救回来」的公式形态（以及死图降级）
+    // 汇总在 X-MathBank-Export-Notes 头里（mathbank/routes_paper.py: _export_notes_headers）。
+    // 这里必须翻成 Toast：否则教师只看见 PDF 里公式排得怪，永远不知道要回题库改原文。
+    function notifyPaperExportNotes(response) {
+        if (!response || !response.headers) return '';
+        let notes = response.headers.get('X-MathBank-Export-Notes') || '';
+        if (!notes) return '';
+        try {
+            notes = decodeURIComponent(notes);
+        } catch (e) {
+            // 头值按后端约定是百分号编码；被中间层解过一次就直接用原文继续提示。
+        }
+        // 条数由后端单独给一个头：说明正文里本来就带「；」（样例之间用它分隔），
+        // 前端拆字符串必数错。旧响应没有计数头时退化成 1，提示照样出。
+        const count = parseInt(response.headers.get('X-MathBank-Export-Note-Count') || '0', 10) || 1;
+        const digest = notes.slice(0, 90);
+        let message = '⚠️ 本次导出已自动修复 ' + count + ' 处入库公式问题，请回题库核对原文';
+        message += '：' + digest + (notes.length > digest.length ? '…' : '');
+        if (window.showToast) window.showToast(message, 'warning');
+        return notes;
+    }
+
     // Export PDF, Word, TeX, and Save Handlers
     window.exportPaperPdf = async function (target = 'paper') {
         const cart = window.PaperStore.cart;
@@ -2455,6 +2477,7 @@
                 }
                 if (window.showToast) window.showToast(`${targetName} PDF 编译成功！已在新窗口打开`, 'success');
                 notifyMissingPaperImages(res);
+                notifyPaperExportNotes(res);
             } else {
                 let errLog = `${targetName} PDF 编译失败`;
                 let errData = {};
@@ -2931,6 +2954,7 @@
                         await writable.close();
                         if (window.showToast) window.showToast(`LaTeX 打包归档已保存至指定目录`, 'success');
                         notifyMissingPaperImages(res);
+                        notifyPaperExportNotes(res);
                         return;
                     } catch (err) {
                         if (err && err.name === 'AbortError') return;
@@ -2945,6 +2969,7 @@
                 URL.revokeObjectURL(url);
                 if (window.showToast) window.showToast(`LaTeX 打包《${filename}》导出成功！`, 'success');
                 notifyMissingPaperImages(res);
+                notifyPaperExportNotes(res);
             } else {
                 const errData = await res.json();
                 if (window.showToast) window.showToast(errData.message || '导出失败', 'error');
@@ -3337,6 +3362,7 @@
                         tab.location.href = url;
                     }
                     notifyMissingPaperImages(pdfRes);
+                    notifyPaperExportNotes(pdfRes);
                 } else {
                     let errorData = {};
                     try { errorData = await pdfRes.json(); } catch (e) {}

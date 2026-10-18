@@ -12,6 +12,7 @@ from mathbank.paths import TEMPLATES_DIR
 from mathbank.latex_diagnostics import build_local_latex_diagnostic
 from mathbank.asset_security import AssetSecurityError, resolve_upload_asset
 from mathbank.tex_helper import balanced_group
+from mathbank.latex_preflight import repair_latex_before_compile
 
 # In-memory LRU cache for compiled PDF bytes
 _PDF_CACHE_LOCK = threading.Lock()
@@ -1174,6 +1175,19 @@ def compile_tex_to_pdf(tex_content: str, image_paths: list = None) -> tuple:
         print(
             "[PDF_RESOURCE_AUDIT] 缺图 %d 张，红字占位：%s"
             % (len(missing_images), ", ".join(missing_images)),
+            flush=True,
+        )
+
+    # 公式侧自愈（待办 #8 P0）：库里入库即坏的形态（\left\right 被中文打断、宏名吃汉字、
+    # \begin{cases} 里丢 \n 行分隔、行内公式跨段、CR/CRLF 叠加成空行）在交给 XeLaTeX 前
+    # 先修一遍。缺图那张网治的是资源，这张网治的是源码，二者同语义：宁缺勿炸。路由层也会
+    # 先跑一次拿上报文案，所以这里必须幂等——第二次是空操作。
+    tex_content, preflight_notes = repair_latex_before_compile(tex_content)
+    if preflight_notes:
+        audit_notes.extend(preflight_notes)
+        print(
+            "[PDF_PREFLIGHT] 公式源码自愈 %d 条提示：%s"
+            % (len(preflight_notes), " | ".join(preflight_notes)[:300]),
             flush=True,
         )
 

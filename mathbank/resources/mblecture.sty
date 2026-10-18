@@ -1,0 +1,55 @@
+% mblecture.sty —— 讲义「书本体」（ElegantBook）导出用的最小垫片层
+%
+% 由来：题库正文与试卷导出都按 exam-zh 的方言写作（\begin{choices}、\fillin、\paren
+% 等），而 ElegantBook 不提供这些。用户拍板「排版口径并存」：试卷体继续走 exam-zh，
+% 讲义多一个书本体选项。本垫片把 exam-zh 方言在 ElegantBook 里补齐，让同一份 TeX 源码
+% 两套类都能编译，避免为讲义另写一条渲染链（两条链迟早分叉，缺图事故已经演示过一次）。
+%
+% 只 \providecommand / \providepackage：宿主类已经定义的东西一律不覆盖，
+% 将来 ElegantBook 或 exam-zh 自己补上了，本垫片自动让路。
+\NeedsTeXFormat{LaTeX2e}
+\ProvidesPackage{mblecture}[2026-10-18 MathBank lecture shim for ElegantBook]
+
+% 题库正文里会出现的资源与数学宏包（与 exam-zh 导言区同一口径）
+\RequirePackage{graphicx}
+\RequirePackage[export]{adjustbox}
+\RequirePackage{amsmath,mathtools,cancel,cases,mhchem,siunitx,extarrows,bm}
+\RequirePackage{array,booktabs,multirow,makecell,tabularx,longtable}
+\RequirePackage{tikz,tkz-euclide}
+\RequirePackage{enumitem,multicol,keyval}
+
+% \bm 在部分排版环境里已由 unicode-math 接管，这里只补不覆盖
+\providecommand{\bm}{\symbf}
+\graphicspath{{./}}
+\setlength{\columnsep}{1em}
+\setlist[enumerate,1]{itemsep=2pt,parsep=0pt,topsep=1pt,leftmargin=1.7em,labelsep=0.2em}
+
+% 题库正文里的 exam-zh 专有宏的最小替身：填空作答线 / 作答空括号。
+% 两个宏都必须**不带参数**：入库归一化产出的是「…（　）\paren\n\begin{choices}」这种
+% 裸写法，\paren 一旦声明必选参数，就会把紧随的 \begin 当参数吃掉，选择题环境当场崩。
+\providecommand{\fillin}{\,\underline{\hspace{2.5em}}\,}
+\providecommand{\paren}{（\hspace{2em}）}
+
+% choices：exam-zh 的选择题环境。columns 可选参数与试卷侧同一套键名；
+% 书本体里用 multicol 复刻多列选项，0 视为缺省两列（照 exam-zh 的宽松写法）。
+\makeatletter
+\newcommand\mb@cols{2}
+\define@key{mbchoices}{columns}{\renewcommand\mb@cols{#1}}
+\newenvironment{choices}[1][]{%
+  \renewcommand\mb@cols{2}%
+  \setkeys{mbchoices}{#1}%
+  \ifnum\mb@cols=0 \renewcommand\mb@cols{2}\fi
+  \par\nopagebreak\vspace{2pt}%
+  \begin{multicols}{\mb@cols}
+  \begin{enumerate}[label=\textbf{\Alph*．}]%
+}{%
+  \end{enumerate}\end{multicols}\vspace{4pt}%
+}
+\makeatother
+
+% 讲义结构宏（build_lecture_latex 书本体分支会用到）：节 / 小节 / 块标题 / 换页
+\providecommand{\lectsec}[1]{\par\vspace{4mm}{\Large\bfseries #1}\par\nopagebreak\vspace{2mm}}
+\providecommand{\lectsub}[1]{\par\vspace{-1mm}{\large\bfseries #1}\par\nopagebreak\vspace{2mm}}
+\providecommand{\blockhead}[1]{\par\vspace{2.5mm}{\normalsize\bfseries 【#1】\par\vspace{1mm}}}
+\providecommand{\lectpage}{\clearpage}
+\endinput

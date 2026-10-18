@@ -255,6 +255,13 @@ def export_lecture_pdf(payload: dict, db: Session = Depends(get_db)):
     tex_content, dead_img_notes = sanitize_dead_image_references(
         tex_content, str(_main.UPLOAD_DIR))
     degradations.extend(dead_img_notes)
+    # 公式侧自愈（待办 #8 P0）：讲义与试卷共用同一份题库正文，入库即坏的那几类形态
+    # 在这里同样要在交给 XeLaTeX 前修掉；说明并进 degradations，走已有的
+    # X-MathBank-Export-Notes 头上报，前端 lecture.js 无需改动即可弹 Toast。
+    from mathbank.latex_preflight import repair_latex_before_compile
+
+    tex_content, preflight_notes = repair_latex_before_compile(tex_content)
+    degradations.extend(preflight_notes)
     questions_pool = list((preview.get("questions") or []))
     for entry in (preview.get("sections") or []):
         questions_pool.extend(entry.get("questions") or [])
@@ -301,6 +308,13 @@ def export_lecture_tex(payload: dict, db: Session = Depends(get_db)):
     tex_content, dead_img_notes = sanitize_dead_image_references(
         tex_content, str(_main.UPLOAD_DIR))
     degradations.extend(dead_img_notes)
+    # 公式侧自愈（待办 #8 P0）：讲义与试卷共用同一份题库正文，入库即坏的那几类形态
+    # 在这里同样要在交给 XeLaTeX 前修掉；说明并进 degradations，走已有的
+    # X-MathBank-Export-Notes 头上报，前端 lecture.js 无需改动即可弹 Toast。
+    from mathbank.latex_preflight import repair_latex_before_compile
+
+    tex_content, preflight_notes = repair_latex_before_compile(tex_content)
+    degradations.extend(preflight_notes)
     headers = {
         "Content-Disposition": 'attachment; filename="lecture_%s.tex"' % view,
     }
