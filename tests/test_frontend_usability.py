@@ -710,6 +710,29 @@ def test_a4_paper_canvas_keeps_paper_texture_and_selectable_text():
     assert "draggable" not in item_open_tag, "整题 draggable 会让 Chrome 吞掉正文选中的鼠标事件"
 
 
+def test_a4_canvas_hover_toolbar_fades_instead_of_masking_the_page():
+    """纸面 hover 工具条不能糊住卷面：默认不可见，题目 hover 半透明，落到工具条才实体。"""
+
+    css_source = _read(CSS_PATH)
+    paper_source = _read(STATIC_JS_DIR / "paper.js")
+
+    tag_start = paper_source.index('class="paper-canvas-toolbar')
+    toolbar_tag = paper_source[tag_start:paper_source.index(">", tag_start)]
+    assert "group-hover:opacity-100" not in toolbar_tag, "实心白牌会吞掉一行卷面"
+    assert "opacity-0" not in toolbar_tag, "显隐改由 app.css 三段式统一管"
+
+    hidden = css_source.index(".paper-canvas-toolbar {\n    opacity: 0;\n}")
+    faded = css_source.index(".paper-q-item:hover .paper-canvas-toolbar {")
+    solid = css_source.index(".paper-q-item:hover .paper-canvas-toolbar:hover,")
+    assert hidden < faded < solid, "三段式靠书写顺序取胜，顺序不能调"
+    assert "opacity: .55;" in css_source[faded:css_source.index("}", faded)]
+    solid_block = css_source[solid:css_source.index("}", solid)]
+    assert "opacity: 1;" in solid_block and ":focus-within" in solid_block, solid_block
+
+    # 不能借这条规则把「题目 hover 变色」复活
+    assert ".a4-paper-sheet .paper-q-item:hover" not in css_source
+
+
 def test_a4_page_budget_uses_the_real_content_height():
     """分页预算必须走 A4_PAGE 常量：931px 正文高，首页再扣页眉。"""
 

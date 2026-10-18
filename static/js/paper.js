@@ -2018,7 +2018,7 @@
                         ondrop="onPaperCanvasDrop(event)">
 
                         <!-- Hover Action Bar: Drag Handle & Quick Move/Remove Buttons -->
-                        <div class="paper-canvas-toolbar absolute right-2 top-2 opacity-0 group-hover:opacity-100 transition-opacity flex items-center space-x-1.5 px-2.5 py-1 rounded-lg text-[10px] font-sans select-none z-10">
+                        <div class="paper-canvas-toolbar absolute right-2 top-2 transition-opacity flex items-center space-x-1.5 px-2.5 py-1 rounded-lg text-[10px] font-sans select-none z-10">
                             <span class="toolbar-label font-medium mr-0.5 cursor-grab active:cursor-grabbing"
                                   draggable="true"
                                   ondragstart="onPaperCanvasDragStart(event, ${q ? q.id : 0}, ${subIdx}, '${qType}')"

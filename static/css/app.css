@@ -359,6 +359,25 @@ html.init-ws-paper #toggleSidebarBtn { display: none !important; }
     color: #64748b;
 }
 
+/* 工具条挂在题目右上角，正好盖住选择题题干末尾的作答括号。旧写法是一晃就实心，
+   白牌直接吞掉一行卷面；现在分三段：不可见 → 题目 hover 半透明 → 指针真正落到
+   工具条上（或键盘聚焦到其中的按钮）才实体。三段的特异度依次是 (0,1,0)、(0,3,0)、
+   (0,4,0)/(0,3,0)，最后一段与前一段同值的那条靠书写顺序取胜，顺序绝不能调。
+   另外刻意不加 .a4-paper-sheet 前缀：纸面不是卡片，题目自身的 hover 样式化
+   已被永久禁赛（见 test_frontend_usability），这里只作用于工具条。 */
+.paper-canvas-toolbar {
+    opacity: 0;
+}
+
+.paper-q-item:hover .paper-canvas-toolbar {
+    opacity: .55;
+}
+
+.paper-q-item:hover .paper-canvas-toolbar:hover,
+.paper-q-item .paper-canvas-toolbar:focus-within {
+    opacity: 1;
+}
+
 .paper-canvas-toolbar .toolbar-label,
 .paper-canvas-toolbar .toolbar-btn {
     color: #64748b !important;
