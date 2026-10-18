@@ -212,6 +212,119 @@ for (const source of [
     assert result.returncode == 0, result.stderr
 
 
+def test_editor_preview_glues_han_to_inline_math_only():
+    r"""汉字↔行内公式的间距归一（待办 #15 · D 档，维持半角空格口径）。
+
+    口径必须跟 XeLaTeX 对齐：本机实测 ctexart 下 `汉$x$汉` 与 `汉 $x$ 汉` **等宽**（xeCJK
+    自己补 ecglue 并吸收源里的多余空格），而 `汉，$x$` 的标点旁不加缝。前端此前完全不补，
+    于是库里（题干+答案+解析三字段口径）左贴死 87 处/30 题、右贴死 52 处/22 题在预览里把公式
+    怼在汉字上；只算题干也有 60 处/14 题与 35 处/10 题。浏览器实测这 15 题的 95 处贴死边界里，
+    正文 46 处补缝（缝隙 0.00px → 4.73px），落在 \begin{choices} 里的 49 处整体豁免：选项宽度
+    直接决定 .choices-grid 的列数，补缝会让 4 列在 412~588px 容器里凭空掉一档，故一律不动。
+    钉住八条：① 贴死补一个半角空格 ② 多个空白折成一个 ③ 全角标点/拉丁与数字一律不动
+    ④ 块级（$$ 与 \[）不补行内缝 ⑤ \(..\) 行内形态同样补缝 ⑥ 归一必须幂等且占位符不外漏
+    ⑦ \begin{choices} 选项段整体豁免（选项宽度直接决定 .choices-grid 的列数，补缝会让窄栏掉档）
+    ⑧ 行首带选项标号（A. / Ｂ．）的行整行豁免，裸标号独占一行时连其正文行一起豁免——判据逐字
+    复用 import.js 的解析卡分组器，否则「解析卡补了缝、入库进编辑器又不补」会闪动。
+    """
+    editor_source = _read(STATIC_JS_DIR / "editor.js")
+    helper_start = editor_source.index("function transformFillinMacro(clean)")
+    helper_marker = "window.preprocessFormulaForKaTeX = preprocessFormulaForKaTeX;"
+    helper_end = editor_source.index(helper_marker, helper_start) + len(helper_marker)
+    helper_source = editor_source[helper_start:helper_end]
+
+    node = shutil.which("node")
+    assert node, "Node.js is required for the frontend executable regression"
+    script = r"""
+global.window = {
+  MathBankSafe: {
+    safeImageUrl(value) { return value; },
+    escapeAttribute(value) { return value; },
+""" + _ESCAPE_TEXT_STUB + r"""  },
+};
+""" + _escape_html_helper_source() + helper_source + r"""
+const cases = [
+  [String.raw`已知$x^2$成立`, String.raw`已知 $x^2$ 成立`],
+  [String.raw`则  $a^2$  的取值`, String.raw`则 $a^2$ 的取值`],
+  [String.raw`计算$x^2$，得$y^2$。`, String.raw`计算 $x^2$，得 $y^2$。`],
+  [String.raw`（$a$）与（$b$）`, String.raw`（$a$）与（$b$）`],
+  [String.raw`A.$x^2$B`, String.raw`A.$x^2$B`],
+  [String.raw`已知 x+y=1$x^2$成立`, String.raw`已知 x+y=1$x^2$ 成立`],
+  [String.raw`汉$$x^2$$汉`, String.raw`汉$$x^2$$汉`],
+  [String.raw`汉\[x^2\]汉`, String.raw`汉\[x^2\]汉`],
+  [String.raw`设\(x^2\)成立`, String.raw`设 \(x^2\) 成立`],
+];
+for (const [source, expected] of cases) {
+  const rendered = window.preprocessFormulaForKaTeX(source);
+  if (rendered !== expected) {
+    throw new Error('间距归一不符: ' + source + ' -> ' + rendered + '（期望 ' + expected + '）');
+  }
+  const again = window.preprocessFormulaForKaTeX(rendered);
+  if (again !== rendered) {
+    throw new Error('间距归一不幂等: ' + rendered + ' -> ' + again);
+  }
+  if (rendered.indexOf('@@MATH_PLACEHOLDER_') >= 0) {
+    throw new Error('数学占位符外漏: ' + rendered);
+  }
+}
+
+// ⑦ 选项段整体豁免：\begin{choices}…\end{choices} 里一个空格都不许补，题干以及两个选项块
+// **之间/之后**的正文照补。这里断言「包含」而不是整体相等：换境会把选项段展开成
+// .choices-grid 的 HTML，逐字比对等于把网格模板钉死在测试里；也不做幂等复检——第二遍
+// 输入里 \begin{choices} 已变成网格 HTML，环境边界不复存在（预览永远从源码起，不喂 HTML）。
+const choicesCases = [
+  [String.raw`已知$x^2$成立\begin{choices}\item $-3$或$5$\item $3$或$-3$\end{choices}`,
+   [String.raw`已知 $x^2$ 成立`, String.raw`$-3$或$5$`, String.raw`$3$或$-3$`], 1],
+  [String.raw`若$x^2$成立\begin{choices}\item 选项$a$或$b$\end{choices}且$y^2$成立`
+   + String.raw`\begin{choices}\item $c$或$d$\end{choices}解析：由$x^2$得$y^2$。`,
+   [String.raw`若 $x^2$ 成立`, String.raw`且 $y^2$ 成立`, String.raw`选项$a$或$b$`,
+    String.raw`$c$或$d$`, String.raw`解析：由 $x^2$ 得 $y^2$。`], 2],
+];
+for (const [source, expectedList, gridCount] of choicesCases) {
+  const rendered = window.preprocessFormulaForKaTeX(source);
+  for (const expected of expectedList) {
+    if (!rendered.includes(expected)) {
+      throw new Error('选项豁免不符: ' + source + ' -> ' + rendered + '（缺少 ' + expected + '）');
+    }
+  }
+  if (/或\s|\s或/.test(rendered)) {
+    throw new Error('选项段被补了缝: ' + rendered);
+  }
+  const grids = (rendered.match(/choices-grid/g) || []).length;
+  if (grids !== gridCount) {
+    throw new Error('选项网格数量不符: ' + grids + ' != ' + gridCount + ' -> ' + rendered);
+  }
+}
+
+// ⑧ 行首选项标号整行豁免。判据来自 import.js 的解析卡分组器（行首标号 + 裸标号两处，
+// 含 [A-D] 边界），所以 E. 开头不在判据内、照补——这一条同时钉住「两边永远同口径」。
+const labelCases = [
+  ['A.已知$x$成立', ['A.已知$x$成立'], ['A.已知 $x$ 成立']],
+  ['已知$x^2$成立\nA.已知$x$成立\nＢ．由$y$得$z$\n解析：由$x$得$y$。',
+   ['已知 $x^2$ 成立', 'A.已知$x$成立', 'Ｂ．由$y$得$z$', '解析：由 $x$ 得 $y$。'],
+   ['A.已知 $x$ 成立', 'Ｂ．由 $y$ 得 $z$']],
+  ['已知$x$成立\nA.\n$x$或$y$\nB.\n$z$或$w$',
+   ['已知 $x$ 成立', '$x$或$y$', '$z$或$w$'], ['$x$ 或 $y$', '$z$ 或 $w$']],
+  ['已知$x^2$成立\r\nA.\r\n$x$或$y$', ['已知 $x^2$ 成立', '$x$或$y$'], ['$x$ 或 $y$']],
+  ['E.$x$或$y$', ['E.$x$ 或 $y$'], []],
+];
+for (const [source, mustInclude, mustExclude] of labelCases) {
+  const rendered = window.preprocessFormulaForKaTeX(source);
+  for (const expected of mustInclude) {
+    if (!rendered.includes(expected)) {
+      throw new Error('选项行豁免不符: ' + source + ' -> ' + rendered + '（缺少 ' + expected + '）');
+    }
+  }
+  for (const forbidden of mustExclude) {
+    if (rendered.includes(forbidden)) {
+      throw new Error('选项行被补了缝: ' + source + ' -> ' + rendered + '（出现了 ' + forbidden + '）');
+    }
+  }
+}"""
+    result = _run_node_script(script)
+    assert result.returncode == 0, result.stderr
+
+
 def test_editor_preview_indents_circled_subitems_one_level_deeper():
     r"""圈号小小问（①②③…）在预览里必须比一级小问 (1)/(2) 再缩进一级。
 

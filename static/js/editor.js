@@ -2541,6 +2541,69 @@ function deleteDraft(id) {
                 return placeholder;
             }
 
+            // 汉字 ↔ 行内公式的间距归一（待办 #15，D 档：维持半角空格口径）。
+            // 为什么必须等数学段全部换成 @@MATH_PLACEHOLDER_k@@、且非数学段的 HTML 标签被
+            // 剥净之后再改写：此刻字符串只剩「纯文本 + 占位符」，按字符邻接插空格才不会误伤
+            // 标签属性。判据与 XeLaTeX 侧同口径（实测 ctexart 下 `汉$x$汉` 与 `汉 $x$ 汉` 等宽，
+            // 说明 xeCJK 自己会补 ecglue 并吸收源里的多余空格；而 `汉，$x$` 的标点旁不加缝）：
+            // 只对汉字触发，全角标点一律不动，块级公式（`$$` 与 `\[`）独占一行也不补行内缝，
+            // 换行不算「缝」——段间距交给既有的段落逻辑；选项段（choices 环境）与行首带选项标号的行
+            // 整体豁免：选项宽度直接决定 .choices-grid 的列数，补缝会让窄栏无故掉档。
+            // ⚠️ 严禁后行断言（AGENTS.md 第 2 节禁令），左右两侧各跑一趟捕获组替换。
+            function normalizeCjkMathGlue(source) {
+                const displayTokens = new Set();
+                placeholders.forEach(function(entry) {
+                    const original = String(entry.original).trim();
+                    if (original.indexOf('$$') === 0 || original.indexOf('\\[') === 0) {
+                        displayTokens.add(entry.placeholder);
+                    }
+                });
+                function glueBeforeMath(match, han, token) {
+                    return displayTokens.has(token) ? match : han + ' ' + token;
+                }
+                function glueAfterMath(match, token, han) {
+                    return displayTokens.has(token) ? match : token + ' ' + han;
+                }
+                function glueInline(text) {
+                    return text
+                        .replace(/([\u4e00-\u9fff\u3400-\u4dbf])[ \t]*(@@MATH_PLACEHOLDER_\d+@@)/g, glueBeforeMath)
+                        .replace(/(@@MATH_PLACEHOLDER_\d+@@)[ \t]*([\u4e00-\u9fff\u3400-\u4dbf])/g, glueAfterMath);
+                }
+                // 选项段整体豁免：下面的 choices 换境会把它变成 .choices-grid，而列数是拿选项的**真实像素宽**量出来的
+                // （adaptChoicesGridLayout → choicesGridOverflows）。浏览器实测一个半角空格 = 4.73px，选项越贴死补得越多，
+                // 窄容器里就会凭空掉一档列数（实测 4 列→2 列）。这里用与换境完全相同的正则，保证
+                // 「豁免的区间」恰好等于「会变成网格的区间」，不会多豁也不会漏豁。
+                // split 带捕获组：偶数段是正文（照常补缝），奇数段是选项区（原样拼回）。
+                // 导入解析卡的选项还有另一种形态：没有 choices 环境，只是「A. 一段 / B. 一段」的独立段落，
+                // 由 import.js 的 groupParsedCardOptionParagraphs 在 DOM 上重组进同一个 .choices-grid（判据原文：
+                // import.js:6518 的行首标号与 import.js:6436 的 PARSED_BARE_CHOICE_LABEL_RE）。这些行的宽度同样决定列数，
+                // 而且不豁免就会出现「解析卡里补了缝、点导入进正式编辑器又因 choices 豁免不补」的闪动，
+                // 所以正则**逐字抄这两处**（含 [A-D] 边界，不自行扩写），保证两边永远同口径。
+                const choiceLabelLine = /^[ \t]*(?:[A-D]|[Ａ-Ｄ])[ \t]*[.．、,，:：)）]/;
+                const choiceLabelBareLine = /^[ \t]*(?:[A-D]|[Ａ-Ｄ])[ \t]*[.．、,，:：)）]?[ \t]*$/;
+                function glueBodySegment(segment) {
+                    // 按行判定：行首是选项标号就整行跳过；标号独占一行时连下一行（选项正文）一起跳过。
+                    // 补缝本来就不跨行（[ \t]* 不吃 \n），因此拆行再拼回不改变原有行为。
+                    const lines = segment.split('\n');
+                    let bodyFollowsBareLabel = false;
+                    for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
+                        const head = lines[lineIndex].replace(/\r$/, '');
+                        const isOptionLine = choiceLabelLine.test(head) || bodyFollowsBareLabel;
+                        // 裸标号（「A.」独占一行）的下一行就是该选项的正文
+                        bodyFollowsBareLabel = choiceLabelBareLine.test(head);
+                        if (!isOptionLine) {
+                            lines[lineIndex] = glueInline(lines[lineIndex]);
+                        }
+                    }
+                    return lines.join('\n');
+                }
+                const segments = source.split(/(\\begin\{choices\}[\s\S]*?\\end\{choices\})/g);
+                for (let index = 0; index < segments.length; index += 2) {
+                    segments[index] = glueBodySegment(segments[index]);
+                }
+                return segments.join('');
+            }
+
             // Markdown 管线表格的**唯一**构造器（表头/分隔行/表体 → HTML 表格）。
             // 两条管线（MinerU 早期转换、OCR 兜底）都必须走这里，避免两份实现漂移。
             // 关键约束：**只能挂 CSS 类，不能写内联 style**——MathBankSafe 的
@@ -2729,6 +2792,10 @@ function deleteDraft(id) {
             
             // Strip HTML tags from non-math parts
             tempText = tempText.replace(/<[^>]*>/g, '');
+
+            // 表格/图片等 HTML 段还在各自的占位符里，够不到；这里只管正文流的汉字↔公式。
+            // 选项段由 normalizeCjkMathGlue 自己按 choices 环境边界整体跳过，不会把选项撑宽。
+            tempText = normalizeCjkMathGlue(tempText);
 
             // exam-zh defines \paren outside math mode, while KaTeX does not.
             // Convert only the protected-and-sanitized text portion into the
