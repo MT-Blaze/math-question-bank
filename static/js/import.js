@@ -136,23 +136,21 @@
         }
 
 
-        // Toast Helper
+        // P0 精简后解析区的三块结果面板常显，不再做互斥显隐。
+        // 保留函数名与入参：外部仍有调用，且要容忍旧 tab 结构缺失（按钮已删）。
         function switchWorkflowTab(tabId) {
-            const tabs = ['ai', 'ocr', 'image', 'batch'];
-            tabs.forEach(t => {
+            ['ai', 'ocr', 'image'].forEach((t) => {
                 const btn = document.getElementById(`tabBtn-${t}`);
                 const content = document.getElementById(`tabContent-${t}`);
-                
-                if (t === tabId) {
-                    btn.className = "flex-1 py-2 px-3 rounded-lg font-medium text-xs flex items-center justify-center space-x-1.5 transition-all text-brand-600 bg-white shadow-sm border border-slate-200";
-                    content.classList.remove('hidden');
-                } else {
-                    btn.className = "flex-1 py-2 px-3 rounded-lg font-medium text-xs flex items-center justify-center space-x-1.5 transition-all text-slate-600 hover:text-slate-800 hover:bg-white/50";
-                    content.classList.add('hidden');
+
+                if (btn) {
+                    btn.className = t === tabId
+                        ? "flex-1 py-2 px-3 rounded-lg font-medium text-xs flex items-center justify-center space-x-1.5 transition-all text-brand-600 bg-white shadow-sm border border-slate-200"
+                        : "flex-1 py-2 px-3 rounded-lg font-medium text-xs flex items-center justify-center space-x-1.5 transition-all text-slate-600 hover:text-slate-800 hover:bg-white/50";
                 }
+                if (content) content.classList.remove('hidden');
             });
         }
-
         // Upload and drag and drop system for Illustration / OCR images
         function clearEditor() {
             // This function is called directly from index.html, so the guard
@@ -2158,7 +2156,10 @@
 
             function paperImportWorkspaceActive() {
                 const ws = document.getElementById('paperImportWorkspace');
-                return !!ws && !ws.classList.contains('hidden');
+                if (!ws || ws.classList.contains('hidden')) return false;
+                // 批量整册面板自带拖放区，此时窗口级拖放必须让路，否则一次拖文件触发两套流水线
+                const batchPane = document.getElementById('batchImportPane');
+                return !batchPane || batchPane.classList.contains('hidden');
             }
 
             function ensureGlobalDropOverlay() {

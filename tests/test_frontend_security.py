@@ -216,6 +216,7 @@ let answerOcrAbortController = null;
 let aiSolveAbortController = null;
 function clearContentOcrPreview() {{}}
 function clearOcrPreview() {{}}
+function finishMediaPreview() {{}}
 function showToast() {{}}
 {editor_source}
 {helper_source}
@@ -283,6 +284,7 @@ let answerOcrAbortController = {{ abort: () => {{ answerAborts += 1; }} }};
 let aiSolveAbortController = null;
 function clearContentOcrPreview() {{ idleClears += 1; }}
 function clearOcrPreview() {{ idleClears += 1; }}
+function finishMediaPreview() {{}}
 function showToast() {{ toasts += 1; }}
 {state_source}
 {cancel_source}

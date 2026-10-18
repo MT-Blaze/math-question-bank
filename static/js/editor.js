@@ -197,12 +197,6 @@ function findTopicLevel(comp, chap, know, topicName) {
                     // 解答区"新增绘图"按钮 + 解答 TikZ 资产面板
                     var answerTikzBtn = document.getElementById('openAnswerTikzWorkbenchBtn');
                     var answerTikzPanel = document.getElementById('answerTikzAssetsPanel');
-                    // 禁用 TikZ 复选框 label（改成按钮样式）
-                    var contentSkipLabel = document.getElementById('contentOcrSkipTikz')?.closest('label');
-                    var answerSkipLabel = document.getElementById('answerOcrSkipTikz')?.closest('label');
-                    // 解析 workflow tab 按钮栏
-                    var answerTabBar = document.querySelector('#answerExplanationPanel .flex.gap-1.text-sm.p-1');
-
                     // 统一胶囊按钮的绝对宽高
                     var HEADER_ITEM_W = '72px';
                     var HEADER_ITEM_H = '44px';
@@ -257,114 +251,6 @@ function findTopicLevel(comp, chap, know, topicName) {
                     }
                     setTikzBtnContent(contentTikzBtn);
                     setTikzBtnContent(answerTikzBtn);
-
-                    // 禁用 TikZ 按钮样式化：和新增绘图完全一致（同图标同色同大小）
-                    function styleSkipLabel(lbl){
-                        if (!lbl) return;
-                        lbl.className = '';
-                        lbl.style.cssText = '';
-                        styleHeaderItem(lbl, { wrap: true, cursor: 'pointer' });
-                        var cb = lbl.querySelector('input[type=checkbox]');
-                        if (cb) cb.style.display = 'none';
-                        var span = lbl.querySelector('span');
-                        // 加与"新增 TikZ 绘图"一致的图标
-                        if (!lbl.querySelector('i.fa-pen-ruler')) {
-                            var ic = document.createElement('i');
-                            ic.className = 'fa-solid fa-pen-ruler';
-                            lbl.insertBefore(ic, span || null);
-                        }
-                        var icEl = lbl.querySelector('i.fa-pen-ruler');
-                        if (icEl) {
-                            icEl.style.fontSize = '10px';
-                            icEl.style.lineHeight = '1';
-                            icEl.style.flexShrink = '0';
-                            icEl.style.marginBottom = '1px';
-                        }
-                        // 双行显示：第一行"禁用"，第二行"TikZ 绘图"
-                        if (span) {
-                            span.textContent = '禁用\nTikZ绘图';
-                            span.style.whiteSpace = 'pre-line';
-                            span.style.textAlign = 'center';
-                            span.style.lineHeight = '1.15';
-                            span.style.fontSize = '10px';
-                        }
-                        function sync(){
-                            if (!cb) return;
-                            if (cb.checked) {
-                                lbl.style.background = HEADER_ACTIVE_BG;
-                                lbl.style.color = HEADER_ACTIVE_COLOR;
-                                lbl.style.borderColor = HEADER_ACTIVE_BORDER;
-                            } else {
-                                lbl.style.background = HEADER_BG;
-                                lbl.style.color = HEADER_COLOR;
-                                lbl.style.borderColor = HEADER_BORDER;
-                            }
-                        }
-                        sync();
-                        if (cb) cb.addEventListener('change', sync);
-                    }
-                    styleSkipLabel(contentSkipLabel);
-                    styleSkipLabel(answerSkipLabel);
-
-                    // 解析 workflow tab 按钮也统一尺寸
-                    function syncWorkflowTabActiveState(bar) {
-                        if (!bar) return;
-                        var buttons = bar.querySelectorAll('button');
-                        for (var i = 0; i < buttons.length; i++) {
-                            var b = buttons[i];
-                            // active 由 Tailwind 类 bg-white/text-brand-600 标记
-                            var isActive = b.classList.contains('bg-white') || b.classList.contains('text-brand-600');
-                            if (isActive) {
-                                b.style.background = HEADER_ACTIVE_BG;
-                                b.style.color = HEADER_ACTIVE_COLOR;
-                                b.style.borderColor = HEADER_ACTIVE_BORDER;
-                            } else {
-                                b.style.background = HEADER_BG;
-                                b.style.color = HEADER_COLOR;
-                                b.style.borderColor = HEADER_BORDER;
-                            }
-                        }
-                    }
-                    function styleWorkflowTabBar(bar){
-                        if (!bar) return;
-                        bar.style.cssText = '';
-                        bar.style.display = 'inline-flex';
-                        bar.style.flexWrap = 'wrap';
-                        bar.style.gap = HEADER_ITEM_GAP;
-                        bar.style.alignItems = 'center';
-                        bar.style.background = 'transparent';
-                        bar.style.padding = '0';
-                        bar.style.borderRadius = '0';
-                        bar.style.border = 'none';
-                        var buttons = bar.querySelectorAll('button');
-                        for (var i = 0; i < buttons.length; i++) {
-                            var b = buttons[i];
-                            styleHeaderItem(b, { cursor: 'pointer' });
-                            var span = b.querySelector('span');
-                            if (span) {
-                                span.style.whiteSpace = 'nowrap';
-                                span.style.textAlign = 'center';
-                                span.style.lineHeight = '1.15';
-                                span.style.fontSize = '10px';
-                            }
-                            var ic = b.querySelector('i');
-                            if (ic) {
-                                ic.style.fontSize = '10px';
-                                ic.style.lineHeight = '1';
-                                ic.style.flexShrink = '0';
-                                ic.style.marginBottom = '1px';
-                            }
-                        }
-                        syncWorkflowTabActiveState(bar);
-                    }
-                    styleWorkflowTabBar(answerTabBar);
-
-                    // 给 tab 切换函数补充同步样式
-                    var origSwitchWorkflowTab = window.switchWorkflowTab;
-                    window.switchWorkflowTab = function(mode) {
-                        if (typeof origSwitchWorkflowTab === 'function') origSwitchWorkflowTab(mode);
-                        syncWorkflowTabActiveState(answerTabBar);
-                    };
 
                     // TikZ 资产面板随面板常显
                     if (contentTikzPanel) contentTikzPanel.classList.remove('hidden');
@@ -2248,6 +2134,11 @@ function deleteDraft(id) {
             window.__autoResizeAnswer = _resizeAnswer;
 
             const updateContentPreview = () => {
+                // 载入题目/恢复草稿时 textarea 是程序化赋值，不会触发 input；
+                // 选项卡跟着这条共用预览链路刷新，避免残留上一题的选项。
+                if (typeof window.refreshOptionEditorCard === 'function') {
+                    window.refreshOptionEditorCard();
+                }
                 const text = editContent.value;
                 const previewContainer = document.getElementById('contentPreview');
                 const paperContainer = document.getElementById('paperContent');

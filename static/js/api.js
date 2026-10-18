@@ -5179,6 +5179,13 @@ window.enterSingleQuestion = function() {
 
 window.enterPaperImport = function() {
     selectWorkspace('paperImport', '试卷导入');
+    if (typeof window.setPaperImportMode === 'function') window.setPaperImportMode('single');
+};
+
+// 批量整册入口：共用试卷录入工作台，只是切到批量面板
+window.enterBatchImport = function() {
+    selectWorkspace('paperImport', '试卷导入');
+    if (typeof window.setPaperImportMode === 'function') window.setPaperImportMode('batch');
 };
 
 // ==================== 独立草稿箱工作台 ====================

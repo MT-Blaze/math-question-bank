@@ -1061,11 +1061,22 @@
            '<div class="q-src q-src-all">' + allLine + '</div>';
   }
 
+  // 与后端 lecture_export.strip_leading_answer_label 同口径：库里的答案正文自带
+  // 「【答案】」标记，而这里的 answer-block 标签也要写【答案】，先剥掉正文开头那个，
+  // 否则预览和导出口径不一致，用户会看到两遍前缀。
+  function stripLeadingAnswerLabel(text) {
+    return String(text || '').replace(
+      /^\s*(?:\\textbf\s*\{)?(?:\*\*)?\s*[【\[]\s*(?:参考|标准)?答\s*案\s*[】\]]\s*(?:\*\*)?(?:\s*\})?\s*[：:]?\s*/,
+      ''
+    ).trim();
+  }
+
   function buildQuestion(q, label) {
     var content = window.parseMarkdownWithMath ? window.parseMarkdownWithMath(q.content || '') : esc(q.content || '');
     var ans = '';
     if (q.answer) {
-      var parsedAns = window.parseMarkdownWithMath ? window.parseMarkdownWithMath(q.answer) : esc(q.answer);
+      var answerBody = stripLeadingAnswerLabel(q.answer);
+      var parsedAns = window.parseMarkdownWithMath ? window.parseMarkdownWithMath(answerBody) : esc(answerBody);
       ans = '<div class="answer-block"><span class="ab-label ans">【答案】</span>' + parsedAns + '</div>';
     }
     // 来源行：放题号正上方，左边缘与题干首字对齐（字号小于题干）

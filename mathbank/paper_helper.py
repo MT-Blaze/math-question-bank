@@ -651,6 +651,12 @@ def build_exam_preamble(include_answers: bool = False, title: str = "") -> list:
     # exam-zh uses unicode-math, which rejects the legacy bm package. Preserve
     # imported \bm{...} formulas through the native unicode-math equivalent.
     lines.append(r"\providecommand{\bm}[1]{\symbf{#1}}")
+    # LaTeX kernel 与 exam-zh 都不定义 \lt/\gt（这对宏来自 unicode-math）：讲义导出
+    # 链路会把展示公式里的裸 < > 换成 \lt \gt，防止预览端 HTML 解析器把 <a 之类当
+    # 标签开吃掉整段公式（lecture_export._lt_gt_in_math）；题库数据自身带这两个宏
+    # 时同样会 "Undefined control sequence"。provide 兜底，宿主已有定义则自动让路。
+    lines.append(r"\providecommand{\lt}{\mathopen{<}}%")
+    lines.append(r"\providecommand{\gt}{\mathclose{>}}%")
     # Tables: standard/aligned columns, three-line tables, adaptive width,
     # long tables, merged cells, diagonal headers, colored cells and tblr.
     lines.append(r"\usepackage{array,booktabs,tabularx,longtable,multirow,makecell,diagbox,colortbl,tabularray,threeparttable}")

@@ -14,7 +14,7 @@ INDEX_PATH = STATIC_DIR / "index.html"
 CSS_PATH = STATIC_DIR / "css" / "app.css"
 JS_FILES = tuple(
     STATIC_JS_DIR / name
-    for name in ("api.js", "editor.js", "ocr.js", "import.js", "paper.js")
+    for name in ("api.js", "editor.js", "ocr.js", "import.js", "entry_options.js", "paper.js")
 )
 
 
@@ -3990,7 +3990,8 @@ def test_all_static_opacity_overlays_open_through_the_transition_helpers():
     """
     html = _read(INDEX_PATH)
     js_by_file = {name: _read(STATIC_JS_DIR / name)
-                  for name in ("api.js", "editor.js", "import.js", "ocr.js", "paper.js")}
+                  for name in ("api.js", "editor.js", "import.js", "ocr.js",
+                               "entry_options.js", "paper.js")}
  
     expectations = {
         "settingsModal": ("api.js", "openModalWithTransition(modal"),
@@ -4000,6 +4001,7 @@ def test_all_static_opacity_overlays_open_through_the_transition_helpers():
         "scanDuplicatesModal": ("editor.js", "openModalWithTransition(modal"),
         "aiClassifyModal": ("import.js", "openModalWithTransition('aiClassifyModal'"),
         "pdfCropModal": ("import.js", "openModalWithTransition('pdfCropModal'"),
+        "optionCropModal": ("entry_options.js", "openModalWithTransition('optionCropModal'"),
         "parsedDuplicateReviewModal": ("import.js", "openModalWithTransition(modal"),
         "answerTikzWorkbenchModal": ("import.js", "openModalWithTransition(modal"),
         "displayOrderModal": ("import.js", "revealModalWithTransition(modal"),
@@ -4039,4 +4041,434 @@ def test_all_static_opacity_overlays_open_through_the_transition_helpers():
     assert discovered == registered, (
         "透明全屏浮层与登记表不一致 漏登记 %s / 已下线 %s"
         % (sorted(discovered - registered), sorted(registered - discovered))
+    )
+
+
+# ==================== #32 单题录入重构：P0 素材通道 / P2 选项卡 / P3 切图 ====================
+
+_OPTION_CARD_PRELUDE = """
+const fs = require('fs');
+const source = fs.readFileSync('static/js/entry_options.js', 'utf8');
+const noop = () => {};
+const win = {};
+const doc = {
+  readyState: 'complete',
+  getElementById: () => null,
+  querySelectorAll: () => [],
+  addEventListener: noop,
+};
+new Function('window', 'document', 'URL', 'fetch', 'Image', 'File', 'FormData', 'Event', source)(
+  win, doc, function URL() {}, function fetch() {}, function Image() {},
+  function File() {}, function FormData() {}, function Event() {}
+);
+const api = win.OptionCardInternals;
+if (!api) { console.log('FAIL: 选项卡没有导出 OptionCardInternals'); process.exit(1); }
+function assertOk(condition, message) {
+  if (!condition) { console.log('FAIL: ' + message); process.exit(1); }
+}
+"""
+
+
+def _run_option_card_script(body: str) -> str:
+    """在假 DOM 里加载 entry_options.js，直接驱动它导出的纯逻辑。"""
+    result = _run_node_script(_OPTION_CARD_PRELUDE + body)
+    assert result.returncode == 0, (result.stdout or "") + (result.stderr or "")
+    return result.stdout or ""
+
+
+def test_single_screenshot_media_channel_replaces_the_four_dropzones():
+    """素材通道：四个长得一模一样的截图区合并成一个入口 + 目的地选择。"""
+    index_source = _read(INDEX_PATH)
+    ocr_source = _read(STATIC_JS_DIR / "ocr.js")
+    retired_ids = (
+        "contentOcrDropZone",
+        "illustrationDropZone",
+        "ocrDropZone",
+        "imageAnswerDropZone",
+        "contentOcrFileInput",
+        "imageAnswerFileInput",
+    )
+
+    for retired_id in retired_ids:
+        assert 'id="%s"' % retired_id not in index_source, "旧截图区还在页面上：%s" % retired_id
+        assert retired_id not in ocr_source, "ocr.js 仍引用已删除的 %s" % retired_id
+
+    elements = _index_elements()
+    for element_id in (
+        "mediaChannelPanel",
+        "mediaTargetGroup",
+        "mediaTargetHint",
+        "mediaEngineHint",
+        "mediaDropZone",
+        "mediaFileInput",
+        "mediaPreviewContainer",
+        "mediaStatusBadge",
+        "mediaOpenCropBtn",
+    ):
+        assert element_id in elements, "素材通道缺少 %s" % element_id
+    assert elements["mediaDropZone"]["tabindex"] == "0", "唯一截图入口必须可 Tab 聚焦"
+    assert elements["mediaFileInput"]["accept"] == "image/*"
+    assert "multiple" in elements["mediaFileInput"], "图片作答需要一次多张"
+
+    targets = re.findall(r'data-media-target="([a-z-]+)"[^>]*aria-pressed="(\w+)"', index_source)
+    assert [name for name, _ in targets] == ["stem-ocr", "stem-image", "answer-ocr", "answer-image"]
+    assert [pressed for _, pressed in targets].count("true") == 1, "目的地默认选中项必须唯一"
+
+    for marker in (
+        "function currentMediaTarget()",
+        "function applyMediaTarget(target)",
+        "function submitMediaFiles(files)",
+        "renderMediaPreview(file)",
+        "'mediaChannelTarget'",
+    ):
+        assert marker in ocr_source
+
+    # 双触发守卫：焦点已在编辑框/通道里时，全局粘贴路由必须让位给元素自身监听器
+    assert "closest('#editContent, #editAnswerMarkdown, #mediaDropZone')" in ocr_source
+    # 编辑框仍是直达入口：拖图进题干=题干 OCR，进解析=解析 OCR
+    assert "setupDragDropListeners(contentEditorEl, (file) => runContentOcr(file));" in ocr_source
+    assert "setupDragDropListeners(answerEditorEl, (file) => runOcr(file));" in ocr_source
+
+
+def test_global_skip_tikz_switch_migrates_legacy_preferences():
+    """两枚「禁用 TikZ 绘图」合并成一枚，旧偏好任一为真时合并后仍保持禁用。"""
+    index_source = _read(INDEX_PATH)
+    ocr_source = _read(STATIC_JS_DIR / "ocr.js")
+
+    assert 'id="globalSkipTikz"' in index_source
+    for retired in ("contentOcrSkipTikz", "answerOcrSkipTikz"):
+        assert 'id="%s"' % retired not in index_source
+
+    assert "const legacyKeys = ['contentOcrSkipTikz', 'answerOcrSkipTikz'];" in ocr_source
+    assert "localStorage.removeItem(key)" in ocr_source
+    assert "'skipTikzDisabled'" in ocr_source
+    assert "function isTikzGenerationDisabled()" in ocr_source
+    assert ocr_source.count("const skipTikz = isTikzGenerationDisabled();") == 2
+    assert ocr_source.count("formData.append('skip_tikz', skipTikz ?") == 2
+
+
+def test_batch_pipeline_now_lives_in_the_paper_import_workspace():
+    """第四方案·批量从单题解析面板搬回试卷录入工作台，用模式按钮切换。"""
+    index_source = _read(INDEX_PATH)
+
+    positions = tuple(
+        index_source.index(marker)
+        for marker in (
+            'id="paperImportWorkspace"',
+            'id="paperImportModeBar"',
+            'id="batchImportPane"',
+            'id="batchImportPanel"',
+            'id="latexImportModal"',
+            'id="editorSection"',
+        )
+    )
+    assert positions == tuple(sorted(positions)), "批量面板必须留在试卷录入工作台内、单题编辑区之外"
+    assert 'id="tabBtn-batch"' not in index_source
+    assert 'id="tabContent-batch"' not in index_source
+
+    batch_source = _read(STATIC_JS_DIR / "import_batch.js")
+    assert "window.setPaperImportMode = function (mode)" in batch_source
+    assert "$('paperImportModeBatch')" in batch_source
+    assert "$('tabBtn-batch')" not in batch_source
+
+    api_source = _read(STATIC_JS_DIR / "api.js")
+    assert "window.enterBatchImport = function()" in api_source
+    assert "window.setPaperImportMode('batch')" in api_source
+    assert "window.setPaperImportMode('single')" in api_source
+
+    import_source = _read(STATIC_JS_DIR / "import.js")
+    guard_start = import_source.index("function paperImportWorkspaceActive()")
+    guard_end = import_source.index("function ensureGlobalDropOverlay()", guard_start)
+    assert "getElementById('batchImportPane')" in import_source[guard_start:guard_end], (
+        "批量模式下窗口级拖放必须让路，否则一次拖文件喂两套流水线"
+    )
+
+    tab_start = import_source.index("function switchWorkflowTab(tabId)")
+    tab_end = import_source.index("function clearEditor()", tab_start)
+    tab_source = import_source[tab_start:tab_end]
+    assert "'batch'" not in tab_source
+    assert "if (btn)" in tab_source and "if (content)" in tab_source, "结果面板已常显，切换函数不能再假设 tab 存在"
+
+
+def test_option_editor_card_is_wired_into_the_stem_panel():
+    """选项卡挂在题干面板里，只对选择题显形，样式全部落在 app.css。"""
+    index_source = _read(INDEX_PATH)
+    entry_source = _read(STATIC_JS_DIR / "entry_options.js")
+    css_source = _read(CSS_PATH)
+
+    assert "/static/js/entry_options.js" in index_source
+    positions = tuple(
+        index_source.index(marker)
+        for marker in (
+            'id="questionContentPanel"',
+            'id="editContent"',
+            'id="optionEditorPanel"',
+            'id="contentTabContent-ocr"',
+            'id="illustrationsList"',
+        )
+    )
+    assert positions == tuple(sorted(positions)), "选项卡应紧跟题干编辑框、位于识别结果之前"
+
+    elements = _index_elements()
+    for element_id in (
+        "optionEditorPanel",
+        "optionRows",
+        "optionAddBtn",
+        "optionSplitBtn",
+        "optionModeNote",
+    ):
+        assert element_id in elements, "选项卡缺少 %s" % element_id
+    assert "hidden" in elements["optionEditorPanel"]["class"], "非选择题默认不该显示选项卡"
+
+    for selector in (
+        ".option-panel",
+        ".option-rows",
+        ".option-row",
+        ".option-label",
+        ".option-text",
+        ".option-image-chip",
+        ".option-icon-btn",
+    ):
+        assert selector in css_source
+
+    assert "CHOICE_TYPES = ['single_choice', 'multi_choice']" in entry_source
+    assert "function isChoiceType()" in entry_source
+    assert "$('editQType')" in entry_source
+
+
+def test_option_editor_card_follows_the_shared_stem_preview_path():
+    """载入题目/恢复草稿是程序化赋值，不触发 input：选项卡必须挂在共用预览链路上。"""
+    editor_source = _read(STATIC_JS_DIR / "editor.js")
+    entry_source = _read(STATIC_JS_DIR / "entry_options.js")
+    import_source = _read(STATIC_JS_DIR / "import.js")
+
+    start = editor_source.index("const updateContentPreview = () => {")
+    early_return = editor_source.index("const text = editContent.value;", start)
+    assert "window.refreshOptionEditorCard" in editor_source[start:early_return], (
+        "共用预览链路没带动选项卡：载入已有选择题时卡片会残留上一题的选项"
+    )
+
+    hook = entry_source.index("window.refreshOptionEditorCard = function")
+    hook_body = entry_source[hook:entry_source.index("};", hook) + 2]
+    assert "refreshVisibility()" in hook_body, "程序化设置题型下拉时选项卡不会显形"
+    assert "force === true" in hook_body, "默认必须走签名比对，否则在选项行里打字会被重渲染抢焦点"
+
+    for source, label in ((editor_source, "草稿恢复"), (import_source, "题库选题载入")):
+        assert "window.updateContentPreview();" in source, "%s 路径未收敛到共用预览" % label
+
+
+_OPTION_CARD_DOM_PRELUDE = """
+const fs = require('fs');
+const source = fs.readFileSync('static/js/entry_options.js', 'utf8');
+function makeEl(id) {
+  const listeners = {};
+  const el = {
+    id, value: '', className: '', src: '', disabled: false, children: [],
+    hiddenTokens: new Set(['hidden']),
+    classList: {
+      toggle(name, force) {
+        if (force === undefined) {
+          if (el.hiddenTokens.has(name)) { el.hiddenTokens.delete(name); } else { el.hiddenTokens.add(name); }
+        } else if (force) { el.hiddenTokens.add(name); } else { el.hiddenTokens.delete(name); }
+      },
+      add(name) { el.hiddenTokens.add(name); },
+      remove(name) { el.hiddenTokens.delete(name); },
+      contains(name) { return el.hiddenTokens.has(name); },
+    },
+    addEventListener(type, fn) { (listeners[type] = listeners[type] || []).push(fn); },
+    dispatchEvent(evt) { (listeners[evt.type] || []).forEach((fn) => fn(evt)); return true; },
+    appendChild(node) { el.children.push(node); return node; },
+    setAttribute() {}, getAttribute() { return null; },
+    querySelector() { return null; }, querySelectorAll() { return []; },
+  };
+  Object.defineProperty(el, 'textContent', {
+    get() { return el._text || ''; },
+    set(v) { el._text = v; if (v === '') el.children = []; },
+  });
+  return el;
+}
+const registry = {};
+['editContent', 'editQType', 'optionEditorPanel', 'optionRows', 'optionModeNote',
+  'optionAddBtn', 'optionSplitBtn', 'mediaOpenCropBtn', 'editOptionColumns'].forEach((id) => {
+    registry[id] = makeEl(id);
+  });
+const document = {
+  readyState: 'complete',
+  getElementById: (id) => registry[id] || null,
+  createElement: (tag) => makeEl('created-' + tag),
+  querySelectorAll: () => [],
+  addEventListener: () => {},
+};
+const win = {};
+function Event(type) { this.type = type; }
+new Function('window', 'document', 'URL', 'fetch', 'Image', 'File', 'FormData', 'Event', source)(
+  win, document, function URL() {}, function fetch() {}, function Image() {},
+  function File() {}, function FormData() {}, Event
+);
+if (!win.refreshOptionEditorCard) { console.log('FAIL: 选项卡没有导出刷新入口'); process.exit(1); }
+function check(name, ok) {
+  if (!ok) { console.log('FAIL: ' + name); process.exit(1); }
+  console.log('PASS ' + name);
+}
+"""
+
+
+def test_option_editor_card_tracks_programmatic_question_loads():
+    """载入题目/恢复草稿是程序化赋值：卡片要跟进刷新，且内容未变时不得重建 DOM 抢焦点。"""
+    result = _run_node_script(_OPTION_CARD_DOM_PRELUDE + r"""
+win.refreshOptionEditorCard();
+check('默认非选择题时面板隐藏', registry.optionEditorPanel.classList.contains('hidden'));
+
+registry.editQType.value = 'single_choice';
+registry.editContent.value = '已知集合 $A=\\{x \\mid x^2-3x=0\\}$ 的子集个数为\nA．2\nB．3\nC．4\nD．8';
+win.refreshOptionEditorCard();
+check('载入选择题后面板显形', !registry.optionEditorPanel.classList.contains('hidden'));
+check('载入选择题后渲染 4 个选项行', registry.optionRows.children.length === 4);
+
+const rowRef = registry.optionRows.children[1];
+win.refreshOptionEditorCard();
+check('题干未变时重复刷新不重建行节点', registry.optionRows.children[1] === rowRef);
+
+registry.editQType.value = 'fill_in';
+registry.editContent.value = '计算 $1+1$ 的值。';
+win.refreshOptionEditorCard();
+check('切到填空题后面板收起', registry.optionEditorPanel.classList.contains('hidden'));
+check('切到填空题后不留上一题的选项行', registry.optionRows.children.length !== 4);
+
+registry.editQType.value = 'single_choice';
+registry.editContent.value = '下列函数为奇函数的是\nA．$y=x^2$\nB．$y=x^3$\nC．$y=2x+1$\nD．$y=\\frac{1}{x}$';
+win.refreshOptionEditorCard();
+check('换一道选择题后重新渲染', registry.optionRows.children.length === 4);
+
+registry.editContent.value = '新题\nA．1\nB．2';
+registry.editContent.dispatchEvent(new Event('input'));
+win.refreshOptionEditorCard();
+check('手打题干路径仍然同步', registry.optionRows.children.length === 2);
+
+console.log('OK');
+""")
+    assert result.returncode == 0, (result.stdout or "") + (result.stderr or "")
+    assert "OK" in (result.stdout or "")
+
+
+def test_option_editor_card_parses_every_choice_shape():
+    """四种存量形态都要认出选项：逐行标号 / 单行挤选项 / choices 环境 / 图片选项。"""
+    output = _run_option_card_script(r"""
+const lines = api.parseStem('已知集合 $A=\\{x \\mid x^2-3x=0\\}$ 的子集个数为\nA．2\nB．3\nC．4\nD．8');
+assertOk(lines.found && !lines.envBased, '逐行标号没被认成选项块');
+assertOk(lines.options.map((o) => o.raw).join(',') === '2,3,4,8', '逐行内容错位');
+assertOk(lines.prefix.indexOf('子集个数') !== -1 && lines.suffix === '', '题干前缀或后缀切错');
+
+const inline = api.parseStem('函数 $f(x)=x^2-2x$ 在 $[0,3]$ 的最小值为 A. 8 B. 9 C. 11 D. 13');
+assertOk(inline.found && inline.options.length === 4, '单行四选项没被切开');
+assertOk(inline.options.map((o) => o.raw).join(',') === '8,9,11,13', '单行切分内容错位');
+assertOk(inline.prefix.indexOf('的最小值为') !== -1, '单行形态的题干前缀丢了');
+
+const env = api.parseStem('设 $a>0$，则\n  \\begin{choices}\n    \\item $1$\n    \\item $2$\n    \\item $3$\n    \\item $4$\n  \\end{choices}\n');
+assertOk(env.found && env.envBased, '入库形态的 choices 环境没被认出');
+assertOk(env.options.map((o) => o.raw).join(',') === '$1$,$2$,$3$,$4$', '环境切项混进了 \\end{choices}');
+
+const images = api.parseStem('四个函数图象如下\nA．\\includegraphics[max width=0.42\\linewidth]{aa11.png}\nB．![选项B](/static/uploads/bb22.png)\nC．1\nD．2');
+assertOk(images.found && images.options.length === 4, '图片型选项没被认出');
+assertOk(images.options[0].images.length === 1 && images.options[0].text === '', 'LaTeX 图片未归入图片槽');
+assertOk(images.options[1].images[0].url === '/static/uploads/bb22.png', 'Markdown 图片地址丢失');
+
+const pairs = api.parseStem('下列命题正确的是\nA．对\nB．错');
+assertOk(pairs.found && pairs.options.length === 2, '两选项判断题未识别');
+
+const none = api.parseStem('设 $x \\in R$，定义 $\\operatorname{sgn} x = \\begin{cases} 1, & x > 0 \\\\ 0, & x = 0 \\end{cases}$，则函数 $f(x)=|x|\\operatorname{sgn} x$ 的图象大致是');
+assertOk(!none.found, '不含选项的题干被误判成选择题');
+
+const math = api.parseStem('已知 $A=\\{1,2\\}$，$B=\\{2,3\\}$，则 $A \\cap B$ 等于');
+assertOk(!math.found, '数学段里的集合字母被当成选项标号');
+
+console.log('OK');
+""")
+    assert "OK" in output
+
+
+def test_option_editor_card_writes_plain_text_and_backend_rebuilds_choices():
+    """回写只出「A．正文」纯文本，choices 版式由后端归一化链生成且幂等。"""
+    entry_source = _read(STATIC_JS_DIR / "entry_options.js")
+    compose_start = entry_source.index("function composeStem()")
+    compose_end = entry_source.index("function syncFromStem(", compose_start)
+    compose_source = entry_source[compose_start:compose_end]
+    assert "begin{choices}" not in compose_source, "前端不得自己拼 choices 环境"
+    assert "option.label + '．' + optionBody(option)" in compose_source
+
+    from mathbank.latex_normalize import normalize_for_storage
+
+    plain = "已知集合 $A=\\{1,2\\}$，则\nA．1\nB．2\nC．3\nD．4"
+    stored = normalize_for_storage(plain, "single_choice")
+    assert "\\begin{choices}" in stored
+    assert stored.count("\\item ") == 4
+    assert normalize_for_storage(stored, "single_choice") == stored
+
+    images = "四个函数图象如下\n" + "\n".join(
+        "%s．![选项%s](/static/uploads/%s.png)" % (label, label, label.lower()) for label in "ABCD"
+    )
+    image_stored = normalize_for_storage(images, "single_choice")
+    assert image_stored.count("max width=0.42\\linewidth") == 4, "选项图没走选项限宽"
+    assert normalize_for_storage(image_stored, "single_choice") == image_stored
+
+
+def test_option_crop_tool_is_front_end_geometry_on_the_existing_upload():
+    """切图工具：纯前端网格/框选几何 + 现有 /api/upload，零新增后端。"""
+    index_source = _read(INDEX_PATH)
+    entry_source = _read(STATIC_JS_DIR / "entry_options.js")
+
+    elements = _index_elements()
+    modal = elements["optionCropModal"]
+    assert modal["role"] == "dialog"
+    assert modal["aria-modal"] == "true"
+    assert modal["aria-hidden"] == "true"
+    assert modal["aria-labelledby"] == "optionCropModalTitle"
+    assert "data-modal-close" in elements["optionCropCloseBtn"]
+    assert elements["cropCountBadge"]["aria-live"] == "polite"
+
+    assert 'data-crop-mode="grid"' in index_source and 'data-crop-mode="free"' in index_source
+    assert len(re.findall(r'data-crop-preset="\dx\d"', index_source)) == 5, "网格预设少了"
+    for element_id in ("cropRows", "cropCols", "cropInset", "cropFrame", "cropSourceImg",
+                       "cropResults", "cropApplyBtn", "cropClearBtn"):
+        assert element_id in elements
+
+    assert entry_source.count("fetch(") == 1, "切图只允许走一个既有上传接口"
+    assert "'/api/upload'" in entry_source
+    assert "'optcrop_'" in entry_source
+    for banned in ("/api/crop", "html2canvas", "toDataURL('image/jpeg'"):
+        assert banned not in entry_source
+    for marker in ("function computeGridBoxes(", "function bindCropDrag()",
+                   "function applyCropFragments()", "function fillOptionsFromFragments("):
+        assert marker in entry_source
+    assert "MAX_TOTAL_PIXELS = 30000000" in entry_source and "MAX_UPLOAD_BYTES = 10 * 1024 * 1024" in entry_source
+
+    output = _run_option_card_script(r"""
+const boxes = api.computeGridBoxes(800, 600, 2, 2, 2);
+assertOk(boxes.length === 4, '2×2 网格应切出 4 块');
+assertOk(Math.abs(boxes[0].x - 8) < 1e-9 && Math.abs(boxes[0].y - 6) < 1e-9, '收边 2% 未生效：' + JSON.stringify(boxes[0]));
+assertOk(boxes.every((b) => b.w > 0 && b.h > 0), '网格块出现非正尺寸');
+assertOk(Math.abs(boxes[0].x + boxes[0].w + 8 - 400) < 1e-9, '相邻块之间没留出对称收边');
+
+const row = api.computeGridBoxes(800, 200, 1, 4, 0);
+assertOk(row.length === 4 && row[3].x === 600 && row[3].w === 200, '1×4 横切坐标不对：' + JSON.stringify(row));
+assertOk(api.computeGridBoxes(100, 100, 99, 0, 50).length === 9, '行列数必须夹在 1–9');
+assertOk(api.computeGridBoxes(400, 400, 2, 2, 30).every((b) => b.w > 0), '收边到 30% 仍应留下正尺寸');
+
+console.log('OK');
+""")
+    assert "OK" in output
+
+
+    # 取消守卫：上传途中关掉弹窗，这一批必须作废，且不能把「应用」按钮永久锁死
+    crop_source = _read(STATIC_JS_DIR / "entry_options.js")
+    close_start = crop_source.index("function closeCropDialog()")
+    close_body = crop_source[close_start:crop_source.index("function cropSourceForOption(", close_start)]
+    assert "crop.session += 1;" in close_body, "关掉弹窗不会作废在途批次"
+    assert "crop.busy = false;" in close_body, "关掉弹窗后 busy 卡死，应用按钮再也点不动"
+
+    apply_start = crop_source.index("function applyCropFragments()")
+    apply_body = crop_source[apply_start:close_start]
+    assert "const session = crop.session;" in apply_body
+    assert apply_body.count("if (crop.session !== session) return;") == 2, (
+        "成功与失败两条分支都要校验会话号"
     )

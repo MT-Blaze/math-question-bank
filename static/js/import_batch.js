@@ -545,9 +545,26 @@
         }
       });
     }
-    const tabBtn = $('tabBtn-batch');
-    if (tabBtn) tabBtn.addEventListener('click', onOpen);
+    const modeBtn = $('paperImportModeBatch');
+    if (modeBtn) modeBtn.addEventListener('click', () => window.setPaperImportMode('batch'));
+    const singleBtn = $('paperImportModeSingle');
+    if (singleBtn) singleBtn.addEventListener('click', () => window.setPaperImportMode('single'));
   }
+
+  // 试卷录入工作台的两种录入方式：单卷拆题 / 批量整册。
+  // latexImportModal 自带 flex，用 hidden 类切会被 Tailwind 的 display 顺序影响，故走内联 display。
+  window.setPaperImportMode = function (mode) {
+    const batch = mode === 'batch';
+    const singlePane = $('latexImportModal');
+    const batchPane = $('batchImportPane');
+    const singleBtn = $('paperImportModeSingle');
+    const batchBtn = $('paperImportModeBatch');
+    if (singlePane) singlePane.style.display = batch ? 'none' : '';
+    if (batchPane) batchPane.classList.toggle('hidden', !batch);
+    if (singleBtn) singleBtn.setAttribute('aria-pressed', batch ? 'false' : 'true');
+    if (batchBtn) batchBtn.setAttribute('aria-pressed', batch ? 'true' : 'false');
+    if (batch) onOpen();
+  };
 
   window.BatchImport = {
     onOpen: onOpen,

@@ -1,19 +1,165 @@
-        function setupUploadHandlers() {
-            // Setup Illustration drag and drop
-            const illDropZone = document.getElementById('illustrationDropZone');
-            const illFileInput = document.getElementById('illustrationFileInput');
-            
-            illDropZone.onclick = () => illFileInput.click();
-            
-            illFileInput.onchange = () => {
-                if (illFileInput.files.length > 0) {
-                    uploadIllustration(illFileInput.files[0]);
-                    illFileInput.value = ''; // Reset so same file can be uploaded again
+
+        // ===== 素材通道：单题录入的唯一贴图入口 =====
+        // 旧版有 4 个外观一致的截图区（题干 OCR / 插图 / 解析 OCR / 图片作答），
+        // 用户要靠位置猜「这张图最后落到哪一格」。现在合并成一条通道 + 目的地选择：
+        // 先讲清给谁、要不要识别成文字，再拖拽 / 点击 / Ctrl+V 贴图。
+        const MEDIA_TARGET_LABELS = {
+            'stem-ocr': '题干 · 识别成文字',
+            'stem-image': '题干 · 存为配图',
+            'answer-ocr': '解析 · 识别成文字',
+            'answer-image': '解析 · 存为图片作答'
+        };
+        const MEDIA_TARGET_STORAGE_KEY = 'mediaChannelTarget';
+        // 识别类目的地一次只吃首图：多张图并发会互相打断，反而更 confusing
+        const MEDIA_OCR_TARGETS = ['stem-ocr', 'answer-ocr'];
+
+        function currentMediaTarget() {
+            const saved = localStorage.getItem(MEDIA_TARGET_STORAGE_KEY);
+            return MEDIA_TARGET_LABELS[saved] ? saved : 'stem-ocr';
+        }
+
+        function mediaTargetHandler(target) {
+            if (target === 'stem-ocr') return (file) => runContentOcr(file);
+            if (target === 'stem-image') return (file) => uploadIllustration(file);
+            if (target === 'answer-ocr') return (file) => runOcr(file);
+            return (file) => uploadAnswerImage(file);
+        }
+
+        function applyMediaTarget(target) {
+            if (!MEDIA_TARGET_LABELS[target]) target = 'stem-ocr';
+            const group = document.getElementById('mediaTargetGroup');
+            if (group) {
+                group.querySelectorAll('.media-target-btn').forEach((btn) => {
+                    const active = btn.getAttribute('data-media-target') === target;
+                    btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+                });
+            }
+            const label = MEDIA_TARGET_LABELS[target];
+            const hint = document.getElementById('mediaTargetHint');
+            if (hint) hint.textContent = `目的地：${label}`;
+            const zone = document.getElementById('mediaDropZone');
+            if (zone) zone.setAttribute('aria-label', `素材通道，当前目的地：${label}`);
+            localStorage.setItem(MEDIA_TARGET_STORAGE_KEY, target);
+        }
+
+        // 按当前目的地投递图片：识别类走 OCR，存图类原图入库
+        function submitMediaFiles(files) {
+            const images = Array.prototype.slice.call(files || [])
+                .filter((file) => file && file.type && file.type.indexOf('image/') === 0);
+            if (!images.length) {
+                showToast('请拖入或选择有效的图片文件！', 'error');
+                return;
+            }
+            // 记下最近一张图：切图工具在没有更合适的源时用它兜底
+            window.lastMediaFile = images[0];
+            const target = currentMediaTarget();
+            const handler = mediaTargetHandler(target);
+            if (MEDIA_OCR_TARGETS.indexOf(target) !== -1) {
+                handler(images[0]);
+            } else {
+                images.forEach((file) => handler(file));
+            }
+        }
+
+        // 通道内共享的截图预览：贴图立刻回显，识别期间显示进度，结束后恢复可点
+        function renderMediaPreview(file) {
+            const previewImg = document.getElementById('mediaPreviewImg');
+            const previewContainer = document.getElementById('mediaPreviewContainer');
+            const placeholder = document.getElementById('mediaPlaceholder');
+            const statusBadge = document.getElementById('mediaStatusBadge');
+            const loadingText = document.getElementById('mediaStatusLoadingText');
+
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                if (previewImg && previewContainer && placeholder) {
+                    previewImg.src = e.target.result;
+                    placeholder.classList.add('hidden');
+                    previewContainer.classList.remove('hidden');
+                    if (statusBadge) statusBadge.classList.add('hidden');
+                    if (loadingText) loadingText.classList.remove('hidden');
                 }
             };
-            
-            setupDragDropListeners(illDropZone, (file) => uploadIllustration(file));
-            setupPasteListener(illDropZone, (file) => uploadIllustration(file));
+            reader.readAsDataURL(file);
+        }
+
+        function finishMediaPreview(statusText) {
+            const statusBadge = document.getElementById('mediaStatusBadge');
+            const loadingText = document.getElementById('mediaStatusLoadingText');
+            if (loadingText) loadingText.classList.add('hidden');
+            if (statusBadge) {
+                statusBadge.classList.remove('hidden');
+                statusBadge.textContent = statusText || '已加载截图预览（点击可更换图片）';
+            }
+        }
+
+        // 两枚「禁用 TikZ 绘图」合成一枚全局开关，并迁移历史偏好
+        function setupGlobalSkipTikz() {
+            const box = document.getElementById('globalSkipTikz');
+            if (!box) return;
+            const legacyKeys = ['contentOcrSkipTikz', 'answerOcrSkipTikz'];
+            let saved = localStorage.getItem('skipTikzDisabled');
+            if (saved === null) {
+                // 旧的两枚开关只要有一枚勾过「禁用」，合并后保持禁用，别偷偷打开绘图
+                saved = legacyKeys.some((key) => localStorage.getItem(key) === 'true') ? 'true' : 'false';
+                localStorage.setItem('skipTikzDisabled', saved);
+                legacyKeys.forEach((key) => localStorage.removeItem(key));
+            }
+            box.checked = saved === 'true';
+            box.addEventListener('change', () => {
+                localStorage.setItem('skipTikzDisabled', String(box.checked));
+            });
+        }
+
+        function isTikzGenerationDisabled() {
+            const box = document.getElementById('globalSkipTikz');
+            return box ? box.checked : false;
+        }
+
+        function setupUploadHandlers() {
+            const group = document.getElementById('mediaTargetGroup');
+            if (group) {
+                group.querySelectorAll('.media-target-btn').forEach((btn) => {
+                    btn.addEventListener('click', () => applyMediaTarget(btn.getAttribute('data-media-target')));
+                });
+            }
+            applyMediaTarget(currentMediaTarget());
+            setupGlobalSkipTikz();
+
+            const dropZone = document.getElementById('mediaDropZone');
+            const fileInput = document.getElementById('mediaFileInput');
+            if (dropZone && fileInput) {
+                dropZone.addEventListener('click', () => fileInput.click());
+                fileInput.addEventListener('change', () => {
+                    if (fileInput.files.length > 0) {
+                        submitMediaFiles(fileInput.files);
+                        fileInput.value = ''; // 复位，同一张图还能再贴一次
+                    }
+                });
+                ['dragenter', 'dragover'].forEach((eventName) => {
+                    dropZone.addEventListener(eventName, (e) => {
+                        e.preventDefault();
+                        dropZone.classList.add('is-active');
+                    }, false);
+                });
+                ['dragleave', 'drop'].forEach((eventName) => {
+                    dropZone.addEventListener(eventName, (e) => {
+                        e.preventDefault();
+                        dropZone.classList.remove('is-active');
+                        if (eventName === 'drop' && e.dataTransfer && e.dataTransfer.files.length > 0) {
+                            submitMediaFiles(e.dataTransfer.files);
+                        }
+                    }, false);
+                });
+                // 键盘可达：Tab 聚焦通道后用 Enter/Space 打开文件选择
+                dropZone.addEventListener('keydown', (e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        fileInput.click();
+                    }
+                });
+                setupPasteListener(dropZone, (file) => submitMediaFiles([file]));
+            }
+
             // 题干编辑框即上传窗口：拖拽/粘贴题目截图 → 题干 OCR
             const contentEditorEl = document.getElementById('editContent');
             if (contentEditorEl) {
@@ -27,170 +173,33 @@
                 setupPasteListener(answerEditorEl, (file) => runOcr(file));
             }
 
-            // Setup OCR drag and drop
-            const ocrDropZone = document.getElementById('ocrDropZone');
-            const ocrFileInput = document.getElementById('ocrFileInput');
-            
-            ocrDropZone.onclick = () => ocrFileInput.click();
-            
-            ocrFileInput.onchange = () => {
-                if (ocrFileInput.files.length > 0) {
-                    runOcr(ocrFileInput.files[0]);
-                    ocrFileInput.value = ''; // Reset so same file can be uploaded again
-                }
-            };
-            
-            setupDragDropListeners(ocrDropZone, (file) => runOcr(file));
-            setupPasteListener(document.getElementById('ocrDropZone'), (file) => runOcr(file));
+            setupGlobalPasteRouting();
+            updateOcrPlaceholder('content');
+        }
 
-            // Setup Question Content OCR file input and Drop Zone
-            const contentOcrDropZone = document.getElementById('contentOcrDropZone');
-            const contentOcrFileInput = document.getElementById('contentOcrFileInput');
-            
-            contentOcrDropZone.onclick = () => contentOcrFileInput.click();
-            
-            contentOcrFileInput.onchange = () => {
-                if (contentOcrFileInput.files.length > 0) {
-                    runContentOcr(contentOcrFileInput.files[0]);
-                    contentOcrFileInput.value = ''; // Reset so same file can be uploaded again
-                }
-            };
-            
-            setupDragDropListeners(contentOcrDropZone, (file) => runContentOcr(file));
-            setupPasteListener(contentOcrDropZone, (file) => runContentOcr(file));
-
-            // Setup Image Answer Drag and Drop
-            const imageAnswerDropZone = document.getElementById('imageAnswerDropZone');
-            const imageAnswerFileInput = document.getElementById('imageAnswerFileInput');
-            
-            if (imageAnswerDropZone) {
-                imageAnswerDropZone.onclick = () => imageAnswerFileInput.click();
-                
-                imageAnswerFileInput.onchange = () => {
-                    if (imageAnswerFileInput.files.length > 0) {
-                        for (let i = 0; i < imageAnswerFileInput.files.length; i++) {
-                            uploadAnswerImage(imageAnswerFileInput.files[i]);
-                        }
-                        imageAnswerFileInput.value = ''; // Reset so same file can be uploaded again
-                    }
-                };
-                
-                setupDragDropListeners(imageAnswerDropZone, (file) => uploadAnswerImage(file));
-                setupPasteListener(imageAnswerDropZone, (file) => uploadAnswerImage(file));
-            }
-
-            // Keyboard accessibility for drag & drop zones (allowing Enter or Space key to trigger file selection)
-            [illDropZone, ocrDropZone, contentOcrDropZone, imageAnswerDropZone].forEach(zone => {
-                if (zone) {
-                    zone.addEventListener('keydown', (e) => {
-                        if (e.key === 'Enter' || e.key === ' ') {
-                            e.preventDefault();
-                            zone.click();
-                        }
-                    });
-                }
-            });
-
-            // Initialize and persist state of skipTikz checkboxes in localStorage
-            const contentSkipBox = document.getElementById('contentOcrSkipTikz');
-            const answerSkipBox = document.getElementById('answerOcrSkipTikz');
-
-            if (contentSkipBox) {
-                const savedContentState = localStorage.getItem('contentOcrSkipTikz');
-                if (savedContentState !== null) {
-                    contentSkipBox.checked = (savedContentState === 'true');
-                }
-                contentSkipBox.addEventListener('change', () => {
-                    localStorage.setItem('contentOcrSkipTikz', contentSkipBox.checked);
-                });
-            }
-
-            if (answerSkipBox) {
-                const savedAnswerState = localStorage.getItem('answerOcrSkipTikz');
-                if (savedAnswerState !== null) {
-                    answerSkipBox.checked = (savedAnswerState === 'true');
-                }
-                answerSkipBox.addEventListener('change', () => {
-                    localStorage.setItem('answerOcrSkipTikz', answerSkipBox.checked);
-                });
-            }
-
-            // Global smart clipboard paste routing for images/screenshots (Euclidean distance matching to closest visible DropZone)
+        // 全局 Ctrl+V：焦点不在编辑框/通道里时，按当前目的地投递。
+        // 焦点已经在编辑框或通道内时必须让位给各自的 paste 监听器，
+        // 否则同一张图会被识别两次（旧版「离视口中心最近的 dropzone」路由随合并作废）。
+        function setupGlobalPasteRouting() {
             window.addEventListener('paste', (e) => {
-                const items = (e.clipboardData || e.originalEvent.clipboardData).items;
-                let hasImage = false;
+                const clipboard = e.clipboardData || (e.originalEvent && e.originalEvent.clipboardData);
+                if (!clipboard || !clipboard.items) return;
+
                 let imageFile = null;
-                
-                for (let index in items) {
-                    const item = items[index];
-                    if (item.kind === 'file' && item.type.startsWith('image/')) {
-                        hasImage = true;
+                for (let index in clipboard.items) {
+                    const item = clipboard.items[index];
+                    if (item.kind === 'file' && item.type && item.type.indexOf('image/') === 0) {
                         imageFile = item.getAsFile();
                         break;
                     }
                 }
-                
-                if (hasImage && imageFile) {
-                    // Define all potential target zones with their corresponding elements and handlers
-                    const targets = [
-                        {
-                            element: document.getElementById('illustrationDropZone'),
-                            handler: (file) => uploadIllustration(file)
-                        },
-                        {
-                            element: document.getElementById('contentOcrDropZone'),
-                            handler: (file) => runContentOcr(file)
-                        },
-                        {
-                            element: document.getElementById('ocrDropZone'),
-                            handler: (file) => runOcr(file)
-                        },
-                        {
-                            element: document.getElementById('imageAnswerDropZone'),
-                            handler: (file) => uploadAnswerImage(file)
-                        }
-                    ];
-                    
-                    // Filter to only get elements that are actually visible on screen
-                    const visibleTargets = targets.filter(t => {
-                        return t.element && t.element.offsetParent !== null;
-                    });
-                    
-                    if (visibleTargets.length > 0) {
-                        // Calculate coordinates of the center of the viewport
-                        const viewCenterX = window.innerWidth / 2;
-                        const viewCenterY = window.innerHeight / 2;
-                        
-                        let bestTarget = null;
-                        let minDistance = Infinity;
-                        
-                        visibleTargets.forEach(t => {
-                            const rect = t.element.getBoundingClientRect();
-                            const centerX = rect.left + rect.width / 2;
-                            const centerY = rect.top + rect.height / 2;
-                            
-                            // Euclidean distance to viewport center
-                            const dx = centerX - viewCenterX;
-                            const dy = centerY - viewCenterY;
-                            const dist = Math.sqrt(dx * dx + dy * dy);
-                            
-                            if (dist < minDistance) {
-                                minDistance = dist;
-                                bestTarget = t;
-                            }
-                        });
-                        
-                        if (bestTarget) {
-                            bestTarget.handler(imageFile);
-                            e.preventDefault();
-                            return;
-                        }
-                    }
-                    
-                    // Fallback to upload as illustration if no targets are visible
-                    uploadIllustration(imageFile);
-                    e.preventDefault();
-                }
+                if (!imageFile) return;
+
+                const node = e.target;
+                if (node && node.closest && node.closest('#editContent, #editAnswerMarkdown, #mediaDropZone')) return;
+
+                e.preventDefault();
+                submitMediaFiles([imageFile]);
             });
         }
         function setupDragDropListeners(zone, onFileReceived) {
@@ -312,72 +321,38 @@
         // editor session takes ownership of the form.
         window.invalidateEditorSessionAsyncWork = () => cancelAllOcr(false);
 
-        // Cancel and abort all active OCR processes (both content and answer OCR)
+
+        // 取消全部在飞的识别：ESC 第一次取消请求并保留预览，再按一次彻底清空
         function cancelAllOcr(clearWhenIdle = true) {
             let aborted = false;
-            
-            // Handle content OCR abort
+
             if (contentOcrAbortController) {
                 contentOcrAbortController.abort();
                 contentOcrAbortController = null;
                 aborted = true;
-                
-                // Hide loading text and update status badge for content OCR preview
-                const contentOcrLoadingText = document.getElementById('contentOcrStatusLoadingText');
-                const contentOcrStatusBadge = document.getElementById('contentOcrStatusBadge');
-                if (contentOcrLoadingText) contentOcrLoadingText.classList.add('hidden');
-                if (contentOcrStatusBadge) {
-                    contentOcrStatusBadge.classList.remove('hidden');
-                    contentOcrStatusBadge.textContent = '已取消识别 (点击可更换图片)';
-                }
             }
-            
-            // Handle answer OCR abort
             if (answerOcrAbortController) {
                 answerOcrAbortController.abort();
                 answerOcrAbortController = null;
                 aborted = true;
-                
-                // Hide loading text and update status badge for answer OCR preview
-                const ocrStatusLoadingText = document.getElementById('ocrStatusLoadingText');
-                const ocrStatusBadge = document.getElementById('ocrStatusBadge');
-                if (ocrStatusLoadingText) ocrStatusLoadingText.classList.add('hidden');
-                if (ocrStatusBadge) {
-                    ocrStatusBadge.classList.remove('hidden');
-                    ocrStatusBadge.textContent = '已取消识别 (点击可更换图片)';
-                }
             }
-
-            // Handle AI solve abort
             if (abortActiveAiSolve()) {
                 aborted = true;
             }
-            
+
             if (aborted) {
-                // Restore loading indicator and dropzone UI states (but keep image preview)
-                const contentOcrDropZone = document.getElementById('contentOcrDropZone');
-                const contentOcrLoading = document.getElementById('contentOcrLoadingIndicator');
-                if (contentOcrDropZone && contentOcrLoading) {
-                    contentOcrLoading.classList.add('hidden');
-                    contentOcrDropZone.classList.remove('hidden');
-                }
-                
-                const ocrDropZone = document.getElementById('ocrDropZone');
-                const ocrLoading = document.getElementById('ocrLoadingIndicator');
-                if (ocrDropZone && ocrLoading) {
-                    ocrLoading.classList.add('hidden');
-                    ocrDropZone.classList.remove('hidden');
-                }
-                
+                const contentLoading = document.getElementById('contentOcrLoadingIndicator');
+                const answerLoading = document.getElementById('ocrLoadingIndicator');
+                if (contentLoading) contentLoading.classList.add('hidden');
+                if (answerLoading) answerLoading.classList.add('hidden');
+                finishMediaPreview('已取消识别（点击可更换图片）');
                 showToast('OCR 识别已取消，按 ESC 可清除图片', 'info');
             } else if (clearWhenIdle) {
-                // If no active OCR process is running, clear all image previews and results completely
                 clearContentOcrPreview();
                 clearOcrPreview();
                 showToast('已清除当前识图状态与图片', 'info');
             }
         }
-
         // Global Esc key listener for canceling OCR & closing lightbox
         window.addEventListener('keydown', (e) => {
             if (e.key === 'Escape' || e.key === 'Esc') {
@@ -610,80 +585,50 @@
             renderAnswerImageBadges();
         }
 
-        // 2. OCR Answer screenshot handler
+
+        // 通道底部提示：识别引擎跟随系统设置（原来两枚 dropzone 各写一行，现合并为一行）
         function updateOcrPlaceholder(type) {
-            const getEngineLabel = (val) => {
-                if (val === 'siliconflow') {
-                    return "SiliconFlow 硅基流动云端";
-                } else if (val === 'ali_bailian') {
-                    return "阿里百炼";
-                }
-                return val || "";
-            };
-
-            const label = `当前引擎: ${getEngineLabel(systemPreferEngine)}`;
-
-            if (type === 'content') {
-                const subText = document.getElementById('contentOcrPlaceholderSub');
-                if (subText) {
-                    subText.textContent = label;
-                }
-            } else if (type === 'answer') {
-                const subText = document.getElementById('answerOcrPlaceholderSub');
-                if (subText) {
-                    subText.textContent = label;
-                }
+            const hint = document.getElementById('mediaEngineHint');
+            if (!hint) return;
+            let name = systemPreferEngine || '';
+            if (name === 'siliconflow') {
+                name = 'SiliconFlow 硅基流动云端';
+            } else if (name === 'ali_bailian') {
+                name = '阿里百炼';
             }
+            hint.textContent = name ? `识别引擎：${name}` : '识别引擎：读取系统设置';
         }
 
+        // 2. 解析截图 OCR：结果落「解析识别结果」，并自动载入终审框
         function runOcr(file) {
             if (!file.type.startsWith('image/')) {
                 showToast('请上传有效的图片格式！', 'error');
                 return;
             }
-            
-            const ocrDropZone = document.getElementById('ocrDropZone');
+
             const ocrOutput = document.getElementById('ocrOutputBox');
             const ocrResult = document.getElementById('ocrResultText');
             const ocrConf = document.getElementById('ocrConfBadge');
-            
-            const previewImg = document.getElementById('ocrPreviewImg');
-            const previewContainer = document.getElementById('ocrPreviewContainer');
-            const placeholder = document.getElementById('ocrPlaceholder');
-            const statusBadge = document.getElementById('ocrStatusBadge');
-            const loadingText = document.getElementById('ocrStatusLoadingText');
-            
-            // Read file to show image preview in the upload area IMMEDIATELY
-            const reader = new FileReader();
-            reader.onload = (e) => {
-                if (previewImg && previewContainer && placeholder) {
-                    previewImg.src = e.target.result;
-                    placeholder.classList.add('hidden');
-                    previewContainer.classList.remove('hidden');
-                    
-                    if (statusBadge) statusBadge.classList.add('hidden');
-                    if (loadingText) loadingText.classList.remove('hidden');
-                }
-            };
-            reader.readAsDataURL(file);
-            
-            ocrOutput.classList.add('hidden');
-            
+
+            renderMediaPreview(file);
+
+            if (ocrOutput) ocrOutput.classList.add('hidden');
+
             // Abort previous running controller if any
             if (answerOcrAbortController) {
                 answerOcrAbortController.abort();
             }
             answerOcrAbortController = new AbortController();
             const signal = answerOcrAbortController.signal;
-            
+
             const engine = 'default';
-            const skipTikz = document.getElementById('answerOcrSkipTikz') ? document.getElementById('answerOcrSkipTikz').checked : false;
-            
+            const skipTikz = isTikzGenerationDisabled();
+
             const formData = new FormData();
             formData.append('file', file);
             formData.append('engine', engine);
             formData.append('skip_tikz', skipTikz ? "true" : "false");
-            
+
             fetch('/api/ocr', {
                 method: 'POST',
                 body: formData,
@@ -691,20 +636,15 @@
             })
             .then(r => r.json())
             .then(data => {
-                if (loadingText) loadingText.classList.add('hidden');
-                if (statusBadge) {
-                    statusBadge.classList.remove('hidden');
-                    statusBadge.textContent = '已加载截图预览 (点击可更换图片)';
-                }
-                
+                finishMediaPreview();
                 answerOcrAbortController = null;
-                
+
                 if (data.status === 'success') {
                     showToast('OCR 识别成功并已自动填入！');
                     ocrOutput.classList.remove('hidden');
                     ocrResult.textContent = cleanMathOcrText(data.latex);
                     ocrConf.textContent = `置信度: ${(data.confidence * 100).toFixed(1)}%`;
-                    
+
                     if (data.tikz_code) {
                         if (data.tikz_image_path) {
                             if (typeof window.registerAutoAnswerTikzAsset === 'function') {
@@ -716,7 +656,7 @@
                             }
                         }
                     }
-                    
+
                     // Automatically load OCR results into final review editor silently
                     loadToFinalReview('ocr');
                 } else {
@@ -725,68 +665,44 @@
             })
             .catch(err => {
                 if (err.name === 'AbortError') {
-                    return; // Gracefully handle manual aborts without error toast
+                    return; // 手动取消不报错弹提示
                 }
-                if (loadingText) loadingText.classList.add('hidden');
-                if (statusBadge) {
-                    statusBadge.classList.remove('hidden');
-                    statusBadge.textContent = '已加载截图预览 (点击可更换图片)';
-                }
-                
+                finishMediaPreview();
                 answerOcrAbortController = null;
                 showToast('OCR 识别出错: ' + err, 'error');
             });
         }
 
-        // 2.2 OCR Question Content screenshot handler
+        // 2.2 题干截图 OCR：结果落「题干识别结果」，并自动载入题干编辑框
         function runContentOcr(file) {
             if (!file.type.startsWith('image/')) {
                 showToast('请上传有效的图片格式！', 'error');
                 return;
             }
-            
-            const contentOcrDropZone = document.getElementById('contentOcrDropZone');
+
             const contentOcrOutput = document.getElementById('contentOcrOutputBox');
             const contentOcrResult = document.getElementById('contentOcrResultText');
             const contentOcrConf = document.getElementById('contentOcrConfBadge');
-            
-            const previewImg = document.getElementById('contentOcrPreviewImg');
-            const previewContainer = document.getElementById('contentOcrPreviewContainer');
-            const placeholder = document.getElementById('contentOcrPlaceholder');
-            const statusBadge = document.getElementById('contentOcrStatusBadge');
-            const loadingText = document.getElementById('contentOcrStatusLoadingText');
-            
-            // 1. Read file to show image preview in the upload area
-            const reader = new FileReader();
-            reader.onload = (e) => {
-                if (previewImg && previewContainer && placeholder) {
-                    previewImg.src = e.target.result;
-                    placeholder.classList.add('hidden');
-                    previewContainer.classList.remove('hidden');
-                    
-                    if (statusBadge) statusBadge.classList.add('hidden');
-                    if (loadingText) loadingText.classList.remove('hidden');
-                }
-            };
-            reader.readAsDataURL(file);
-            
-            contentOcrOutput.classList.add('hidden');
-            
+
+            renderMediaPreview(file);
+
+            if (contentOcrOutput) contentOcrOutput.classList.add('hidden');
+
             // Abort previous running controller if any
             if (contentOcrAbortController) {
                 contentOcrAbortController.abort();
             }
             contentOcrAbortController = new AbortController();
             const signal = contentOcrAbortController.signal;
-            
+
             const engine = 'default';
-            const skipTikz = document.getElementById('contentOcrSkipTikz') ? document.getElementById('contentOcrSkipTikz').checked : false;
-            
+            const skipTikz = isTikzGenerationDisabled();
+
             const formData = new FormData();
             formData.append('file', file);
             formData.append('engine', engine);
             formData.append('skip_tikz', skipTikz ? "true" : "false");
-            
+
             fetch('/api/ocr', {
                 method: 'POST',
                 body: formData,
@@ -794,23 +710,17 @@
             })
             .then(r => r.json())
             .then(data => {
-                if (loadingText) loadingText.classList.add('hidden');
-                if (statusBadge) {
-                    statusBadge.classList.remove('hidden');
-                    statusBadge.textContent = '已加载截图预览 (点击可更换图片)';
-                }
-                
+                finishMediaPreview();
                 contentOcrAbortController = null;
-                
+
                 if (data.status === 'success') {
                     showToast('题干 OCR 识别成功并已自动填入！');
                     contentOcrOutput.classList.remove('hidden');
-                    
-                    // 1. Clean LaTeX noise, exclamation marks and leading question numbers
+
                     const cleanLatex = cleanMathOcrText(data.latex);
                     contentOcrResult.textContent = cleanLatex;
                     contentOcrConf.textContent = `置信度: ${(data.confidence * 100).toFixed(1)}%`;
-                    
+
                     if (data.tikz_code) {
                         if (data.tikz_image_path) {
                             if (typeof window.registerAutoContentTikzAsset === 'function') {
@@ -824,10 +734,8 @@
                             }
                         }
                     }
-                    
 
-                    
-                    // 2. Automatically load results into the persistent content editor
+                    // 自动载入常驻的题干编辑框
                     loadToContentEditor('ocr');
                 } else {
                     showToast(data.message, 'error');
@@ -835,19 +743,13 @@
             })
             .catch(err => {
                 if (err.name === 'AbortError') {
-                    return; // Gracefully handle manual aborts without error toast
+                    return; // 手动取消不报错弹提示
                 }
-                if (loadingText) loadingText.classList.add('hidden');
-                if (statusBadge) {
-                    statusBadge.classList.remove('hidden');
-                    statusBadge.textContent = '已加载截图预览 (点击可更换图片)';
-                }
-                
+                finishMediaPreview();
                 contentOcrAbortController = null;
                 showToast('题干 OCR 识别出错: ' + err, 'error');
             });
         }
-
         // Load content OCR result into the persistent editor textarea
         function loadToContentEditor(source, isAppend = false) {
             const textarea = document.getElementById('editContent');
@@ -907,36 +809,35 @@
             }
         }
 
-        // Clear OCR image preview and OCR result box
+
+        // 通道预览复位：贴图区回到「等待拖图」状态
+        function clearSharedMediaPreview() {
+            const previewContainer = document.getElementById('mediaPreviewContainer');
+            const placeholder = document.getElementById('mediaPlaceholder');
+            const previewImg = document.getElementById('mediaPreviewImg');
+            const statusBadge = document.getElementById('mediaStatusBadge');
+            const loadingText = document.getElementById('mediaStatusLoadingText');
+
+            if (previewImg) previewImg.src = '';
+            if (previewContainer) previewContainer.classList.add('hidden');
+            if (placeholder) placeholder.classList.remove('hidden');
+            if (loadingText) loadingText.classList.add('hidden');
+            if (statusBadge) statusBadge.classList.add('hidden');
+        }
+
+        // 清题干识别结果（通道预览 + 结果框）；函数名保留给 import.js 调用
         function clearContentOcrPreview() {
-            const previewContainer = document.getElementById('contentOcrPreviewContainer');
-            const placeholder = document.getElementById('contentOcrPlaceholder');
-            const previewImg = document.getElementById('contentOcrPreviewImg');
+            clearSharedMediaPreview();
             const contentOcrOutput = document.getElementById('contentOcrOutputBox');
-            
-            if (previewContainer && placeholder && previewImg && contentOcrOutput) {
-                previewImg.src = '';
-                previewContainer.classList.add('hidden');
-                placeholder.classList.remove('hidden');
-                contentOcrOutput.classList.add('hidden');
-            }
+            if (contentOcrOutput) contentOcrOutput.classList.add('hidden');
         }
 
-        // Clear Answer OCR image preview and result box
+        // 清解析识别结果（通道预览 + 结果框）；函数名保留给 import.js 调用
         function clearOcrPreview() {
-            const previewContainer = document.getElementById('ocrPreviewContainer');
-            const placeholder = document.getElementById('ocrPlaceholder');
-            const previewImg = document.getElementById('ocrPreviewImg');
+            clearSharedMediaPreview();
             const ocrOutput = document.getElementById('ocrOutputBox');
-            
-            if (previewContainer && placeholder && previewImg && ocrOutput) {
-                previewImg.src = '';
-                previewContainer.classList.add('hidden');
-                placeholder.classList.remove('hidden');
-                ocrOutput.classList.add('hidden');
-            }
+            if (ocrOutput) ocrOutput.classList.add('hidden');
         }
-
         // Lightbox Zoom Functions
         function zoomImage(src) {
             const lightbox = document.getElementById('imageLightbox');

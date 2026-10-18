@@ -668,6 +668,31 @@ def _book_fit_choice_columns(body: str) -> str:
     return _CHOICES_BLOCK_RE.sub(_repl, body)
 
 
+# 答案板块的版式标签由导出层负责贴（下面 _question_block 就写 \textbf{【答案】}），
+# 但历史数据与 AI 解题链路把「【答案】」写进了 answer_markdown 正文本身（拆题入库时
+# parsing_pipeline 还会主动补齐），于是 PDF 排成「【答案】」换行「【答案】C」双前缀。
+# 这里在贴标签前剥掉正文**开头**的答案标记：只剥一个、只认开头，
+# 解析正文里引用的「【答案】」（例如「（见【答案】）」）绝不碰。
+_ANSWER_LABEL_PREFIX_RE = re.compile(
+    r"""^\s*
+    (?:\\textbf\s*\{)?           # \textbf{【答案】}：提示词约定的形态
+    (?:\*\*)?\s*                 # markdown 粗体 **【答案】**
+    [【\[]\s*(?:参考|标准)?答\s*案\s*[】\]]
+    \s*(?:\*\*)?
+    (?:\s*\})?                   # 闭合 \textbf 的花括号
+    \s*[：:]?\s*
+    """,
+    re.VERBOSE,
+)
+
+
+def strip_leading_answer_label(value: str) -> str:
+    """去掉答案正文开头的「【答案】」标记，交给导出层自己贴标签。"""
+    text = str(value or "")
+    match = _ANSWER_LABEL_PREFIX_RE.match(text)
+    return text[match.end():].strip() if match else text.strip()
+
+
 def _question_block(question: dict, label: str, include_answers: bool, book: bool = False) -> str:
     _q_type = question.get("question_type") or ""
     # 教师版选择题：把答案字母印进作答括号；学生版留空。
@@ -688,7 +713,8 @@ def _question_block(question: dict, label: str, include_answers: bool, book: boo
         # 书本体没有 exam-zh 的实测自动列数：Python 侧按选项宽度估 N 注入 [columns=N]
         body = _book_fit_choice_columns(body)
     lines = [r"\noindent\textbf{%s}\quad %s" % (escape_text(label), body.strip()), ""]
-    answer = (question.get("answer") or "").strip()
+    # 正文自带的「【答案】」先剥掉，避免与下面这行版式标签叠成双前缀。
+    answer = strip_leading_answer_label(question.get("answer") or "")
     if include_answers:
         lines.append(r"\noindent\textbf{【答案】}")
         lines.append(clean_content_for_latex(answer, is_answer=True).strip() or _PLACEHOLDER)

@@ -622,3 +622,54 @@ def test_frontend_format_lock():
     assert "format !== 'elegantbook'" in js, "书本体必须跳过 print_html 支路"
     assert "format: format" in js and "format: currentExportFormat()" in js
     assert "'_book' : '_exam'" in js, "TEX 下载名要能分辨口径"
+
+
+def test_strip_leading_answer_label_forms():
+    r"""答案正文开头的各种答案标记形态都必须被剥掉，正文中间的绝不碰。"""
+    from mathbank.lecture_export import strip_leading_answer_label
+
+    assert strip_leading_answer_label("【答案】C") == "C"
+    assert strip_leading_answer_label("【答案】：$(0,2)$") == "$(0,2)$"
+    assert strip_leading_answer_label(r"\textbf{【答案】}D") == "D"
+    assert strip_leading_answer_label("**【答案】** B") == "B"
+    assert strip_leading_answer_label("【参考答案】：2") == "2"
+    # 正文中间的标记是引用，不是板块头，必须原样留着
+    assert strip_leading_answer_label("【解析】见【答案】栏") == "【解析】见【答案】栏"
+    assert strip_leading_answer_label("故选 A。") == "故选 A。"
+
+
+def test_lecture_export_does_not_double_the_answer_prefix():
+    """历史数据自带【答案】前缀 + 导出再补一次 = PDF 里两遍前缀（遗留 bug 回归）。"""
+    from mathbank.lecture_export import _question_block
+
+    tex = _question_block(
+        {
+            "id": 1,
+            "content": "已知 $x^2<4$，则（   ）",
+            "question_type": "single_choice",
+            "answer": "【答案】C\n\n【解析】由 $x^2<4$ 得 $-2<x<2$。",
+        },
+        "例 1",
+        True,
+    )
+    assert tex.count("【答案】") == 1, tex
+    assert "【答案】C" not in tex
+    assert "【解析】" in tex  # 只剥答案标记，解析板块不动
+
+
+def test_lecture_preview_answer_block_has_single_prefix():
+    """讲义预览（lecture.js）与导出口径一致：标签由版式层贴，正文自带的前缀要剥掉。"""
+    from pathlib import Path
+
+    js = (Path(__file__).resolve().parents[1] / "static" / "js" / "lecture.js").read_text(
+        encoding="utf-8"
+    )
+    assert "function stripLeadingAnswerLabel(" in js
+    helper_start = js.index("function stripLeadingAnswerLabel(")
+    helper_end = js.index("function buildQuestion(", helper_start)
+    helper = js[helper_start:helper_end]
+    assert "(?:参考|标准)?答" in helper
+    # 答案块必须用剥过前缀的正文，而不是原始 q.answer
+    body = js[helper_end:js.index("function circledBreaks(", helper_end)]
+    assert "stripLeadingAnswerLabel(q.answer)" in body
+    assert "parseMarkdownWithMath(answerBody)" in body
