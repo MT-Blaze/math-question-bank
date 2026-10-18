@@ -92,10 +92,12 @@
             document.getElementById('editorTitle').textContent = '录入新数学题';
             
             document.getElementById('editContent').value = '';
+            requestAnimationFrame(() => { if (window.__autoResizeContent) window.__autoResizeContent(); });
             window.EditorSources = [];
             if (typeof renderSourceChips === 'function') renderSourceChips();
             document.getElementById('editSource').value = '';
             document.getElementById('editAnswerMarkdown').value = '';
+            requestAnimationFrame(() => { if (window.__autoResizeAnswer) window.__autoResizeAnswer(); });
             document.getElementById('aiCustomPrompt').value = '';
             if (document.getElementById('editTags')) document.getElementById('editTags').value = '';
             _clearExamFields();
@@ -136,7 +138,7 @@
 
         // Toast Helper
         function switchWorkflowTab(tabId) {
-            const tabs = ['ai', 'ocr', 'image'];
+            const tabs = ['ai', 'ocr', 'image', 'batch'];
             tabs.forEach(t => {
                 const btn = document.getElementById(`tabBtn-${t}`);
                 const content = document.getElementById(`tabContent-${t}`);
@@ -167,10 +169,12 @@
                 document.getElementById('editorTitle').textContent = '录入新数学题';
                 
                 document.getElementById('editContent').value = '';
+                requestAnimationFrame(() => { if (window.__autoResizeContent) window.__autoResizeContent(); });
                 window.EditorSources = [];
             if (typeof renderSourceChips === 'function') renderSourceChips();
             document.getElementById('editSource').value = '';
                 document.getElementById('editAnswerMarkdown').value = '';
+                requestAnimationFrame(() => { if (window.__autoResizeAnswer) window.__autoResizeAnswer(); });
                 document.getElementById('aiCustomPrompt').value = '';
                 document.getElementById('editReview').value = '';
                 if (document.getElementById('editTags')) document.getElementById('editTags').value = '';
@@ -231,10 +235,12 @@
             document.getElementById('editorTitle').textContent = '录入新数学题';
 
             document.getElementById('editContent').value = '';
+            requestAnimationFrame(() => { if (window.__autoResizeContent) window.__autoResizeContent(); });
             window.EditorSources = [];
             if (typeof renderSourceChips === 'function') renderSourceChips();
             document.getElementById('editSource').value = '';
             document.getElementById('editAnswerMarkdown').value = '';
+            requestAnimationFrame(() => { if (window.__autoResizeAnswer) window.__autoResizeAnswer(); });
             document.getElementById('aiCustomPrompt').value = '';
             document.getElementById('editReview').value = '';
             if (document.getElementById('editTags')) document.getElementById('editTags').value = '';
@@ -590,6 +596,7 @@
                     }
                     // Load values to editor
                     document.getElementById('editContent').value = fullItem.content;
+                    requestAnimationFrame(() => { if (window.__autoResizeContent) window.__autoResizeContent(); });
                     window.EditorSources = Array.isArray(fullItem.sources)
                         ? fullItem.sources.map(function (src) { return { year: src.year || '', province: src.province || '', city: src.city || '', region: src.region || '', exam_type: src.exam_type || '', paper_title: src.paper_title || '' }; })
                         : [];
@@ -598,6 +605,7 @@
                         ? fullItem.sources[0].text
                         : (fullItem.source || '');
                     document.getElementById('editAnswerMarkdown').value = fullItem.answer_markdown || '';
+                    requestAnimationFrame(() => { if (window.__autoResizeAnswer) window.__autoResizeAnswer(); });
                     document.getElementById('editReview').value = fullItem.review || '';
 
                     window.hydrateTikzState(fullItem);
@@ -733,7 +741,18 @@
                 if (!el) return;
                 let value = source ? source[key] : '';
                 if (Array.isArray(value)) value = value.join(',');
-                el.value = (value === null || value === undefined) ? '' : value;
+                value = (value === null || value === undefined) ? '' : value;
+                // 下拉框（如选项列数）：取不到匹配项时（含清空时的空串）回到第一项，
+                // 否则 select 会显示成空白，用户会以为字段丢了。
+                if (el.tagName === 'SELECT') {
+                    const hit = Array.prototype.some.call(el.options, function (o) {
+                        return String(o.value) === String(value);
+                    });
+                    if (hit) el.value = String(value);
+                    else el.selectedIndex = 0;
+                    return;
+                }
+                el.value = value;
             });
         }
 
@@ -1080,9 +1099,7 @@
         }
 
         function openClassifyModal() {
-            const modal = document.getElementById('aiClassifyModal');
-            modal.classList.remove('hidden');
-            window.MathBankModal.open(modal, { onEscape: closeClassifyModal });
+            window.openModalWithTransition('aiClassifyModal', { onEscape: closeClassifyModal });
             
             // Reset modal states
             document.getElementById('classifyLoading').classList.add('hidden');
@@ -1095,22 +1112,10 @@
             resetClassifiedChoiceType();
             setClassifyApplyEnabled(true);
             
-            setTimeout(() => {
-                modal.classList.remove('opacity-0');
-                modal.querySelector('div').classList.remove('scale-95');
-                modal.querySelector('div').classList.add('scale-100');
-            }, 50);
         }
 
         function closeClassifyModal() {
-            const modal = document.getElementById('aiClassifyModal');
-            window.MathBankModal.close(modal);
-            modal.classList.add('opacity-0');
-            modal.querySelector('div').classList.remove('scale-100');
-            modal.querySelector('div').classList.add('scale-95');
-            setTimeout(() => {
-                modal.classList.add('hidden');
-            }, 300);
+            window.closeModalWithTransition('aiClassifyModal');
         }
 
         function runAIClassify() {
@@ -1280,11 +1285,36 @@
         let parsedDuplicateSummaryVisible = false;
         let parsedDuplicateActiveIndices = [];
         let parsedDuplicateReviewResolver = null;
+        // 本次审查里被「并入已有题」的题目（拆卷结果下标）。整批导入据此把它们
+        // 从待入库清单中剔除：并入只追加来源，新题本身并不入库。
+        const parsedDuplicateMergedIndices = new Set();
+        // 底部公共并入按钮当前作用的区块下标（entries 内下标），点击区块内按钮时同步，
+        // 避免整批场景下把来源并到别的题目上。
+        let parsedDuplicateReviewMergeIndex = -1;
+        let parsedDuplicateReviewMergeBtnEl = null;
         let parsedDuplicateCandidateObserver = null;
+        // 懒渲染 root 固定为弹窗列表容器（见 parsedDuplicateCandidateListRoot）。
+        // 保留「一个 root 一个观察器」的注册表，是为了 reset 时能逐个 disconnect，
+        // 并让切候选/切冲突题时重复调度同一 root 复用同一观察器，不重复 new。
+        const parsedDuplicateCandidateObservers = new Map();
         let parsedDuplicateCandidateRenderJobs = new WeakMap();
         let parsedDuplicateCandidateFallbackQueue = [];
         let parsedDuplicateCandidateFallbackFrame = null;
         let parsedDuplicateCandidateRenderGeneration = 0;
+        // 阶段 1 逐题队列的运行时状态。必须声明在模块顶层：
+        // openParsedDuplicateReviewModal 每次都会 reset，若留在函数体内跨调用存活，
+        // 上一批的独立保存/关联预约会被下一批静默继承或丢失。
+        let parsedDuplicateQueueEntries = [];
+        // 首屏候选 pane：renderParsedDuplicateQueueEntry 每次重渲染前清空，
+        // appendDuplicateCandidate 在往左栏挂第一张候选 pane 时认领它，
+        // 据此让首屏那一张无条件同步渲染（不依赖 IntersectionObserver）。
+        let parsedDuplicateQueueFirstPaneEl = null;
+        let parsedDuplicateQueueMode = 'batch';
+        let parsedDuplicateQueueIndex = 0;
+        let parsedDuplicateQueueCloseMergeOnSuccess = true;
+        const parsedDuplicateIndependentIndices = new Set();
+        const parsedDuplicateSkippedIndices = new Set();
+        const parsedDuplicateAssociationRequests = [];
         let allSourcesList = [];
 
         function replaceParsedQuestions(nextQuestions) {
@@ -1455,28 +1485,14 @@
             loadPdfCropPage(0);
             
             // Show modal
-            const modal = document.getElementById('pdfCropModal');
-            modal.classList.remove('hidden');
             // 每次打开都回到默认「题干」，避免上一次的选择意外投放到解答。
             window.setPdfCropTarget('content');
-            window.MathBankModal.open(modal, { onEscape: closePdfCropModal });
-            setTimeout(() => {
-                modal.classList.remove('opacity-0');
-                modal.querySelector('div').classList.remove('scale-95');
-                modal.querySelector('div').classList.add('scale-100');
-            }, 50);
+            window.openModalWithTransition('pdfCropModal', { onEscape: closePdfCropModal });
         }
 
         function closePdfCropModal() {
-            const modal = document.getElementById('pdfCropModal');
-            window.MathBankModal.close(modal);
-            modal.classList.add('opacity-0');
-            modal.querySelector('div').classList.remove('scale-100');
-            modal.querySelector('div').classList.add('scale-95');
-            setTimeout(() => {
-                modal.classList.add('hidden');
-                clearPdfCropSelection();
-            }, 300);
+            window.closeModalWithTransition('pdfCropModal');
+            clearPdfCropSelection();
         }
 
         function renderPdfPagesThumbnails() {
@@ -2579,6 +2595,8 @@
                         
                         renderParsedQuestionsList(parsedQuestionsData);
                         
+                        // 新拆出的卡片默认落到「标准来源」格式（面板字段已填时）。
+                        if (typeof applyStandardPaperTitle === 'function') applyStandardPaperTitle();
                         document.getElementById('importLoadingState').classList.add('hidden');
                         document.getElementById('parsedQuestionsWrapper').classList.remove('hidden');
                         // auto-collapse input pane after parse
@@ -2906,6 +2924,8 @@
                                 showToast(`结果已取回，但渲染题目卡片时出错：${renderError && renderError.message ? renderError.message : renderError}`, 'warning');
                             }
                         }
+                        // 新拆出的卡片默认落到「标准来源」格式（面板字段已填时）。
+                        if (typeof applyStandardPaperTitle === 'function') applyStandardPaperTitle();
                     } else if (task.status === 'cancelled') {
                         if (!finishDocumentPoll(identity)) return;
                         revealParsedQuestionsWrapper();
@@ -3625,6 +3645,10 @@
 
         function resetParsedDuplicateCandidateRendering() {
             parsedDuplicateCandidateRenderGeneration += 1;
+            parsedDuplicateCandidateObservers.forEach(observer => {
+                if (observer && typeof observer.disconnect === 'function') observer.disconnect();
+            });
+            parsedDuplicateCandidateObservers.clear();
             if (parsedDuplicateCandidateObserver) {
                 parsedDuplicateCandidateObserver.disconnect();
                 parsedDuplicateCandidateObserver = null;
@@ -3646,9 +3670,10 @@
             }
         }
 
-        function prepareParsedDuplicateCandidateRendering(root) {
-            resetParsedDuplicateCandidateRendering();
-            if (typeof window.IntersectionObserver !== 'function') return;
+        function parsedDuplicateCandidateObserverFor(root) {
+            if (!root || typeof window.IntersectionObserver !== 'function') return null;
+            const cached = parsedDuplicateCandidateObservers.get(root);
+            if (cached) return cached;
             const observer = new window.IntersectionObserver(entries => {
                 entries.forEach(entry => {
                     if (!entry.isIntersecting && entry.intersectionRatio <= 0) return;
@@ -3661,10 +3686,41 @@
                 root: root,
                 rootMargin: '120px 0px'
             });
-            parsedDuplicateCandidateObserver = observer;
+            parsedDuplicateCandidateObservers.set(root, observer);
+            return observer;
         }
 
-        function scheduleParsedDuplicateCandidateRender(container, text) {
+        // 懒渲染的 root 固定为弹窗列表容器：双栏改造后左栏候选随该容器一起滚动，
+        // 没有独立滚动盒。历史上这里靠向上找 data-candidate-scroll 祖先解析 root，
+        // 但全项目从未有任何地方设置过该属性（只有本函数在读取），导致 root 恒为
+        // null、观察器路径永不建立、左栏题干永远停在「进入可见区域后自动渲染题干…」。
+        function parsedDuplicateCandidateListRoot() {
+            return document.getElementById('parsedDuplicateReviewList');
+        }
+
+        // 容器是否已落在视口内。用于让首屏可见的候选立即同步渲染，
+        // 不必等 IntersectionObserver 回调或 rAF 下一帧。
+        // getBoundingClientRect 缺失（测试替身）时按「不在视口内」处理，交给观察器/兜底。
+        function parsedDuplicateCandidateInViewport(container) {
+            if (!container || typeof container.getBoundingClientRect !== 'function') {
+                return false;
+            }
+            const rect = container.getBoundingClientRect();
+            if (!rect || !Number.isFinite(rect.top) || !Number.isFinite(rect.bottom)) {
+                return false;
+            }
+            const height = window.innerHeight
+                || (document.documentElement && document.documentElement.clientHeight)
+                || 0;
+            return rect.bottom > 0 && rect.top < height;
+        }
+
+        function prepareParsedDuplicateCandidateRendering(root) {
+            resetParsedDuplicateCandidateRendering();
+            parsedDuplicateCandidateObserver = parsedDuplicateCandidateObserverFor(root);
+        }
+
+        function scheduleParsedDuplicateCandidateRender(container, text, forceSync) {
             if (!container) return;
             const generation = parsedDuplicateCandidateRenderGeneration;
             const render = () => {
@@ -3677,11 +3733,27 @@
                     container.setAttribute('aria-busy', 'false');
                 }
             };
-            if (parsedDuplicateCandidateObserver) {
-                parsedDuplicateCandidateRenderJobs.set(container, render);
-                parsedDuplicateCandidateObserver.observe(container);
+            // 1a) 首屏候选（调用方显式 forceSync）：无条件立即渲染，不经过
+            //     IntersectionObserver。某些环境（后台标签页/无头浏览器）下 IO 回调
+            //     根本不触发，若依赖它会让左栏题干永远停在占位文字。
+            if (forceSync) {
+                render();
                 return;
             }
+            // 1b) 其余已在视口内的候选：同样立即同步渲染。
+            if (parsedDuplicateCandidateInViewport(container)) {
+                render();
+                return;
+            }
+            // 2) 视口外候选：以弹窗列表容器为 root 挂观察器，滚到才懒渲染。
+            const root = parsedDuplicateCandidateListRoot();
+            const observer = parsedDuplicateCandidateObserverFor(root);
+            if (observer) {
+                parsedDuplicateCandidateRenderJobs.set(container, render);
+                observer.observe(container);
+                return;
+            }
+            // 3) 观察器不可用（无 IO / 无容器）：退回 rAF 队列逐帧渲染，防御性兜底。
             parsedDuplicateCandidateFallbackQueue.push(render);
             if (parsedDuplicateCandidateFallbackFrame === null) {
                 parsedDuplicateCandidateFallbackFrame = window.requestAnimationFrame(() => {
@@ -3737,7 +3809,8 @@
                 renderedContent.textContent = '进入可见区域后自动渲染题干…';
                 scheduleParsedDuplicateCandidateRender(
                     renderedContent,
-                    String(candidate.content || '')
+                    String(candidate.content || ''),
+                    container === parsedDuplicateQueueFirstPaneEl
                 );
                 row.appendChild(renderedContent);
             }
@@ -3777,48 +3850,163 @@
             container.appendChild(row);
         }
 
-        function renderParsedDuplicateReview(entries) {
+        // 阶段 1 起弹窗改为逐题队列（openParsedDuplicateReviewModal → renderParsedDuplicateQueueEntry），
+        // 这个旧的「全部区块堆叠渲染」入口已无人调用；保留函数壳仅作旧切片测试的锚点。
+        function renderParsedDuplicateReview(entries, options) {
             const list = document.getElementById('parsedDuplicateReviewList');
             if (!list) return;
+            const closeMergeOnSuccess = !options || options.closeMergeOnSuccess !== false;
             prepareParsedDuplicateCandidateRendering(list);
             list.textContent = '';
-            entries.forEach(entry => {
-                const section = document.createElement('section');
-                section.className = 'rounded-2xl border border-amber-200/80 bg-amber-50/50 p-4 dark:border-amber-500/35 dark:bg-amber-500/10';
-                const heading = document.createElement('h4');
-                heading.className = 'text-xs font-bold text-slate-800 dark:text-slate-100';
-                heading.textContent = entry.label;
-                section.appendChild(heading);
+            entries.forEach((entry, sectionIndex) => {
+                list.appendChild(buildParsedDuplicateQueueSection(
+                    entry,
+                    sectionIndex,
+                    closeMergeOnSuccess
+                ));
+            });
+            bindParsedDuplicateReviewResize();
+        }
 
-                const result = entry.result || {};
-                const candidates = Array.isArray(result.candidates) ? result.candidates : [];
-                const batchMatches = Array.isArray(result.batch_matches) ? result.batch_matches : [];
-                const meta = document.createElement('p');
-                meta.className = 'mt-1 text-[10px] leading-5 text-slate-600 dark:text-slate-300';
-                const visualNote = result.needs_visual_review ? '；配图需人工核对' : '';
-                meta.textContent = `题库候选 ${candidates.length} 道，本批重复 ${batchMatches.length || duplicateBatchMatchCount(result)} 道${visualNote}`;
-                section.appendChild(meta);
+        // ---------------------------------------------------------------
+        // 双栏对照：左栏「当前待导入题」（sticky），右栏「已收录候选」（独立滚动）
+        // ---------------------------------------------------------------
 
-                candidates.forEach(candidate => appendDuplicateCandidate(section, candidate));
-                batchMatches.forEach(match => {
-                    const note = document.createElement('p');
-                    note.className = 'mt-2 rounded-lg border border-indigo-100 bg-indigo-50 px-3 py-2 text-[10px] font-semibold text-indigo-700 dark:border-indigo-500/30 dark:bg-indigo-500/10 dark:text-indigo-200';
-                    let targetLabel = '本批另一道题';
-                    const targetKey = typeof match === 'string'
-                        ? match
-                        : String(match.client_key || match.other_client_key || '');
-                    const targetIndex = Number(targetKey.split('-').pop());
-                    if (Number.isInteger(targetIndex) && targetIndex >= 0) {
-                        targetLabel = `本批第 ${targetIndex + 1} 题`;
-                    }
-                    note.textContent = `与${targetLabel}疑似重复，请一并核对。`;
-                    section.appendChild(note);
-                });
-                list.appendChild(section);
+        // lg 断点 = 1024px；窄屏把 data-compare 切成 stack，由 CSS 回落为纵向堆叠。
+        function parsedDuplicateReviewApplyResponsive(section) {
+            if (!section || typeof section.querySelector !== 'function') return;
+            const grid = section.querySelector('[data-compare-root]');
+            if (!grid) return;
+            const wide = typeof window !== 'undefined'
+                && typeof window.matchMedia === 'function'
+                && window.matchMedia('(min-width: 1024px)').matches;
+            grid.setAttribute('data-compare', wide ? 'two' : 'stack');
+        }
+
+        let parsedDuplicateReviewResizeBound = false;
+        function bindParsedDuplicateReviewResize() {
+            if (parsedDuplicateReviewResizeBound) return;
+            if (typeof window === 'undefined' || typeof window.addEventListener !== 'function') return;
+            parsedDuplicateReviewResizeBound = true;
+            window.addEventListener('resize', () => {
+                const list = document.getElementById('parsedDuplicateReviewList');
+                if (!list || typeof list.querySelectorAll !== 'function') return;
+                Array.prototype.forEach.call(
+                    list.querySelectorAll('[data-compare-root]'),
+                    parsedDuplicateReviewApplyResponsive
+                );
             });
         }
 
-        function openMergeSourceModal(candidateId, candidateSeq) {
+        // 左栏数据源优先级：卡片正文框当前值 → parsedQuestionsData → 编辑器正文框
+        // （编辑器内保存时查重这条入口没有拆卷卡片）。
+        function parsedDuplicateReviewCurrentSource(entry) {
+            const index = entry && Number.isInteger(entry.index) ? entry.index : -1;
+            if (index >= 0) {
+                const card = document.getElementById(`parsed-card-${index}`);
+                const pick = selector => (
+                    card && typeof card.querySelector === 'function' ? card.querySelector(selector) : null
+                );
+                const contentBox = pick('.card-content-textarea');
+                const answerBox = pick('.card-answer-textarea');
+                const contentText = contentBox && contentBox.value ? String(contentBox.value) : '';
+                const answerText = answerBox && answerBox.value ? String(answerBox.value) : '';
+                const question = Array.isArray(parsedQuestionsData) ? parsedQuestionsData[index] : null;
+                const rawImages = question && Array.isArray(question.image_paths) ? question.image_paths : [];
+                // 解答区内联的配图不重复出现在题干配图条里
+                const images = rawImages.filter(path => String(path) && answerText.indexOf(String(path)) < 0);
+                if (contentText) return { text: contentText, images: images };
+                if (question && question.content) return { text: String(question.content), images: images };
+            }
+            const editorBox = document.getElementById('editContent');
+            if (editorBox && editorBox.value) return { text: String(editorBox.value), images: [] };
+            return null;
+        }
+
+        function parsedDuplicateReviewImageStrip(paths) {
+            const strip = document.createElement('div');
+            strip.className = 'mt-3 flex flex-wrap gap-2';
+            strip.setAttribute('data-compare-images', 'true');
+            (paths || []).slice(0, 6).forEach((rawPath, imageIndex) => {
+                let path = String(rawPath || '');
+                if (typeof window !== 'undefined' && window.MathBankSafe) {
+                    path = window.MathBankSafe.safeImageUrl(path) || '';
+                }
+                if (!path) return;
+                const imageButton = document.createElement('button');
+                imageButton.type = 'button';
+                imageButton.className = 'flex min-h-11 min-w-11 items-center justify-center rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500';
+                imageButton.setAttribute('aria-label', `放大查看待导入题配图 ${imageIndex + 1}`);
+                const image = document.createElement('img');
+                image.src = path;
+                image.alt = '待导入题配图';
+                image.loading = 'lazy';
+                image.decoding = 'async';
+                image.setAttribute('data-safe-image-open', 'true');
+                image.className = 'h-20 w-24 rounded-lg border border-slate-200 bg-white object-contain dark:border-slate-700 dark:bg-slate-950';
+                imageButton.appendChild(image);
+                imageButton.addEventListener('click', event => {
+                    if (event.target === imageButton) image.click();
+                });
+                strip.appendChild(imageButton);
+            });
+            return strip;
+        }
+
+        function buildParsedDuplicateReviewCurrentColumn(entry) {
+            const wrap = document.createElement('div');
+            wrap.className = 'rounded-xl border border-slate-200 bg-white p-3 dark:border-slate-700 dark:bg-slate-900/80';
+            const label = document.createElement('div');
+            label.className = 'text-[10px] font-bold text-slate-600 dark:text-slate-200';
+            label.textContent = '当前待导入题';
+            wrap.appendChild(label);
+            const source = parsedDuplicateReviewCurrentSource(entry);
+            if (!source || !source.text) {
+                const empty = document.createElement('p');
+                empty.className = 'mt-2 text-[10px] leading-5 text-slate-500 dark:text-slate-300';
+                empty.textContent = '本题正文不在拆卷卡片内，左栏无对照内容；请以上方题目原文为准。';
+                wrap.appendChild(empty);
+                return wrap;
+            }
+            const body = document.createElement('div');
+            body.className = 'mt-2 max-h-[52vh] overflow-y-auto custom-scrollbar break-words text-[11px] leading-5 text-slate-700 dark:text-slate-200';
+            body.setAttribute('data-compare-current-body', 'true');
+            const renderPreview = typeof window !== 'undefined' && typeof window.renderQuestionPreviewContent === 'function'
+                ? window.renderQuestionPreviewContent
+                : null;
+            if (renderPreview) {
+                try {
+                    renderPreview(body, source.text, { includeImages: false });
+                } catch (error) {
+                    body.textContent = '题干渲染失败，请稍后重试。';
+                }
+            } else {
+                body.textContent = String(source.text);
+            }
+            wrap.appendChild(body);
+            const strip = parsedDuplicateReviewImageStrip(source.images);
+            if (strip.children.length > 0) wrap.appendChild(strip);
+            return wrap;
+        }
+
+        function collectImportSourceFields() {
+            const readValue = id => String((document.getElementById(id) || {}).value || '').trim();
+            return {
+                year: readValue('importSrcYear'),
+                region: readValue('importSrcRegion'),
+                examType: readValue('importSrcExamType')
+            };
+        }
+        function parsedDuplicateReviewBestCandidate(result) {
+            const payload = result || {};
+            const candidates = Array.isArray(payload.candidates) ? payload.candidates : [];
+            if (candidates.length > 0) return candidates[0];
+            const batchMatches = Array.isArray(payload.batch_matches) ? payload.batch_matches : [];
+            return batchMatches.length > 0 ? batchMatches[0] : null;
+        }
+
+
+        function openMergeSourceModal(candidateId, candidateSeq, onMergeSuccess, preset) {
             const overlay = document.createElement('div');
             overlay.id = 'mergeSourceModal';
             overlay.className = 'fixed inset-0 z-[96] hidden items-center justify-center bg-slate-950/55 p-4 opacity-0 backdrop-blur-sm transition-opacity duration-200';
@@ -3842,19 +4030,23 @@
                 '<button type="button" id="mergeSrcSubmit" class="min-h-11 rounded-xl bg-emerald-600 px-4 py-2 text-xs font-bold text-white shadow-sm transition-colors hover:bg-emerald-700">确认并入</button>' +
                 '</div></div>';
             document.body.appendChild(overlay);
+            // 预填拆卷时已填过的来源。值一律走 .value 赋值，**绝不拼进 innerHTML**：
+            // 来源文本是用户可控内容（学校名/卷名），拼进模板串就是父页面脚本注入点。
+            // preset 缺省时四个框保持空（旧行为），控件缺失也不抛错。
+            const presetSource = preset || {};
+            const prefillMap = {
+                mergeSrcYear: presetSource.year,
+                mergeSrcRegion: presetSource.region,
+                mergeSrcExamType: presetSource.exam_type,
+                mergeSrcPaperTitle: presetSource.paper_title
+            };
+            Object.keys(prefillMap).forEach(function (inputId) {
+                const input = document.getElementById(inputId);
+                if (input) input.value = String(prefillMap[inputId] || '');
+            });
             const modal = overlay;
-            modal.classList.remove('hidden');
-            modal.classList.add('flex');
-            modal.setAttribute('aria-hidden', 'false');
-            if (window.MathBankModal) {
-                window.MathBankModal.open(modal, { onEscape: () => closeMergeSourceModal(modal) });
-            }
-            setTimeout(function () {
-                modal.classList.remove('opacity-0');
-                const surface = modal.querySelector('[data-modal-surface]');
-                if (surface) surface.classList.remove('scale-95');
-                if (surface) surface.classList.add('scale-100');
-            }, 20);
+            // 公共开关助手：remove('hidden')/flex/aria-hidden=false/揭示兜底一步到位
+            window.openModalWithTransition(modal, { onEscape: () => closeMergeSourceModal(modal) });
             document.getElementById('mergeSrcCancel').onclick = function () { closeMergeSourceModal(modal); };
             document.getElementById('mergeSrcSubmit').onclick = function () {
                 const year = (document.getElementById('mergeSrcYear').value || '').trim();
@@ -3889,8 +4081,13 @@
                     }
                     return resp.json();
                 }).then(function () {
+                    const seqLabel = String(candidateSeq == null ? candidateId : candidateSeq);
+                    showToast('已并入题库第 ' + escapeHtml(seqLabel) + ' 题，来源已追加。', 'success');
                     closeMergeSourceModal(modal);
-                    showToast('已并入题库第 ' + escapeHtml(String(candidateSeq == null ? candidateId : candidateSeq)) + ' 题，来源已追加。', 'success');
+                    if (typeof onMergeSuccess === 'function') {
+                        onMergeSuccess();
+                        return;
+                    }
                     closeParsedDuplicateReviewModal('merged');
                 }).catch(function (err) {
                     btn.disabled = false;
@@ -3907,6 +4104,848 @@
             if (modal.parentNode) modal.parentNode.removeChild(modal);
         }
 
+        // =====================================================================
+        // 查重审查弹窗·阶段 1：逐题队列 + 四级徽标 + 相似题关联（纯前端）
+        // 后端判据（question_duplicates.py）与 schema 一律不动；这里只把
+        // level/reasons 讲成人话，并把逐条决策映射回既有的四种聚合动作
+        // （'review' / 'skip' / 'independent' / 'merged'），三个调用方零改动。
+        // =====================================================================
+
+        const PARSED_DUP_EXACT_LEVELS = new Set(['exact', 'duplicate', 'same']);
+        const PARSED_DUP_PROBABLE_LEVELS = new Set(['probable', 'similar', 'high']);
+        const PARSED_DUP_STEM_SAME_REASONS = new Set([
+            'EXACT_TEXT',
+            'EXACT_CONTENT',
+            'CRITICAL_MATH_MATCH',
+            'SAFE_NORMALIZATION_ONLY'
+        ]);
+        const PARSED_DUP_ANSWER_DIFF_REASONS = new Set(['ANSWER_DIFF', 'ANSWER_CONFLICT']);
+
+        function parsedDuplicateReviewStripTags(value) {
+            return String(value == null ? '' : value).replace(/<[^>]*>/g, ' ');
+        }
+
+        // 来源比较口径（用户拍板）：年份 + 学校/地区 + 卷名三要素全部相等才算同源；
+        // 考试类型（期中/期末/三模…）不参与判定——同一张卷被不同名义重印是常态。
+        // 两侧都缺同一个要素时按「该要素相等」处理（无法证伪），只有单边缺失才判不同。
+        function normalizeDuplicateSourceText(value) {
+            const lowered = parsedDuplicateReviewStripTags(value).toLowerCase();
+            return lowered.replace(/[\s\u3000]+/g, '').replace(/[^0-9a-z\u4e00-\u9fff]/g, '');
+        }
+
+        function duplicateSourceSignatureFromText(value) {
+            const text = parsedDuplicateReviewStripTags(value);
+            const yearMatch = String(text || '').match(/(19|20)\d{2}/);
+            return {
+                raw: normalizeDuplicateSourceText(text),
+                year: yearMatch ? yearMatch[0] : '',
+                has_text: normalizeDuplicateSourceText(text).length > 0
+            };
+        }
+
+        function parsedDuplicateCandidateSourceText(candidate) {
+            const item = candidate || {};
+            return String(item.source || item.paper_title || '');
+        }
+
+        function parsedDuplicateEntrySourceSignatures(entry) {
+            const index = entry && Number.isInteger(entry.index) ? entry.index : -1;
+            const preset = collectImportSourceFields();
+            if (index < 0) {
+                // 编辑器保存时查重这条入口没有拆卷卡片：来源面板的三个字段仍是唯一线索。
+                return [preset.year, preset.region]
+                    .map(duplicateSourceSignatureFromText)
+                    .filter(signature => signature.raw);
+            }
+            const card = document.getElementById(`parsed-card-${index}`);
+            const sourceBox = card && typeof card.querySelector === 'function'
+                ? card.querySelector('.card-source')
+                : null;
+            const texts = [];
+            if (sourceBox && String(sourceBox.value || '').trim()) {
+                texts.push(String(sourceBox.value));
+            } else if (Array.isArray(parsedQuestionsData) && parsedQuestionsData[index]) {
+                const fallback = parsedQuestionsData[index].source;
+                if (fallback) texts.push(String(fallback));
+            }
+            if (preset.year) texts.push(String(preset.year));
+            if (preset.region) texts.push(String(preset.region));
+            return texts.map(duplicateSourceSignatureFromText).filter(signature => signature.raw);
+        }
+
+        function duplicateSourcesSame(leftSignature, rightSignatures) {
+            if (!leftSignature || !Array.isArray(rightSignatures) || rightSignatures.length === 0) {
+                return false;
+            }
+            return rightSignatures.some(right => {
+                if (!right || !right.raw) return false;
+                if (leftSignature.raw === right.raw) return true;
+                const yearsComparable = leftSignature.year && right.year;
+                const bothHaveText = leftSignature.has_text && right.has_text;
+                return Boolean(yearsComparable && bothHaveText && leftSignature.year === right.year);
+            });
+        }
+
+        function parsedDuplicateEntryLevelKey(entry) {
+            const result = (entry && entry.result) || {};
+            const pool = []
+                .concat(Array.isArray(result.candidates) ? result.candidates : [])
+                .concat(Array.isArray(result.batch_matches) ? result.batch_matches : []);
+            const levels = [String(result.level || '').toLowerCase()]
+                .concat(pool.map(item => String((item && item.level) || '').toLowerCase()))
+                .filter(Boolean);
+            if (levels.some(level => PARSED_DUP_EXACT_LEVELS.has(level))) return 'exact';
+            if (levels.some(level => PARSED_DUP_PROBABLE_LEVELS.has(level))) return 'probable';
+            if (levels.length > 0) return 'variant';
+            return 'visual';
+        }
+
+        function parsedDuplicateBadgePresentation(levelKey) {
+            const presentations = {
+                exact: {
+                    text: '完全相同',
+                    advice: '建议直接去重',
+                    badgeClass: 'border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-500/40 dark:bg-rose-500/15 dark:text-rose-200',
+                    iconClass: 'bg-rose-50 text-rose-600 dark:bg-rose-500/15 dark:text-rose-300',
+                    icon: 'fa-circle-exclamation'
+                },
+                probable: {
+                    text: '同题异源',
+                    advice: '建议追加来源',
+                    badgeClass: 'border-orange-200 bg-orange-50 text-orange-700 dark:border-orange-500/40 dark:bg-orange-500/15 dark:text-orange-200',
+                    iconClass: 'bg-orange-50 text-orange-600 dark:bg-orange-500/15 dark:text-orange-300',
+                    icon: 'fa-code-branch'
+                },
+                conflict: {
+                    text: '答案冲突',
+                    advice: '警告：请人工核对',
+                    badgeClass: 'border-yellow-200 bg-yellow-50 text-yellow-800 dark:border-yellow-500/40 dark:bg-yellow-500/15 dark:text-yellow-200',
+                    iconClass: 'bg-yellow-50 text-yellow-700 dark:bg-yellow-500/15 dark:text-yellow-300',
+                    icon: 'fa-triangle-exclamation'
+                },
+                variant: {
+                    text: '变式相关',
+                    advice: '建议标记为相似题',
+                    badgeClass: 'border-sky-200 bg-sky-50 text-sky-700 dark:border-sky-500/40 dark:bg-sky-500/15 dark:text-sky-200',
+                    iconClass: 'bg-sky-50 text-sky-600 dark:bg-sky-500/15 dark:text-sky-300',
+                    icon: 'fa-diagram-project'
+                },
+                visual: {
+                    text: '配图待核对',
+                    advice: '请核对配图后再决定',
+                    badgeClass: 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-500/40 dark:bg-amber-500/15 dark:text-amber-200',
+                    iconClass: 'bg-amber-50 text-amber-600 dark:bg-amber-500/15 dark:text-amber-300',
+                    icon: 'fa-image'
+                }
+            };
+            return presentations[levelKey] || presentations.visual;
+        }
+
+        function parsedDuplicateConflictReasons(result) {
+            const reasons = [];
+            const push = reason => {
+                if (reason && reasons.indexOf(reason) < 0) reasons.push(reason);
+            };
+            if (!result) return reasons;
+            push(String(result.reason || ''));
+            (Array.isArray(result.candidates) ? result.candidates : []).forEach(candidate => {
+                (Array.isArray(candidate && candidate.reasons) ? candidate.reasons : []).forEach(push);
+                const comparison = candidate && candidate.comparison;
+                if (comparison && Array.isArray(comparison.reasons)) comparison.reasons.forEach(push);
+            });
+            (Array.isArray(result.batch_matches) ? result.batch_matches : []).forEach(match => {
+                (Array.isArray(match && match.reasons) ? match.reasons : []).forEach(push);
+            });
+            return reasons.filter(Boolean);
+        }
+
+        // 四级徽标的最终裁定：先取后端 level，再用「题干相同 + 答案不同」的理由证据
+        // 把 exact/probable 升级为「答案冲突」（阶段 1 只警示、不代做取舍）。
+        function parsedDuplicateEntryBadgeKey(entry) {
+            const result = (entry && entry.result) || {};
+            const baseLevel = parsedDuplicateEntryLevelKey(entry);
+            const reasons = parsedDuplicateConflictReasons(result).map(reason => String(reason));
+            const answerDiff = reasons.some(reason => PARSED_DUP_ANSWER_DIFF_REASONS.has(reason));
+            const stemSame = reasons.some(reason => PARSED_DUP_STEM_SAME_REASONS.has(reason));
+            if (answerDiff && stemSame && (baseLevel === 'exact' || baseLevel === 'probable')) {
+                return 'conflict';
+            }
+            if (baseLevel === 'exact' || baseLevel === 'probable') {
+                const signatures = parsedDuplicateEntrySourceSignatures(entry);
+                const candidates = Array.isArray(result.candidates) ? result.candidates : [];
+                const sameSource = signatures.length > 0
+                    && candidates.some(candidate => duplicateSourcesSame(
+                        signatures[0],
+                        [duplicateSourceSignatureFromText(parsedDuplicateCandidateSourceText(candidate))]
+                    ));
+                if (baseLevel === 'exact') {
+                    // 完全相同且同源 → 🔴；完全相同却异源 → 🟠（正文一样、出处不同）
+                    return sameSource ? 'exact' : 'probable';
+                }
+                return sameSource ? 'conflict' : 'probable';
+            }
+            return baseLevel;
+        }
+
+        function parsedDuplicateSuggestedAction(badgeKey) {
+            const mapping = {
+                exact: 'dedupe',
+                probable: 'merge',
+                conflict: 'independent',
+                variant: 'associate',
+                visual: 'independent'
+            };
+            return mapping[badgeKey] || 'independent';
+        }
+
+        // ---- 逐字段状态行：✅一致 / ⚠️相似 / ❌不同 / —缺失 -------------------
+        // 文字一律用普通字号 + 深色（用户明确要求，禁止半透明浅灰小字）。
+
+        function duplicateFieldStatePresentation(state) {
+            const states = {
+                same: { symbol: '✅', label: '一致', className: 'text-emerald-700 dark:text-emerald-300' },
+                similar: { symbol: '⚠️', label: '相似', className: 'text-amber-700 dark:text-amber-300' },
+                diff: { symbol: '❌', label: '不同', className: 'text-rose-700 dark:text-rose-300' },
+                missing: { symbol: '—', label: '缺失', className: 'text-slate-500 dark:text-slate-400' }
+            };
+            return states[state] || states.missing;
+        }
+
+        function extractChoiceLines(content) {
+            const text = parsedDuplicateReviewStripTags(content);
+            const choicesBlock = text.match(/\\begin\{choices\}([\s\S]*?)\\end\{choices\}/);
+            const body = choicesBlock ? choicesBlock[1] : text;
+            const lines = body
+                .split(/\r?\n/)
+                .map(line => line
+                    .replace(/^\s*\\item\b/, '')
+                    .replace(/^\s*\(?[A-D]\)?[\.\u3001、：:]\s*/, '')
+                    .trim())
+                .filter(line => line.length > 0);
+            return lines.slice(0, 8);
+        }
+
+        function compareDuplicateFieldState(currentValue, candidateValue, options) {
+            const opts = options || {};
+            const current = String(currentValue == null ? '' : currentValue).trim();
+            const candidate = String(candidateValue == null ? '' : candidateValue).trim();
+            if (!current || !candidate) return 'missing';
+            if (opts.compareChoices) {
+                const currentLines = extractChoiceLines(current);
+                const candidateLines = extractChoiceLines(candidate);
+                if (!currentLines.length || !candidateLines.length) return 'missing';
+                if (currentLines.length !== candidateLines.length) return 'diff';
+                const identical = currentLines.every((line, index) => line === candidateLines[index]);
+                if (identical) return 'same';
+                const shared = currentLines.filter(line => candidateLines.indexOf(line) >= 0).length;
+                const ratio = shared / Math.max(currentLines.length, candidateLines.length);
+                if (ratio >= 0.5) return 'similar';
+                return 'diff';
+            }
+            const normalizedCurrent = normalizeDuplicateSourceText(current);
+            const normalizedCandidate = normalizeDuplicateSourceText(candidate);
+            if (!normalizedCurrent || !normalizedCandidate) return 'missing';
+            if (normalizedCurrent === normalizedCandidate) return 'same';
+            const shorter = Math.min(normalizedCurrent.length, normalizedCandidate.length);
+            const longer = Math.max(normalizedCurrent.length, normalizedCandidate.length);
+            if (shorter >= 8 && (longer === 0 || shorter / longer >= 0.85)
+                && (normalizedCurrent.indexOf(normalizedCandidate) >= 0
+                    || normalizedCandidate.indexOf(normalizedCurrent) >= 0)) {
+                return 'similar';
+            }
+            return 'diff';
+        }
+
+        function buildParsedDuplicateReasonLine(entry, candidate) {
+            const wrap = document.createElement('div');
+            wrap.className = 'mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs font-semibold text-slate-800 dark:text-slate-100';
+            wrap.setAttribute('data-dup-reason-line', 'true');
+            const index = entry && Number.isInteger(entry.index) ? entry.index : -1;
+            const card = index >= 0 ? document.getElementById(`parsed-card-${index}`) : null;
+            const pickCardValue = selector => (
+                card && typeof card.querySelector === 'function' && card.querySelector(selector)
+                    ? String(card.querySelector(selector).value || '')
+                    : ''
+            );
+            const question = Array.isArray(parsedQuestionsData) && index >= 0 ? parsedQuestionsData[index] : null;
+            const currentContent = pickCardValue('.card-content-textarea')
+                || (question && question.content ? String(question.content) : '');
+            const currentAnswer = pickCardValue('.card-answer-textarea')
+                || (question && question.answer_markdown ? String(question.answer_markdown) : '');
+            const currentType = pickCardValue('.card-qtype')
+                || (question && question.question_type ? String(question.question_type) : '');
+            const currentSourceBox = pickCardValue('.card-source');
+            const currentImages = question && Array.isArray(question.image_paths) ? question.image_paths : [];
+            const candidateItem = candidate || {};
+            const comparisons = [];
+            comparisons.push({
+                label: '题干',
+                state: compareDuplicateFieldState(currentContent, candidateItem.content)
+            });
+            const isChoice = /choices/.test(currentContent)
+                || /choices/.test(String(candidateItem.content || ''))
+                || /choice/i.test(currentType)
+                || /choice/i.test(String(candidateItem.question_type || ''));
+            if (isChoice) {
+                comparisons.push({
+                    label: '选项',
+                    state: compareDuplicateFieldState(currentContent, candidateItem.content, { compareChoices: true })
+                });
+            }
+            comparisons.push({
+                label: '答案',
+                state: compareDuplicateFieldState(currentAnswer, candidateItem.answer)
+            });
+            comparisons.push({
+                label: '解析',
+                state: compareDuplicateFieldState(currentAnswer, candidateItem.analysis)
+            });
+            const sourceState = (() => {
+                // 有卡片来源文本时按整串比对（年份+学校+卷名三要素全等才同源）；
+                // 没有卡片（编辑器入口）退回年份口径。
+                if (currentSourceBox) {
+                    const left = duplicateSourceSignatureFromText(currentSourceBox);
+                    const right = duplicateSourceSignatureFromText(
+                        parsedDuplicateCandidateSourceText(candidateItem)
+                    );
+                    if (!left.raw || !right.raw) return 'missing';
+                    return left.raw === right.raw ? 'same' : 'diff';
+                }
+                const signatures = parsedDuplicateEntrySourceSignatures(entry);
+                const candidateSignature = duplicateSourceSignatureFromText(
+                    parsedDuplicateCandidateSourceText(candidateItem)
+                );
+                if (!signatures.length || !candidateSignature.raw) return 'missing';
+                return duplicateSourcesSame(signatures[0], [candidateSignature]) ? 'same' : 'diff';
+            })();
+            comparisons.push({ label: '来源', state: sourceState });
+            if (currentImages.length && Array.isArray(candidateItem.image_paths)) {
+                const candidatePaths = candidateItem.image_paths.map(path => String(path));
+                const shared = currentImages.filter(path => candidatePaths.indexOf(String(path)) >= 0).length;
+                comparisons.push({
+                    label: '配图',
+                    state: shared > 0 ? (shared === currentImages.length && shared === candidatePaths.length ? 'same' : 'similar') : 'diff'
+                });
+            } else if (currentImages.length || Number(candidateItem.image_count || 0) > 0) {
+                comparisons.push({ label: '配图', state: 'missing' });
+            }
+            comparisons.forEach(item => {
+                const presentation = duplicateFieldStatePresentation(item.state);
+                const chip = document.createElement('span');
+                chip.className = `inline-flex items-center gap-1 ${presentation.className}`;
+                chip.setAttribute('data-dup-field', item.label);
+                chip.setAttribute('data-dup-state', item.state);
+                chip.appendChild(document.createTextNode(`${item.label} ${presentation.symbol}${presentation.label}`));
+                wrap.appendChild(chip);
+            });
+            const result = (entry && entry.result) || {};
+            const reasonLabels = parsedDuplicateConflictReasons(result)
+                .slice(0, 3)
+                .map(duplicateReasonLabel)
+                .filter(Boolean);
+            if (reasonLabels.length) {
+                const note = document.createElement('span');
+                note.className = 'text-slate-700 dark:text-slate-200';
+                note.textContent = `判据：${reasonLabels.join('；')}`;
+                wrap.appendChild(note);
+            }
+            if (result.needs_visual_review) {
+                const visual = document.createElement('span');
+                visual.className = 'text-amber-700 dark:text-amber-300';
+                visual.textContent = '配图需人工核对';
+                wrap.appendChild(visual);
+            }
+            return wrap;
+        }
+
+
+        function ensureParsedDuplicateDecisionMaps() {
+            // 「仍作为独立题保存」的语义早已存在（duplicate_override=independent），
+            // 但批量流程一直没有承载它的集合；目标变量一律用 typeof 守卫读取。
+            // 只做增量并入：clear() 会把上一轮逐题决策抹掉（实测跳过全部后本题落空）。
+            const overrides = typeof independentOverrideIndices !== 'undefined' && independentOverrideIndices;
+            const targets = typeof indicesToSave !== 'undefined' && Array.isArray(indicesToSave) ? indicesToSave : null;
+            if (!overrides || typeof overrides.add !== 'function') return;
+            parsedDuplicateIndependentIndices.forEach(index => {
+                if (!targets || targets.indexOf(index) >= 0) overrides.add(index);
+            });
+        }
+
+        function resetParsedDuplicateReviewQueueState() {
+            parsedDuplicateQueueEntries = [];
+            parsedDuplicateQueueMode = 'batch';
+            parsedDuplicateQueueIndex = 0;
+            parsedDuplicateQueueCloseMergeOnSuccess = true;
+            parsedDuplicateIndependentIndices.clear();
+            parsedDuplicateSkippedIndices.clear();
+            parsedDuplicateAssociationRequests.length = 0;
+        }
+
+        function renderParsedDuplicateProgress() {
+            const progress = document.getElementById('duplicateReviewProgress');
+            if (!progress) return;
+            const total = parsedDuplicateQueueEntries.length;
+            if (parsedDuplicateQueueMode === 'inspect' || total <= 0) {
+                progress.classList.add('hidden');
+                progress.textContent = '';
+                return;
+            }
+            progress.classList.remove('hidden');
+            const position = Math.min(parsedDuplicateQueueIndex + 1, total);
+            progress.textContent = `第 ${position} / ${total} 道冲突题`;
+        }
+
+        // 单题模式没有底部「跳过」按钮，返回键必须如实描述下一步。
+        function updateParsedDuplicateReturnButton() {
+            const returnBtn = document.getElementById('duplicateReviewReturnBtn');
+            if (!returnBtn) return;
+            if (parsedDuplicateQueueMode === 'single') {
+                returnBtn.textContent = '跳过本题（暂不导入）';
+                returnBtn.title = '不做任何决定，返回拆卷面板；本题不会被导入';
+                return;
+            }
+            if (parsedDuplicateQueueMode === 'batch') {
+                returnBtn.textContent = '返回审查';
+                returnBtn.removeAttribute('title');
+                return;
+            }
+            returnBtn.textContent = '关闭';
+            returnBtn.removeAttribute('title');
+        }
+
+        function markParsedDuplicateAssociation(entry, candidateId, onSuccess) {
+            const index = entry && Number.isInteger(entry.index) ? entry.index : -1;
+            const run = () => {
+                const targetId = Number(candidateId);
+                const savedId = Number(index >= 0 && parsedQuestionsData[index]
+                    ? parsedQuestionsData[index].saved_id : NaN);
+                if (!(targetId > 0) || !(savedId > 0)) {
+                    showToast('本题尚未入库或候选标识缺失，无法建立相似题关联。', 'warning');
+                    if (typeof onSuccess === 'function') onSuccess(false);
+                    return;
+                }
+                const payload = new URLSearchParams();
+                payload.append('target_id', String(targetId));
+                fetch(`/api/questions/${savedId}/associate`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                        'X-Local-Token': localStorage.getItem('local_token') || ''
+                    },
+                    body: payload.toString()
+                }).then(response => {
+                    if (!response.ok) {
+                        return response.json().then(body => {
+                            throw new Error((body && body.detail) || `HTTP ${response.status}`);
+                        });
+                    }
+                    return response.json();
+                }).then(() => {
+                    // UI 口径统一叫「相似题」，底层字段仍是 association_group_id、
+                    // 接口参数仍是 target_id；两侧各补一枚可见的自动标签证据。
+                    // add-tag 是 JSON 体接口（payload: dict），别发 form-urlencoded。
+                    const tagJson = tag => ({
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'X-Local-Token': localStorage.getItem('local_token') || ''
+                        },
+                        body: JSON.stringify({ tag: tag })
+                    });
+                    fetch(`/api/questions/${savedId}/add-tag`,
+                        tagJson(`疑似变式#${candidate.seq_num || candidateId}`)).catch(() => {});
+                    fetch(`/api/questions/${targetId}/add-tag`,
+                        tagJson(`疑似变式#${savedId}`)).catch(() => {});
+                    showToast(`已把本题与题库第 ${candidateId} 题标记为相似题。`, 'success');
+                    if (typeof onSuccess === 'function') onSuccess(true);
+                }).catch(error => {
+                    showToast(`相似题关联失败：${error && error.message ? error.message : error}`, 'error');
+                    if (typeof onSuccess === 'function') onSuccess(false);
+                });
+            };
+            if (index < 0) {
+                run();
+                return;
+            }
+            parsedDuplicateIndependentIndices.add(index);
+            ensureParsedDuplicateDecisionMaps();
+            parsedDuplicateAssociationRequests.push({ index: index, run: run });
+            advanceParsedDuplicateQueue();
+        }
+
+        function drainParsedDuplicateAssociationRequests() {
+            const pending = parsedDuplicateAssociationRequests.slice();
+            parsedDuplicateAssociationRequests.length = 0;
+            pending.forEach(request => {
+                if (typeof request.run === 'function') request.run();
+            });
+        }
+
+        // ---- 双栏对照（左=已有题 / 右=待导入题）------------------------------
+
+        function buildParsedDuplicateReviewComparisonGrid(entry, candidate, sectionIndex) {
+            const grid = document.createElement('div');
+            grid.className = 'mt-3 grid gap-3 lg:grid-cols-2';
+            grid.setAttribute('data-compare-root', 'true');
+            grid.setAttribute('data-compare', 'two');
+
+            const left = document.createElement('div');
+            left.className = 'self-start lg:sticky lg:top-0 space-y-2';
+            left.setAttribute('data-compare-left', 'true');
+            const leftLabel = document.createElement('div');
+            leftLabel.className = 'text-[11px] font-bold text-slate-700 dark:text-slate-200';
+            leftLabel.textContent = '已有题（题库）';
+            left.appendChild(leftLabel);
+            if (candidate) {
+                const pane = parsedDuplicateQueueFirstPaneEl || document.createElement('div');
+                parsedDuplicateQueueFirstPaneEl = null;
+                pane.setAttribute('data-candidate-pane', String(sectionIndex || 0));
+                appendDuplicateCandidate(pane, candidate);
+                left.appendChild(pane);
+            } else {
+                const empty = document.createElement('p');
+                empty.className = 'text-[11px] leading-5 text-slate-600 dark:text-slate-300';
+                empty.textContent = '本题没有带标识的库内候选（可能只与本批其他题目重复）。';
+                left.appendChild(empty);
+            }
+            grid.appendChild(left);
+
+            const right = document.createElement('div');
+            right.className = 'space-y-2';
+            right.setAttribute('data-compare-right', 'true');
+            const rightLabel = document.createElement('div');
+            rightLabel.className = 'text-[11px] font-bold text-slate-700 dark:text-slate-200';
+            rightLabel.textContent = '待导入题（本次拆解）';
+            right.appendChild(rightLabel);
+            right.appendChild(buildParsedDuplicateReviewCurrentColumn(entry));
+            grid.appendChild(right);
+
+            return grid;
+        }
+
+        function buildParsedDuplicateQueueSection(entry, sectionIndex, closeMergeOnSuccess) {
+            const section = document.createElement('section');
+            section.className = 'rounded-2xl border border-slate-200/80 bg-white/70 p-4 dark:border-slate-700 dark:bg-slate-900/50';
+            const result = (entry && entry.result) || {};
+            const candidates = Array.isArray(result.candidates) ? result.candidates : [];
+            const batchMatches = Array.isArray(result.batch_matches) ? result.batch_matches : [];
+            const bestCandidate = parsedDuplicateReviewBestCandidate(result);
+            const headingRow = document.createElement('div');
+            headingRow.className = 'flex flex-wrap items-center justify-between gap-2';
+            const heading = document.createElement('h4');
+            heading.className = 'text-sm font-bold text-slate-900 dark:text-slate-50';
+            heading.textContent = entry && entry.label ? entry.label : '疑似冲突题目';
+            headingRow.appendChild(heading);
+            if (candidates.length > 1) {
+                const chooser = document.createElement('label');
+                chooser.className = 'flex items-center gap-2 text-[11px] font-bold text-slate-600 dark:text-slate-300';
+                const chooserText = document.createElement('span');
+                chooserText.textContent = '对照候选';
+                const select = document.createElement('select');
+                select.className = 'min-h-11 rounded-lg border border-slate-200 bg-white px-2 py-1 text-[11px] font-bold text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100';
+                select.setAttribute('aria-label', '选择要对照的已收录候选题');
+                candidates.forEach((candidate, candidateIndex) => {
+                    const option = document.createElement('option');
+                    option.value = String(candidateIndex);
+                    option.textContent = `候选 ${candidateIndex + 1} · #${candidate.seq_num || candidate.id || '?'}`;
+                    select.appendChild(option);
+                });
+                select.addEventListener('change', () => {
+                    renderParsedDuplicateQueueEntry(Number(select.value) || 0);
+                });
+                chooser.append(chooserText, select);
+                headingRow.appendChild(chooser);
+            }
+            section.appendChild(headingRow);
+
+            const grid = buildParsedDuplicateReviewComparisonGrid(
+                entry,
+                candidates[Math.max(0, sectionIndex)] || bestCandidate,
+                0
+            );
+            section.appendChild(grid);
+
+            if (batchMatches.length) {
+                const note = document.createElement('p');
+                note.className = 'mt-2 rounded-lg border border-indigo-100 bg-indigo-50 px-3 py-2 text-[11px] font-semibold text-indigo-700 dark:border-indigo-500/30 dark:bg-indigo-500/10 dark:text-indigo-200';
+                const labels = batchMatches.map(match => {
+                    const key = typeof match === 'string'
+                        ? match
+                        : String(match.client_key || match.other_client_key || '');
+                    const targetIndex = Number(key.split('-').pop());
+                    return Number.isInteger(targetIndex) && targetIndex >= 0
+                        ? `本批第 ${targetIndex + 1} 题`
+                        : '本批另一道题';
+                });
+                note.textContent = `同时与${labels.join('、')}疑似重复，请一并核对。`;
+                section.appendChild(note);
+            }
+
+            // 旧「题库候选 N 道 / 本批重复 M 道」摘要：逐题形态下仍是右栏的第一手信息。
+            const meta = document.createElement('p');
+            meta.className = 'mt-2 text-[11px] leading-5 text-slate-600 dark:text-slate-300';
+            const visualNote = result.needs_visual_review ? '；配图需人工核对' : '';
+            meta.textContent = `题库候选 ${candidates.length} 道，本批重复 ${batchMatches.length || duplicateBatchMatchCount(result)} 道${visualNote}`;
+            section.appendChild(meta);
+
+            parsedDuplicateReviewApplyResponsive(section);
+            return section;
+        }
+
+        function renderParsedDuplicateQueueEntry(candidateOffset) {
+            const list = document.getElementById('parsedDuplicateReviewList');
+            if (!list) return;
+            const entry = parsedDuplicateQueueEntries[parsedDuplicateQueueIndex];
+            if (!entry) return;
+            const result = (entry && entry.result) || {};
+            const candidates = Array.isArray(result.candidates) ? result.candidates : [];
+            const offset = Number.isInteger(candidateOffset) && candidateOffset >= 0 ? candidateOffset : 0;
+            const activeIndex = Math.min(offset, Math.max(0, candidates.length - 1));
+            prepareParsedDuplicateCandidateRendering(list);
+            list.textContent = '';
+            parsedDuplicateQueueFirstPaneEl = document.createElement('div');
+            list.appendChild(buildParsedDuplicateQueueSection(entry, activeIndex, parsedDuplicateQueueCloseMergeOnSuccess));
+            list.appendChild(buildParsedDuplicateReasonLine(entry, candidates[activeIndex] || parsedDuplicateReviewBestCandidate(result)));
+            renderParsedDuplicateConclusion(entry);
+            bindParsedDuplicateQueueButtons(entry, candidates[activeIndex] || parsedDuplicateReviewBestCandidate(result));
+            renderParsedDuplicateProgress();
+            updateParsedDuplicateReturnButton();
+        }
+
+        function renderParsedDuplicateConclusion(entry) {
+            const conclusion = document.getElementById('duplicateReviewConclusion');
+            if (!conclusion) return;
+            const badgeKey = parsedDuplicateEntryBadgeKey(entry);
+            const presentation = parsedDuplicateBadgePresentation(badgeKey);
+            conclusion.setAttribute('data-dup-badge', badgeKey);
+            conclusion.textContent = '';
+            const iconWrap = document.createElement('span');
+            iconWrap.className = `flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl text-lg ${presentation.iconClass}`;
+            const icon = document.createElement('i');
+            icon.className = `fa-solid ${presentation.icon}`;
+            icon.setAttribute('aria-hidden', 'true');
+            iconWrap.appendChild(icon);
+            conclusion.appendChild(iconWrap);
+
+            const textBox = document.createElement('div');
+            textBox.className = 'min-w-0 flex-1 space-y-1';
+            const titleRow = document.createElement('div');
+            titleRow.className = 'flex flex-wrap items-center gap-2';
+            const badge = document.createElement('span');
+            badge.className = `inline-flex items-center rounded-full border px-3 py-1 text-xs font-bold ${presentation.badgeClass}`;
+            badge.textContent = presentation.text;
+            titleRow.appendChild(badge);
+            const advice = document.createElement('span');
+            advice.className = 'text-xs font-bold text-slate-700 dark:text-slate-200';
+            advice.textContent = presentation.advice;
+            titleRow.appendChild(advice);
+            textBox.appendChild(titleRow);
+            const desc = document.createElement('p');
+            desc.className = 'text-xs leading-5 text-slate-700 dark:text-slate-200';
+            desc.textContent = '查重仅提供提示，不会自动删除、覆盖或合并题目；请逐题决定处理方式。';
+            textBox.appendChild(desc);
+            conclusion.appendChild(textBox);
+        }
+
+        function setParsedDuplicateSuggested(buttonId, suggested) {
+            const button = document.getElementById(buttonId);
+            if (!button) return;
+            button.classList.toggle('dup-suggested', Boolean(suggested));
+            if (suggested) {
+                button.setAttribute('title', '系统建议的处理方式');
+            } else {
+                button.removeAttribute('title');
+            }
+        }
+
+        function bindParsedDuplicateQueueButtons(entry, candidate) {
+            const mode = parsedDuplicateQueueMode;
+            const hasTarget = Boolean(candidate && candidate.id);
+            const badgeKey = parsedDuplicateEntryBadgeKey(entry);
+            const suggested = parsedDuplicateSuggestedAction(badgeKey);
+            // 动作可用性跟着徽标走：🔴/🟠 才谈去重与追加来源，🔵 才谈相似题关联，
+            // 🟡（答案冲突）只留独立保存——阶段 1 不替用户裁决答案。
+            const dedupeAvailable = mode !== 'inspect' && hasTarget && badgeKey === 'exact';
+            const mergeAvailable = mode !== 'inspect' && hasTarget
+                && (badgeKey === 'probable' || badgeKey === 'exact');
+            const associateAvailable = mode !== 'inspect' && hasTarget && badgeKey === 'variant';
+            const independentAvailable = mode !== 'inspect';
+            const skipAvailable = mode === 'batch';
+
+            const dedupeBtn = document.getElementById('duplicateReviewDedupeBtn');
+            const mergeBtn = document.getElementById('duplicateReviewMergeBtn');
+            const associateBtn = document.getElementById('duplicateReviewAssociateBtn');
+            const independentBtn = document.getElementById('duplicateReviewIndependentBtn');
+            const skipBtn = document.getElementById('duplicateReviewSkipBtn');
+            const skipAllBtn = document.getElementById('duplicateReviewSkipAllBtn');
+            const returnBtn = document.getElementById('duplicateReviewReturnBtn');
+
+            if (dedupeBtn) {
+                dedupeBtn.classList.toggle('hidden', !dedupeAvailable);
+                dedupeBtn.onclick = () => handleParsedDuplicateQueueAction('dedupe', entry, candidate);
+            }
+            if (mergeBtn) {
+                mergeBtn.classList.toggle('hidden', !mergeAvailable);
+                mergeBtn.textContent = '追加来源';
+                mergeBtn.onclick = () => handleParsedDuplicateQueueAction('merge', entry, candidate);
+            }
+            if (associateBtn) {
+                associateBtn.classList.toggle('hidden', !associateAvailable);
+                associateBtn.onclick = () => handleParsedDuplicateQueueAction('associate', entry, candidate);
+            }
+            if (independentBtn) {
+                independentBtn.classList.toggle('hidden', !independentAvailable);
+                independentBtn.textContent = mode === 'single' ? '独立保存' : '独立保存本题';
+                independentBtn.onclick = () => handleParsedDuplicateQueueAction('independent', entry, candidate);
+            }
+            if (skipBtn) {
+                skipBtn.classList.toggle('hidden', !skipAvailable);
+                skipBtn.onclick = () => handleParsedDuplicateQueueAction('skip', entry, candidate);
+            }
+            if (skipAllBtn) {
+                skipAllBtn.classList.toggle('hidden', mode !== 'batch');
+                skipAllBtn.onclick = () => handleParsedDuplicateQueueAction('skip_all', entry, candidate);
+            }
+            if (returnBtn) {
+                returnBtn.onclick = () => handleParsedDuplicateQueueAction(
+                    mode === 'batch' ? 'review' : 'abort',
+                    entry,
+                    candidate
+                );
+            }
+
+            setParsedDuplicateSuggested('duplicateReviewDedupeBtn', suggested === 'dedupe');
+            setParsedDuplicateSuggested('duplicateReviewMergeBtn', suggested === 'merge');
+            setParsedDuplicateSuggested('duplicateReviewAssociateBtn', suggested === 'associate');
+            setParsedDuplicateSuggested('duplicateReviewIndependentBtn', suggested === 'independent');
+        }
+
+        function handleParsedDuplicateQueueAction(action, entry, candidate) {
+            const index = entry && Number.isInteger(entry.index) ? entry.index : null;
+            switch (action) {
+                case 'dedupe':
+                    // 阶段 1 语义：完全相同的题不再重复入库，等价于旧的「并入并中止」。
+                    if (index !== null) parsedDuplicateMergedIndices.add(index);
+                    closeParsedDuplicateReviewModal('merged');
+                    return;
+                case 'merge':
+                    openParsedDuplicateReviewEntryMerge(
+                        entry,
+                        candidate,
+                        parsedDuplicateQueueCloseMergeOnSuccess,
+                        null
+                    );
+                    return;
+                case 'associate':
+                    if (index !== null) {
+                        parsedDuplicateIndependentIndices.add(index);
+                        ensureParsedDuplicateDecisionMaps();
+                    }
+                    markParsedDuplicateAssociation(entry, candidate && candidate.id, null);
+                    return;
+                case 'independent':
+                    if (index !== null) {
+                        parsedDuplicateIndependentIndices.add(index);
+                        ensureParsedDuplicateDecisionMaps();
+                    }
+                    advanceParsedDuplicateQueue();
+                    return;
+                case 'skip':
+                    if (index !== null) parsedDuplicateSkippedIndices.add(index);
+                    advanceParsedDuplicateQueue();
+                    return;
+                case 'skip_all':
+                    // 「跳过全部」= 把**整条队列里所有冲突题**踢出待保存列表，一道都不入库。
+                    // ⚠️ 旧实现是「默认操作（独立保存）套到剩余全部」并 resolve('independent')，
+                    //    于是点完照样发 POST /api/questions —— 按钮名与后果完全相反，实测会把
+                    //    用户以为已丢弃的题写进题库。文案说「跳过」就必须真的不写库。
+                    //    这里直接给每个队列条目打 skipped（批量流程按 entry.index 剔除），
+                    //    而不是塞 parsedDuplicateSkippedIndices——那个集合在 close 里是拿
+                    //    「数组下标」去定位条目的，和题目 index 不同义，会剔错題。
+                    parsedDuplicateQueueEntries.forEach(item => {
+                        if (item && Number.isInteger(item.index)) item.skipped = true;
+                    });
+                    closeParsedDuplicateReviewModal('skip');
+                    return;
+                case 'abort':
+                    closeParsedDuplicateReviewModal('review');
+                    return;
+                default:
+                    closeParsedDuplicateReviewModal('review');
+            }
+        }
+
+        function advanceParsedDuplicateQueue() {
+            if (parsedDuplicateQueueIndex + 1 < parsedDuplicateQueueEntries.length) {
+                parsedDuplicateQueueIndex += 1;
+                renderParsedDuplicateQueueEntry(0);
+                return;
+            }
+            // 单题/审查模式：最后一道题处理完也必须把逐题决策交付调用方——
+            // 有独立保存（含相似题关联）就返回 'independent'，否则维持「未决定」语义。
+            const decidedIndependent = parsedDuplicateIndependentIndices.size > 0;
+            if (parsedDuplicateQueueMode === 'batch') {
+                closeParsedDuplicateReviewModal('independent');
+                return;
+            }
+            closeParsedDuplicateReviewModal(decidedIndependent ? 'independent' : 'review');
+        }
+
+        function parsedDuplicateReviewEntries(indices, results = parsedDuplicateResults) {
+            return indices.map(index => ({
+                label: `拆解结果第 ${index + 1} 题`,
+                index: index,
+                result: results.get(index) || parsedDuplicateResults.get(index) || {}
+            }));
+        }
+
+        // 逐题队列里「追加来源」只针对当前这一道题：单题模式并入成功即结束审查
+        // （保存流程靠 'merged' 中止导入）；整批模式登记下标后自动前进到下一道冲突题。
+        function queueMergeSuccessFor(entry, closeOnSuccess) {
+            const index = entry && Number.isInteger(entry.index) ? entry.index : null;
+            if (closeOnSuccess) {
+                if (index !== null) parsedDuplicateMergedIndices.add(index);
+                return () => closeParsedDuplicateReviewModal('merged');
+            }
+            return () => advanceParsedDuplicateQueue();
+        }
+
+        function openParsedDuplicateReviewEntryMerge(entry, candidate, closeOnSuccess, buttonEl) {
+            const onQueueAdvance = queueMergeSuccessFor(entry, closeOnSuccess);
+            const entryLabel = String((entry && entry.label) || '');
+            const entryIndex = entry && Number.isInteger(entry.index) ? entry.index : -1;
+            // 拆卷面板的来源字段此刻仍在 DOM 里（同一页面，弹窗不销毁它们），
+            // 卡片上那条已拼好的整卷标题则在 parsedQuestionsData[index].source。
+            // 用户在这里已经填过一遍，绝不该在并入弹窗里从零重填。
+            const cardSource = entryIndex >= 0 && Array.isArray(parsedQuestionsData)
+                && parsedQuestionsData[entryIndex]
+                ? String(parsedQuestionsData[entryIndex].source || '')
+                : '';
+            const presetSource = collectImportSourceFields();
+            openMergeSourceModal(candidate.id, candidate.seq_num, () => {
+                if (entryIndex >= 0) parsedDuplicateMergedIndices.add(entryIndex);
+                if (buttonEl) {
+                    buttonEl.disabled = true;
+                    buttonEl.classList.remove('hover:bg-emerald-100', 'dark:hover:bg-emerald-500/25');
+                    buttonEl.textContent = '';
+                    const checkIcon = document.createElement('i');
+                    checkIcon.className = 'fa-solid fa-check';
+                    checkIcon.setAttribute('aria-hidden', 'true');
+                    buttonEl.appendChild(checkIcon);
+                    buttonEl.appendChild(document.createTextNode('已并入（未作为新题入库）'));
+                }
+                showToast(entryLabel
+                    ? `「${entryLabel}」的来源已追加到已收录题目，本题未入库。`
+                    : '来源已追加到已收录题目，本题未入库。', 'success');
+                onQueueAdvance();
+            }, {
+                year: presetSource.year,
+                region: presetSource.region,
+                exam_type: presetSource.examType,
+                paper_title: cardSource
+            });
+        }
+
         function openParsedDuplicateReviewModal(entries, mode = 'batch') {
             const modal = document.getElementById('parsedDuplicateReviewModal');
             if (!modal) return Promise.resolve('review');
@@ -3914,48 +4953,25 @@
                 parsedDuplicateReviewResolver('review');
                 parsedDuplicateReviewResolver = null;
             }
-            renderParsedDuplicateReview(entries);
-            const title = document.getElementById('parsedDuplicateReviewTitle');
-            const returnBtn = document.getElementById('duplicateReviewReturnBtn');
-            const skipBtn = document.getElementById('duplicateReviewSkipBtn');
-            const independentBtn = document.getElementById('duplicateReviewIndependentBtn');
-            const mergeBtn = document.getElementById('duplicateReviewMergeBtn');
-            if (mergeBtn) {
-                mergeBtn.classList.toggle('hidden', mode !== 'single');
-                mergeBtn.onclick = function () {
-                    const entry = (entries || [])[0];
-                    const result = entry && entry.result ? entry.result : {};
-                    const candidates = Array.isArray(result.candidates) ? result.candidates : [];
-                    const target = candidates[0] || (Array.isArray(result.batch_matches) && result.batch_matches[0]);
-                    if (!target || !target.id) {
-                        showToast('未找到可并入的候选题目，请先核对查重结果。', 'warning');
-                        return;
-                    }
-                    openMergeSourceModal(target.id, target.seq_num);
-                };
-            }
-            if (title) title.textContent = mode === 'inspect' ? '查重依据' : '发现疑似已收录题目';
-            if (returnBtn) returnBtn.textContent = mode === 'inspect' ? '关闭' : '返回审查';
-            if (skipBtn) skipBtn.classList.toggle('hidden', mode !== 'batch');
-            if (independentBtn) {
-                independentBtn.classList.toggle('hidden', mode === 'inspect');
-                independentBtn.textContent = mode === 'single' ? '仍作为独立题保存' : '全部独立保存';
-            }
+            parsedDuplicateMergedIndices.clear();
+            resetParsedDuplicateReviewQueueState();
+            parsedDuplicateQueueEntries = Array.isArray(entries) ? entries.slice() : [];
+            parsedDuplicateQueueMode = mode;
+            parsedDuplicateQueueCloseMergeOnSuccess = mode !== 'batch';
+            // 整批导入的「仍作为独立题保存」集合由调用方持有；若本次审查里逐题选了
+            // 独立保存，必须同步进去，否则这些题会以无 override 的载荷再次撞上 409。
+            ensureParsedDuplicateDecisionMaps();
 
-            modal.classList.remove('hidden');
-            modal.classList.add('flex');
-            modal.setAttribute('aria-hidden', 'false');
-            window.MathBankModal.open(modal, {
+            const title = document.getElementById('parsedDuplicateReviewTitle');
+            if (title) {
+                title.textContent = mode === 'inspect' ? '查重依据' : '发现疑似已收录题目';
+            }
+            renderParsedDuplicateQueueEntry(0);
+
+            // 公共开关助手内部已含 remove('hidden')/flex/aria-hidden=false 与揭示兜底
+            window.openModalWithTransition(modal, {
                 onEscape: () => closeParsedDuplicateReviewModal('review')
             });
-            setTimeout(() => {
-                modal.classList.remove('opacity-0');
-                const surface = modal.querySelector('[data-modal-surface]');
-                if (surface) {
-                    surface.classList.remove('scale-95');
-                    surface.classList.add('scale-100');
-                }
-            }, 20);
             return new Promise(resolve => {
                 parsedDuplicateReviewResolver = resolve;
             });
@@ -3965,35 +4981,22 @@
             const modal = document.getElementById('parsedDuplicateReviewModal');
             resetParsedDuplicateCandidateRendering();
             if (modal && !modal.classList.contains('hidden')) {
-                window.MathBankModal.close(modal);
-                modal.classList.add('opacity-0');
+                window.closeModalWithTransition(modal);
                 modal.setAttribute('aria-hidden', 'true');
-                const surface = modal.querySelector('[data-modal-surface]');
-                if (surface) {
-                    surface.classList.remove('scale-100');
-                    surface.classList.add('scale-95');
-                }
-                setTimeout(() => {
-                    modal.classList.add('hidden');
-                    modal.classList.remove('flex');
-                }, 200);
+            }
+            ensureParsedDuplicateDecisionMaps();
+            // 关联兑现要等入库完成（需要真实主键），由批量/单题保存流程在入库后触发；
+            // 弹窗关闭只负责把「跳过」登记进队列条目，供聚合结果剔除。
+            if (parsedDuplicateSkippedIndices.size > 0) {
+                parsedDuplicateSkippedIndices.forEach(index => {
+                    if (index >= 0 && index < parsedDuplicateQueueEntries.length) {
+                        parsedDuplicateQueueEntries[index].skipped = true;
+                    }
+                });
             }
             const resolve = parsedDuplicateReviewResolver;
             parsedDuplicateReviewResolver = null;
             if (resolve) resolve(action);
-        }
-
-        function parsedDuplicateReviewEntries(indices, results = parsedDuplicateResults) {
-            return indices.map(index => ({
-                label: `拆解结果第 ${index + 1} 题`,
-                result: results.get(index) || parsedDuplicateResults.get(index) || {}
-            }));
-        }
-
-        function openParsedDuplicateReview(index) {
-            const result = parsedDuplicateResults.get(index);
-            if (!result) return;
-            openParsedDuplicateReviewModal(parsedDuplicateReviewEntries([index]), 'inspect');
         }
 
         function applySaveTimeDuplicateConflict(index, data) {
@@ -4291,47 +5294,77 @@
                         </div>
                     </div>
 
-                    <!-- Meta row: 题号 → 来源 → 题型 → 难度 → 册次 → 章节 → 小节 → 考点 -->
-                    <div class="grid grid-cols-8 gap-1.5 border-b pb-2 shrink-0">
-                        <input type="text" class="card-question-no glass-input px-2 py-1.5 rounded-lg text-xs font-semibold" placeholder="题号">
-                        <input type="text" class="card-source glass-input px-2.5 py-1.5 rounded-lg text-xs font-semibold" placeholder="来源（留空继承试卷名）">
-                        <select class="card-qtype glass-select px-2 py-1.5 rounded-lg text-xs font-semibold">
-                            ${qTypeOptionsHtml}
-                        </select>
-                        <select class="card-difficulty glass-select px-2 py-1.5 rounded-lg text-xs font-semibold">
-                            ${difficultyOptionsHtml}
-                        </select>
-                        <select class="card-compulsory glass-select px-2 py-1.5 rounded-lg text-xs font-semibold">
-                            <option value="">所有学段</option>
-                        </select>
-                        <select class="card-chapter glass-select px-2 py-1.5 rounded-lg text-xs font-semibold">
-                            <option value="">所有章节</option>
-                        </select>
-                        <select class="card-knowledge glass-select px-2 py-1.5 rounded-lg text-xs font-semibold">
-                            <option value="">所有小节</option>
-                        </select>
-                        <select class="card-topic glass-select px-2 py-1.5 rounded-lg text-xs font-semibold">
-                            <option value="">所有考向</option>
-                        </select>
+                    <!-- Meta：左栏 题号/来源/题型/难度 · 右栏 册次/章节/小节/考向（自适应宽度，两栏） -->
+                    <div class="grid grid-cols-1 lg:grid-cols-2 gap-x-3 gap-y-1.5 border-b pb-2 shrink-0">
+                        <div class="flex flex-wrap items-center gap-1.5 min-w-0">
+                            <input type="text" class="card-question-no glass-input w-16 shrink-0 px-2 py-1.5 rounded-lg text-xs font-semibold" placeholder="题号">
+                            <input type="text" class="card-source glass-input flex-1 basis-40 min-w-[7rem] px-2.5 py-1.5 rounded-lg text-xs font-semibold" placeholder="来源（留空继承试卷名）">
+                            <select class="card-qtype glass-select w-auto shrink-0 px-2 py-1.5 rounded-lg text-xs font-semibold">
+                                ${qTypeOptionsHtml}
+                            </select>
+                            <select class="card-difficulty glass-select w-auto shrink-0 px-2 py-1.5 rounded-lg text-xs font-semibold">
+                                ${difficultyOptionsHtml}
+                            </select>
+                            <select class="card-option-columns glass-select w-auto shrink-0 px-2 py-1.5 rounded-lg text-xs font-semibold" title="选择题选项排版：自适应=按内容自动算列数；图片型选项可强制 4/2/1 列">
+                                <option value="0">自适应列</option>
+                                <option value="4">4 列</option>
+                                <option value="2">2 列</option>
+                                <option value="1">1 列</option>
+                            </select>
+                        </div>
+                        <div class="flex flex-wrap items-center gap-1.5 min-w-0">
+                            <select class="card-compulsory glass-select w-auto shrink-0 px-2 py-1.5 rounded-lg text-xs font-semibold">
+                                <option value="">所有学段</option>
+                            </select>
+                            <select class="card-chapter glass-select flex-1 basis-32 min-w-[6rem] px-2 py-1.5 rounded-lg text-xs font-semibold">
+                                <option value="">所有章节</option>
+                            </select>
+                            <select class="card-knowledge glass-select flex-1 basis-32 min-w-[6rem] px-2 py-1.5 rounded-lg text-xs font-semibold">
+                                <option value="">所有小节</option>
+                            </select>
+                            <select class="card-topic glass-select flex-1 basis-32 min-w-[6rem] px-2 py-1.5 rounded-lg text-xs font-semibold">
+                                <option value="">所有考向</option>
+                            </select>
+                            <!-- 改名 / 新增考向：同样只留 class 锚点，事件由
+                                 setupCardCategoryLinkage 用 addEventListener 绑。 -->
+                            <button type="button" class="card-topic-rename inline-flex items-center justify-center w-7 h-7 rounded-lg text-[10px] bg-amber-500/10 text-amber-600 hover:bg-amber-500/20 transition-colors cursor-pointer shrink-0" title="重命名当前选中的考向（会同步大纲，影响全部题目）">
+                                <i class="fa-solid fa-pen text-[9px]"></i>
+                            </button>
+                            <button type="button" class="card-topic-create inline-flex items-center justify-center w-7 h-7 rounded-lg text-[10px] bg-brand-500/10 text-brand-600 hover:bg-brand-500/20 transition-colors cursor-pointer shrink-0" title="在当前小节下新增考向">
+                                <i class="fa-solid fa-plus text-[9px]"></i>
+                            </button>
+                            <!-- 附加考向：按钮与 chips 容器都是空壳，由 setupCardCategoryLinkage
+                                 用 createElement + addEventListener 填充。净化白名单不含 <button>，
+                                 模板串里写按钮会在渲染时被剥成纯文本（点不动）。 -->
+                            <button type="button" class="card-extra-topic-add inline-flex items-center gap-1 px-2 py-1.5 rounded-lg text-[10px] font-bold bg-emerald-500/10 text-emerald-600 hover:bg-emerald-500/20 transition-colors cursor-pointer shrink-0">
+                                <i class="fa-solid fa-layer-group text-[9px]"></i>附加考向
+                            </button>
+                        </div>
+                        <div class="card-extra-topic-list flex flex-wrap items-center gap-1 min-w-0"></div>
+                        <div class="card-topic-manage-hint text-[9px] text-slate-400 leading-relaxed"></div>
                     </div>
 
                     <!-- Body Content Split -->
                     <div class="grid grid-cols-1 lg:grid-cols-2 gap-3 flex-1 min-h-[200px]">
                         <!-- Left Side: Inputs -->
-                        <div class="flex flex-col gap-2 min-h-0">
-                            <div class="flex flex-col flex-1 min-h-0 space-y-1">
+                        <!-- overflow-y-auto：题干/解析都按内容撑高（flex:none + JS 撑高），
+                             两个加起来超过左列高度时整列滚动，而不是互相挤压。 -->
+                        <div class="flex flex-col gap-2 min-h-0 overflow-y-auto">
+                            <!-- 不再 flex-1：块按内容取高，两框就不会互相挤 -->
+                            <div class="flex flex-col min-h-0 space-y-1">
                                 <div class="flex items-center justify-between gap-2">
                                     <label class="text-[10px] font-bold text-slate-500 tracking-wider">题干编辑</label>
                                     <button type="button" class="card-content-tikz-source hidden min-h-11 px-2 text-[9px] font-bold rounded border border-emerald-300 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 transition-colors" title="查看本题的 TikZ 绘图源码（源码存在资产里，不写入题干正文）">TikZ 源码</button>
                                 </div>
-                                <textarea class="card-content-textarea glass-input w-full flex-1 min-h-[80px] p-2.5 rounded-lg font-mono text-xs resize-none custom-scrollbar"></textarea>
+                                <textarea class="card-content-textarea glass-input w-full p-2.5 rounded-lg font-mono text-xs resize-y custom-scrollbar"></textarea>
                             </div>
-                            <div class="flex flex-col flex-1 min-h-0 space-y-1">
+                            <!-- 不再 flex-1：块按内容取高，两框就不会互相挤 -->
+                            <div class="flex flex-col min-h-0 space-y-1">
                                 <div class="flex items-center justify-between gap-2">
                                     <label class="text-[10px] font-bold text-slate-500 tracking-wider">答案与解析编辑</label>
                                     <button type="button" class="card-answer-tikz-source hidden min-h-11 px-2 text-[9px] font-bold rounded border border-emerald-300 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 transition-colors" title="查看本题解答的 TikZ 绘图源码（源码存在资产里，不写入解答正文）">TikZ 源码</button>
                                 </div>
-                                <textarea class="card-answer-textarea glass-input w-full flex-1 min-h-[80px] p-2.5 rounded-lg font-mono text-xs resize-none custom-scrollbar"></textarea>
+                                <textarea class="card-answer-textarea glass-input w-full p-2.5 rounded-lg font-mono text-xs resize-y custom-scrollbar"></textarea>
                             </div>
                         </div>
 
@@ -4374,13 +5407,36 @@
                 // Never interpolate AI/import values into attributes or textarea
                 // HTML. Property assignment preserves LaTeX verbatim and prevents
                 // attribute/textarea breakout payloads.
-                card.querySelector('.card-source').value = window.MathBankSafe.sanitizePlainText(q.source || '');
+                const cardSourceInput = card.querySelector('.card-source');
+                cardSourceInput.value = window.MathBankSafe.sanitizePlainText(q.source || '');
+                // 「来源」被用户手改过就打标记：左侧面板字段再变也不覆盖这张卡。
+                // 标记双写——DOM(data-user-edited) 供同步即时判读，数据对象
+                // (__sourceUserEdited) 保证卡片重渲染后标记不丢。
+                cardSourceInput.dataset.questionIndex = String(index);
+                if (q.__sourceUserEdited === true) cardSourceInput.dataset.userEdited = '1';
+                if (!cardSourceInput.dataset.sourceEditBound) {
+                    cardSourceInput.dataset.sourceEditBound = '1';
+                    cardSourceInput.addEventListener('input', () => {
+                        cardSourceInput.dataset.userEdited = '1';
+                        const editedIdx = parseInt(cardSourceInput.dataset.questionIndex, 10);
+                        const editedQ = Array.isArray(parsedQuestionsData) ? parsedQuestionsData[editedIdx] : null;
+                        if (editedQ) editedQ.__sourceUserEdited = true;
+                    });
+                }
                 // 题号：优先用解析结果的原卷题号，缺省回落到本题在卷中的顺序号。
                 const cardQuestionNo = card.querySelector('.card-question-no');
                 if (cardQuestionNo) {
                     cardQuestionNo.value = window.MathBankSafe.sanitizePlainText(
                         String(q.paper_question_no || (index + 1))
                     );
+                }
+                // 选项列数：AI 输出可能是 undefined / null / "" / 3（旧语义）→ 一律兜底 0。
+                // ⚠️ 与单题编辑器 editOptionColumns 同一套取值（0=自适应，1/2/4=强制列数）。
+                const cardOptionColumns = card.querySelector('.card-option-columns');
+                if (cardOptionColumns) {
+                    const colsValue = String(q.option_columns ?? '').trim();
+                    const validCols = ['0', '4', '2', '1'];
+                    cardOptionColumns.value = validCols.includes(colsValue) ? colsValue : '0';
                 }
                 // 题干编辑区**不拼接** TikZ 源码。
                 // 源码已存在 content_tikz_assets 里，导出时 paper_helper 会直接取它内联成
@@ -4425,6 +5481,22 @@
                 }
 
                 container.appendChild(card);
+                // 卡片已入 DOM，此时 scrollHeight 才有意义（脱离文档的游离节点 scrollHeight 恒为 0）
+                if (window.autoResizeTextarea) {
+                    const _cc = card.querySelector('.card-content-textarea');
+                    const _ca = card.querySelector('.card-answer-textarea');
+                    // 不传 minHeight/maxHeight/bottomPadding：全用按行高自算的默认值。
+                    const _rc = _cc ? window.autoResizeTextarea(_cc, { bindWindowResize: false }) : null;
+                    const _ra = _ca ? window.autoResizeTextarea(_ca, { bindWindowResize: false }) : null;
+                    // 兜底：部分浏览器首次布局慢（字体加载/滚动条出现/容器延迟显示），
+                    // 300ms 后再量一次，避免框停在浏览器默认高度把内容截断。
+                    if (_rc || _ra) {
+                        setTimeout(() => {
+                            if (_rc) _rc();
+                            if (_ra) _ra();
+                        }, 300);
+                    }
+                }
                 // 单张卡片出问题不应该中断其余题目的渲染。
                 try {
                     setupCardCategoryLinkage(card, q);
@@ -4477,6 +5549,11 @@
                 const typeInput = card.querySelector('.card-qtype');
                 if (typeInput) {
                     typeInput.addEventListener('change', () => invalidateParsedDuplicateCheck(index));
+                }
+                // 选项列数不参与查重指纹，但改了它说明卡片元数据动了，同样作废缓存结果。
+                const optionColsInput = card.querySelector('.card-option-columns');
+                if (optionColsInput) {
+                    optionColsInput.addEventListener('change', () => invalidateParsedDuplicateCheck(index));
                 }
 
                 try {
@@ -4634,6 +5711,590 @@
             updateChapters();
             updateKnowledge();
             updateTopics();
+            setupCardExtraTopics(card, q);
+            setupParsedCardTopicManagement(card, q);
+        }
+
+        // ---- 拆卷卡片的附加考向（一题多考向）----
+        // 状态**只存在 q.extraTopics 上**：卡片重渲染会换掉 DOM 节点，但
+        // parsedQuestionsData[index] 是同一个对象引用（saveParsedQuestion 也按它取），
+        // 所以用户加好的附加考向不会被下一次预览刷新吃掉。
+        // 刻意不接编辑器路径的 window.ExtraTopicsState —— 那是全站单例，拆卷一次渲染
+        // 几十张卡片会互相覆盖；编辑器侧同源的「行内级联 + 上限 3」实现是
+        // api.js 的 addExtraTopicRow / collectExtraTopics（#extraTopicsContainer）。
+        const PARSED_CARD_EXTRA_TOPIC_LIMIT = 3;
+
+        function normalizeParsedCardExtraTopic(slot) {
+            if (!slot || typeof slot !== 'object') return null;
+            const out = {
+                compulsory: String(slot.compulsory || '').trim(),
+                chapter: String(slot.chapter || '').trim(),
+                knowledge: String(slot.knowledge || '').trim(),
+                topic: String(slot.topic || '').trim()
+            };
+            if (!out.compulsory && !out.chapter && !out.knowledge && !out.topic) return null;
+            return out;
+        }
+
+        function readParsedCardExtraTopics(q) {
+            if (!q) return [];
+            if (Array.isArray(q.extraTopics)) return q.extraTopics;
+            // 首次进入卡片：从后端回传的 topics 里取 sort_order>0 的附加槽位。
+            const extras = [];
+            (Array.isArray(q.topics) ? q.topics : []).forEach(function (slot) {
+                if (!slot || Number(slot.sort_order) === 0) return;
+                const normalized = normalizeParsedCardExtraTopic(slot);
+                if (normalized) extras.push(normalized);
+            });
+            q.extraTopics = extras.slice(0, PARSED_CARD_EXTRA_TOPIC_LIMIT);
+            return q.extraTopics;
+        }
+
+        function collectParsedCardExtraTopics(q) {
+            const list = Array.isArray(q && q.extraTopics) ? q.extraTopics : [];
+            return list
+                .map(normalizeParsedCardExtraTopic)
+                .filter(Boolean)
+                .slice(0, PARSED_CARD_EXTRA_TOPIC_LIMIT);
+        }
+
+        function parsedCardSlotLabel(slot) {
+            return [slot.compulsory, slot.chapter, slot.knowledge, slot.topic]
+                .filter(function (part) { return part && String(part).trim(); })
+                .join(' / ');
+        }
+
+        function parsedCardTopicId(comp, chap, know, name) {
+            // 从活跃大纲里按 (三坐标 + 当前名) 反查 topic_id。改名必须带 id 提交，
+            // 因为题目侧存的是 topic_id；名字是展示层每次翻译出来的。
+            const curriculum = (window.systemMetadata && window.systemMetadata.curriculum) || {};
+            const sections = (curriculum[comp] && curriculum[comp][chap]) || [];
+            const section = (Array.isArray(sections) ? sections : []).find(function (s) {
+                return s && typeof s === 'object' ? s.name === know : String(s) === know;
+            });
+            if (!section || !Array.isArray(section.topics)) return '';
+            const hit = section.topics.find(function (t) {
+                return t && typeof t === 'object' && window.topicName(t) === name;
+            });
+            return hit ? String(hit.id || '') : '';
+        }
+
+        function renderParsedCardExtraTopics(card, q) {
+            const box = card.querySelector('.card-extra-topic-list');
+            const addBtn = card.querySelector('.card-extra-topic-add');
+            if (!box) return;
+            box.innerHTML = '';
+            const extras = readParsedCardExtraTopics(q);
+            extras.forEach(function (slot, i) {
+                const label = parsedCardSlotLabel(slot);
+                const chip = document.createElement('span');
+                chip.className = 'inline-flex items-center gap-1 text-[10px] font-bold text-indigo-600 bg-indigo-50 border border-indigo-300/60 px-1.5 py-0.5 rounded-full max-w-full';
+                chip.title = label;
+                const text = document.createElement('span');
+                text.className = 'max-w-[140px] truncate';
+                // 考向名是用户/AI 可控文本：一律 textContent，绝不拼进 innerHTML。
+                text.textContent = label;
+                chip.appendChild(text);
+                const del = document.createElement('button');
+                del.type = 'button';
+                del.setAttribute('aria-label', '移除附加考向 ' + label);
+                del.className = 'text-indigo-300 hover:text-red-500 transition-colors cursor-pointer shrink-0';
+                del.innerHTML = '<i class="fa-solid fa-xmark text-[9px]"></i>';
+                del.addEventListener('click', function () {
+                    const arr = readParsedCardExtraTopics(q);
+                    arr.splice(i, 1);
+                    renderParsedCardExtraTopics(card, q);
+                });
+                chip.appendChild(del);
+                box.appendChild(chip);
+            });
+            if (addBtn) {
+                const full = extras.length >= PARSED_CARD_EXTRA_TOPIC_LIMIT;
+                addBtn.disabled = full;
+                addBtn.classList.toggle('opacity-50', full);
+                addBtn.classList.toggle('cursor-not-allowed', full);
+                addBtn.title = full
+                    ? '附加考向最多 ' + PARSED_CARD_EXTRA_TOPIC_LIMIT + ' 个'
+                    : '为本题追加附加考向（最多 ' + PARSED_CARD_EXTRA_TOPIC_LIMIT + ' 个）';
+            }
+        }
+
+        // 改名会同步大纲、影响全部题目 —— 这句必须常驻可见，不能只藏在 title 里。
+        // 手输错字的退路也在这里说清楚（设置 → 大纲维度 → 该小节行【删除考点】）。
+        function renderParsedCardTopicManageHint(card, q) {
+            const hint = card.querySelector('.card-topic-manage-hint');
+            if (!hint) return;
+            const isG = typeof window.isGCurriculum === 'function' && window.isGCurriculum();
+            hint.textContent = isG
+                ? '高三专题大纲下小节即考向，无需新增或改名。'
+                : '✎ 改名 / ＋ 新增都会写入教材大纲，全站显示与筛选同步跟随；写错了到「设置 → 大纲维度」该小节的【删除考点】改回来。';
+        }
+
+        function parsedCardTopicCoordinates(card) {
+            const read = sel => (card.querySelector(sel) || {}).value || '';
+            return {
+                comp: read('.card-compulsory'),
+                chap: read('.card-chapter'),
+                know: read('.card-knowledge'),
+                topic: read('.card-topic')
+            };
+        }
+
+        // 内联编辑行：复用 api.js 的 window.metadataTreeDraftRow（原本只有设置页那套
+        // 已不可达的单栏树在用）。它自带「回车确认 / Esc 取消 / 空值不提交」。
+        // 拿不到助手时退回本地同款实现，保证拆卷页单独加载也不会哑。
+        function buildInlineTopicEditorRow(initialValue, onSubmit, onCancel) {
+            if (typeof window.metadataTreeDraftRow === 'function') {
+                // api.js 助手只负责「取值 + 回车/Esc」，收尾一律走重绘大树；拆卷卡片不在
+                // 大纲树上下文里，所以把它的行外壳包一层：提交转给 onSubmit，
+                // 取消/空值转给 onCancel（否则点 ✗ 什么都不发生，行会一直挂着）。
+                const inner = window.metadataTreeDraftRow(
+                    { kind: 'renameTopic', value: initialValue },
+                    function (v) { if (onSubmit) onSubmit(v); }
+                );
+                // 刻意不包一层 div：调用方拿这个返回值再 appendChild 到卡片里，
+                // 真实 DOM 会把行从内部 wrap 里**移动**过去（wrap 随即变空），
+                // 我们改的 onclick 因为是节点引用所以仍生效；但桩若只记 parent 引用
+                // 就会出现「两个父节点都看得到同一行」，测试会误判成没刷新。
+                // 因此直接返回助手那一行本身，取消回调通过覆盖 onclick 挂上去。
+                const wrap = inner;
+                const buttons = inner.querySelectorAll('button');
+                if (buttons.length >= 2) {
+                    const originalCancel = buttons[1].onclick;
+                    buttons[1].onclick = function (ev) {
+                        if (originalCancel) originalCancel(ev || { preventDefault() {} });
+                        if (onCancel) onCancel();
+                    };
+                }
+                return wrap;
+            }
+            const row = document.createElement('div');
+            row.className = 'flex items-center gap-1.5 py-1';
+            const inp = document.createElement('input');
+            inp.type = 'text';
+            inp.maxLength = 40;
+            inp.value = initialValue || '';
+            inp.placeholder = '输入考向名，回车确认，Esc 取消';
+            inp.className = 'glass-input flex-1 px-2 py-1 text-[11px] rounded-lg min-w-0';
+            const ok = document.createElement('button');
+            ok.type = 'button';
+            ok.title = '确认';
+            ok.className = 'w-6 h-6 flex items-center justify-center rounded-md bg-brand-500/10 text-brand-600 text-[11px] cursor-pointer shrink-0';
+            ok.innerHTML = '<i class="fa-solid fa-check"></i>';
+            const cancel = document.createElement('button');
+            cancel.type = 'button';
+            cancel.title = '取消';
+            cancel.className = 'w-6 h-6 flex items-center justify-center rounded-md text-slate-400 hover:text-red-500 text-[11px] cursor-pointer shrink-0';
+            cancel.innerHTML = '<i class="fa-solid fa-xmark"></i>';
+            const commit = function () {
+                const v = String(inp.value || '').trim();
+                if (v) onSubmit(v); else if (onCancel) onCancel();
+            };
+            ok.addEventListener('click', commit);
+            cancel.addEventListener('click', function () { if (onCancel) onCancel(); });
+            inp.addEventListener('keydown', function (e) {
+                if (e.key === 'Enter') { e.preventDefault(); commit(); }
+                else if (e.key === 'Escape') { e.preventDefault(); if (onCancel) onCancel(); }
+            });
+            row.appendChild(inp); row.appendChild(ok); row.appendChild(cancel);
+            setTimeout(function () { try { inp.focus(); inp.select(); } catch (err) {} }, 0);
+            return row;
+        }
+
+        // ---- ③ 拆卷卡片新增考向 ----
+        // 走 window.createCurriculumTopic（editor.js 定义，级联上先于 import.js），
+        // 直接写大纲，因此**不经过** STRICT_AUTO_TOPICS 闸门 —— 那道闸只管录题时
+        // 按名字猜建档（防 AI 幻觉），手动新增本来就该走大纲 CRUD。
+        function openParsedCardCreateTopicModal(card, q) {
+            const coords = parsedCardTopicCoordinates(card);
+            if (!coords.comp || !coords.chap || !coords.know) {
+                showToast('请先选择册次 / 章节 / 小节', 'info');
+                return;
+            }
+            if (typeof window.isGCurriculum === 'function' && window.isGCurriculum()) {
+                showToast('高三专题大纲下小节即考向，无需新增考点', 'info');
+                return;
+            }
+            if (typeof window.createCurriculumTopic !== 'function') {
+                showToast('新增考向助手未加载，请刷新页面后重试', 'error');
+                return;
+            }
+            const backdrop = document.createElement('div');
+            backdrop.className = 'fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[70] flex items-center justify-center select-none p-4';
+            backdrop.setAttribute('role', 'dialog');
+            backdrop.setAttribute('aria-modal', 'true');
+            const panel = document.createElement('div');
+            panel.className = 'bg-white rounded-2xl w-full max-w-sm shadow-2xl p-5 space-y-3 border border-slate-100';
+            const title = document.createElement('h3');
+            title.className = 'text-sm font-bold text-slate-800';
+            title.textContent = '新增考向';
+            panel.appendChild(title);
+            const where = document.createElement('div');
+            where.className = 'text-[10px] text-slate-500 leading-relaxed';
+            // 坐标是用户可控文本：textContent，绝不拼进 innerHTML。
+            where.textContent = '将写入大纲：' + [coords.comp, coords.chap, coords.know].join(' / ');
+            panel.appendChild(where);
+            const input = document.createElement('input');
+            input.type = 'text';
+            input.maxLength = 40;
+            input.placeholder = '输入考向名称（如：含参讨论）';
+            input.className = 'glass-input w-full px-3 py-2 rounded-xl text-sm border border-slate-200 outline-none';
+            panel.appendChild(input);
+            const actions = document.createElement('div');
+            actions.className = 'flex space-x-2 pt-1';
+            const cancel = document.createElement('button');
+            cancel.type = 'button';
+            cancel.className = 'flex-1 px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-semibold text-xs cursor-pointer';
+            cancel.textContent = '取消';
+            const ok = document.createElement('button');
+            ok.type = 'button';
+            ok.className = 'flex-1 px-4 py-2 bg-brand-600/80 hover:bg-brand-600 text-white rounded-xl font-semibold text-xs cursor-pointer disabled:opacity-50';
+            ok.textContent = '确认新增';
+            actions.appendChild(cancel);
+            actions.appendChild(ok);
+            panel.appendChild(actions);
+            backdrop.appendChild(panel);
+            const submit = function () {
+                const name = String(input.value || '').trim();
+                ok.disabled = true;
+                window.createCurriculumTopic(coords.comp, coords.chap, coords.know, name)
+                    .then(function (created) {
+                        backdrop.remove();
+                        showToast('考向已写入大纲，可直接选用', 'success');
+                        return refreshParsedCardTopics(card, q, created);
+                    })
+                    .catch(function (err) {
+                        ok.disabled = false;
+                        showToast('新增考向失败: ' + (err && err.message ? err.message : err), 'error');
+                    });
+            };
+            ok.addEventListener('click', submit);
+            cancel.addEventListener('click', function () { backdrop.remove(); });
+            input.addEventListener('keydown', function (e) {
+                if (e.key === 'Enter') { e.preventDefault(); submit(); }
+                else if (e.key === 'Escape') { e.preventDefault(); backdrop.remove(); }
+            });
+            backdrop.addEventListener('mousedown', function (e) {
+                if (e.target === backdrop) backdrop.remove();
+            });
+            document.body.appendChild(backdrop);
+            input.focus();
+        }
+
+        // 大纲写完 ≠ 下拉里有：categoryTree 要重新拉，且卡片那四个 select 是
+        // setupCardCategoryLinkage 一次性填好的，不会自己跟着变。
+        function refreshParsedCardTopics(card, q, pickTopicName) {
+            // 卡片当前坐标**必须**先存进 q：api.loadCategories 收尾会跑
+            // populateCategoryDropdowns → compSelect.onchange()，那一路会把本卡片的
+            // 四个下拉重置成 q.category_* 预填值（实测踩过：不预写的话大纲明明已写入
+            // 新考向，重建出的下拉却回退到改名前的旧列表、选中值也被清空）。
+            q.category_compulsory = (card.querySelector('.card-compulsory') || {}).value || q.category_compulsory;
+            q.category_chapter = (card.querySelector('.card-chapter') || {}).value || q.category_chapter;
+            q.category_knowledge = (card.querySelector('.card-knowledge') || {}).value || q.category_knowledge;
+            if (pickTopicName) q.topic = pickTopicName;
+            const coords = parsedCardTopicCoordinates(card);
+            const reload = typeof window.loadCategories === 'function'
+                ? window.loadCategories({ reloadCurrentQuestion: false })
+                : Promise.resolve();
+            return Promise.resolve(reload).then(function () {
+                // 只重填考向这一层下拉：刻意**不**整体重跑 setupCardCategoryLinkage ——
+                // 那会把章节/小节一起重置成 AI 预填值、并把难度联动重算一遍，
+                // 用户刚手改过的分类会被悄悄抹掉。
+                const topicSelect = card.querySelector('.card-topic');
+                if (!topicSelect) return;
+                const tree = window.categoryTree || {};
+                const topics = (tree[coords.comp] && tree[coords.comp][coords.chap]
+                    && tree[coords.comp][coords.chap][coords.know]) || [];
+                // 先按当前三坐标现读重建选项，再把选中值设回去 —— 顺序反了会把
+                // 用户刚选中的考向清成占位项（实测踩过）。
+                topicSelect.innerHTML = '<option value="">-- 选择考向 --</option>';
+                topicSelect.disabled = topics.length > 0;
+                topics.forEach(function (t) {
+                    const tObj = (t && typeof t === 'object') ? t : { name: String(t), level: '' };
+                    if (!tObj.name) return;
+                    const opt = document.createElement('option');
+                    opt.value = tObj.name;
+                    opt.dataset.level = tObj.level || '';
+                    opt.textContent = tObj.name + (tObj.level ? ' (' + tObj.level + ')' : '');
+                    topicSelect.appendChild(opt);
+                });
+                if (pickTopicName) {
+                    // 桩与真实 DOM 都以「选中项」决定 select.value，所以必须把 option.selected
+                    // 打对；只赋 topicSelect.value 在部分实现里不会同步子项状态。
+                    let matched = false;
+                    Array.prototype.forEach.call(topicSelect.querySelectorAll('option'), function (o) {
+                        o.selected = (o.value === pickTopicName);
+                        if (o.selected) matched = true;
+                    });
+                    topicSelect.value = pickTopicName;
+                    if (!matched) {
+                        // 大纲写成功但下拉里没有它 —— 说明刷新链断了，必须说出来，
+                        // 不能让用户对着一个空下拉以为改名没生效。
+                        showToast('大纲已更新，但下拉未能定位到新考向，请重新拆卷或刷新页面', 'warning');
+                    }
+                    // 附加考向 chips 里显示的也是名字；改名/新增后一并重绘。
+                    renderParsedCardExtraTopics(card, q);
+                }
+            });
+        }
+
+        // ---- ② 拆卷卡片改名当前选中的考向（保 ID）----
+        function openParsedCardRenameTopicFlow(card, q) {
+            const coords = parsedCardTopicCoordinates(card);
+            if (!coords.topic) {
+                showToast('请先在考向下拉里选中要改名的考向', 'info');
+                return;
+            }
+            if (typeof window.renameCurriculumTopic !== 'function') {
+                showToast('改名助手未加载，请刷新页面后重试', 'error');
+                return;
+            }
+            const topicId = parsedCardTopicId(coords.comp, coords.chap, coords.know, coords.topic);
+            if (!topicId) {
+                // 没有 id 就不能保 ID 改名 —— 宁可不改，也不要造出孤儿 topic_id。
+                showToast('该考向在大纲里没有稳定 ID，请到「设置 → 大纲维度」里处理', 'warning');
+                return;
+            }
+            const topicSelect = card.querySelector('.card-topic');
+            const host = card.querySelector('.card-topic-rename-host');
+            if (host) host.remove();
+            if (!topicSelect) return;
+            const row = buildInlineTopicEditorRow(coords.topic, function (newName) {
+                row.remove();
+                window.renameCurriculumTopic(coords.comp, coords.chap, coords.know, topicId, newName)
+                    .then(function (renamed) {
+                        showToast('已改名（ID 不变，全部题目跟随）', 'success');
+                        // 卡片上的 AI 预填值仍是旧名；不更新的话下次联动重算会把
+                        // 下拉清空（fuzzyMatchName 拿旧名在新大纲里已经找不到）。
+                        q.topic = renamed;
+                        return refreshParsedCardTopics(card, q, renamed);
+                    })
+                    .catch(function (err) {
+                        showToast('改名失败: ' + (err && err.message ? err.message : err), 'error');
+                    });
+            }, function () {
+                row.remove();
+            });
+            row.classList.add('card-topic-rename-host');
+            // 就地展开：插在考向下拉所在的同一行之后，用户视线不用跳。
+            const metaRow = topicSelect.parentElement;
+            if (metaRow && metaRow.parentElement) {
+                metaRow.parentElement.insertBefore(row, metaRow.nextSibling);
+            } else {
+                card.appendChild(row);
+            }
+        }
+
+        function setupParsedCardTopicManagement(card, q) {
+            const renameBtn = card.querySelector('.card-topic-rename');
+            const createBtn = card.querySelector('.card-topic-create');
+            if (renameBtn && !renameBtn.dataset.bound) {
+                renameBtn.dataset.bound = '1';
+                renameBtn.addEventListener('click', function () {
+                    openParsedCardRenameTopicFlow(card, q);
+                });
+            }
+            if (createBtn && !createBtn.dataset.bound) {
+                createBtn.dataset.bound = '1';
+                createBtn.addEventListener('click', function () {
+                    openParsedCardCreateTopicModal(card, q);
+                });
+            }
+            const isG = typeof window.isGCurriculum === 'function' && window.isGCurriculum();
+            [renameBtn, createBtn].forEach(function (btn) {
+                if (!btn) return;
+                btn.disabled = isG;
+                btn.classList.toggle('opacity-50', isG);
+                btn.classList.toggle('cursor-not-allowed', isG);
+            });
+            renderParsedCardTopicManageHint(card, q);
+        }
+
+        function buildParsedCardExtraTopicPicker(card, q, onPick) {
+            const tree = categoryTree || {};
+            const backdrop = document.createElement('div');
+            backdrop.className = 'fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[70] flex items-center justify-center select-none p-4';
+            backdrop.setAttribute('role', 'dialog');
+            backdrop.setAttribute('aria-modal', 'true');
+
+            const mkSelect = function (placeholder, disabled) {
+                const sel = document.createElement('select');
+                sel.className = 'glass-select w-full px-2.5 py-2 text-xs rounded-xl disabled:opacity-50';
+                const first = document.createElement('option');
+                first.value = '';
+                first.textContent = placeholder;
+                sel.appendChild(first);
+                sel.disabled = !!disabled;
+                return sel;
+            };
+            const addOptions = function (sel, values, selected) {
+                values.forEach(function (v) {
+                    const opt = document.createElement('option');
+                    opt.value = v;
+                    opt.textContent = v;
+                    if (selected && v === selected) opt.selected = true;
+                    sel.appendChild(opt);
+                });
+            };
+
+            // 卡片当前的三坐标：只从卡片自己的 select 元素读（下面直接取 .value），
+            // 绝不引用 setupCardCategoryLinkage 里的局部变量 —— 那两个函数不在同一
+            // 作用域，闭包过去就是 ReferenceError，而这条链路只在用户点开弹窗时才跑，
+            // node --check 与页面加载都不会报（实测踩过）。
+            const cardCompSel = card.querySelector('.card-compulsory');
+            const cardChapSel = card.querySelector('.card-chapter');
+            const cardKnowSel = card.querySelector('.card-knowledge');
+            const currentComp = cardCompSel ? cardCompSel.value : '';
+            const currentChap = cardChapSel ? cardChapSel.value : '';
+            const currentKnow = cardKnowSel ? cardKnowSel.value : '';
+
+            const compSel = mkSelect('-- 选择册次 --', false);
+            const chapSel = mkSelect('-- 先选册次 --', true);
+            const knowSel = mkSelect('-- 先选章节 --', true);
+            const topicSel = mkSelect('-- 先选小节 --', true);
+            addOptions(compSel, Object.keys(tree), currentComp);
+
+            const syncChapter = function () {
+                chapSel.innerHTML = '';
+                knowSel.innerHTML = '';
+                topicSel.innerHTML = '';
+                topicSel.disabled = true;
+                knowSel.disabled = true;
+                chapSel.disabled = true;
+                const comp = compSel.value;
+                if (comp && tree[comp]) {
+                    chapSel.disabled = false;
+                    addOptions(chapSel, Object.keys(tree[comp]), currentChap);
+                }
+            };
+            const syncKnowledge = function () {
+                knowSel.innerHTML = '';
+                topicSel.innerHTML = '';
+                topicSel.disabled = true;
+                knowSel.disabled = true;
+                const comp = compSel.value;
+                const chap = chapSel.value;
+                if (comp && chap && tree[comp] && tree[comp][chap]) {
+                    knowSel.disabled = false;
+                    addOptions(knowSel, Object.keys(tree[comp][chap]), currentKnow);
+                }
+            };
+            const syncTopic = function () {
+                topicSel.innerHTML = '';
+                topicSel.disabled = true;
+                const comp = compSel.value;
+                const chap = chapSel.value;
+                const know = knowSel.value;
+                if (!comp || !chap || !know) return;
+                const topics = tree[comp][chap][know];
+                if (!Array.isArray(topics) || topics.length === 0) return;
+                topicSel.disabled = false;
+                topics.forEach(function (t) {
+                    const tObj = (t && typeof t === 'object') ? t : { name: String(t), level: '' };
+                    if (!tObj.name) return;
+                    const opt = document.createElement('option');
+                    opt.value = tObj.name;
+                    opt.textContent = tObj.name + (tObj.level ? ' (' + tObj.level + ')' : '');
+                    topicSel.appendChild(opt);
+                });
+            };
+
+            compSel.addEventListener('change', function () { syncChapter(); syncKnowledge(); syncTopic(); });
+            chapSel.addEventListener('change', function () { syncKnowledge(); syncTopic(); });
+            knowSel.addEventListener('change', syncTopic);
+            // 默认预填当前卡片已选中的三坐标，少点三次。
+            syncChapter();
+            syncKnowledge();
+            syncTopic();
+
+            const cardEl = document.createElement('div');
+            cardEl.className = 'glass-card bg-white/95 backdrop-blur-xl rounded-2xl shadow-2xl w-full max-w-md border border-slate-200/80 p-5 space-y-2.5';
+            const title = document.createElement('h3');
+            title.className = 'text-sm font-bold text-slate-800';
+            title.textContent = '为本题追加附加考向';
+            cardEl.appendChild(title);
+            const hint = document.createElement('div');
+            hint.className = 'text-[10px] text-slate-500 leading-relaxed';
+            hint.textContent = '主考向仍是题干元数据里那个下拉；这里最多再加 '
+                + PARSED_CARD_EXTRA_TOPIC_LIMIT + ' 个平级考向，供讲义与组卷按考向组合筛题。';
+            cardEl.appendChild(hint);
+            const slots = document.createElement('div');
+            slots.className = 'space-y-2';
+            [compSel, chapSel, knowSel, topicSel].forEach(function (sel) { slots.appendChild(sel); });
+            cardEl.appendChild(slots);
+            const actions = document.createElement('div');
+            actions.className = 'flex justify-end space-x-2 pt-1';
+            const cancel = document.createElement('button');
+            cancel.type = 'button';
+            cancel.className = 'px-3.5 py-1.5 text-xs font-bold text-slate-500 bg-slate-100 hover:bg-slate-200 rounded-xl transition-all cursor-pointer';
+            cancel.textContent = '取消';
+            const ok = document.createElement('button');
+            ok.type = 'button';
+            ok.className = 'px-3.5 py-1.5 text-xs font-bold text-white bg-brand-500 hover:bg-brand-600 rounded-xl transition-all cursor-pointer disabled:opacity-50';
+            ok.textContent = '确认添加';
+            ok.disabled = topicSel.disabled;
+            topicSel.addEventListener('change', function () { ok.disabled = !topicSel.value; });
+            actions.appendChild(cancel);
+            actions.appendChild(ok);
+            cardEl.appendChild(actions);
+            backdrop.appendChild(cardEl);
+            backdrop.addEventListener('mousedown', function (ev) {
+                if (ev.target === backdrop) backdrop.remove();
+            });
+            cancel.addEventListener('click', function () { backdrop.remove(); });
+            ok.addEventListener('click', function () {
+                const slot = normalizeParsedCardExtraTopic({
+                    compulsory: compSel.value,
+                    chapter: chapSel.value,
+                    knowledge: knowSel.value,
+                    topic: topicSel.value
+                });
+                if (!slot || !slot.topic) {
+                    showToast('请选择到考点一层', 'info');
+                    return;
+                }
+                onPick(slot);
+                backdrop.remove();
+            });
+            document.body.appendChild(backdrop);
+            compSel.focus();
+            return backdrop;
+        }
+
+        function setupCardExtraTopics(card, q) {
+            const addBtn = card.querySelector('.card-extra-topic-add');
+            if (addBtn && !addBtn.dataset.bound) {
+                addBtn.dataset.bound = '1';
+                addBtn.addEventListener('click', function () {
+                    openParsedCardExtraTopicPicker(card, q);
+                });
+            }
+            renderParsedCardExtraTopics(card, q);
+        }
+
+        // 单独出口：上限判断与去重都必须在这里做，测试直接调它，不依赖按钮事件。
+        function openParsedCardExtraTopicPicker(card, q) {
+            const extras = readParsedCardExtraTopics(q);
+            if (extras.length >= PARSED_CARD_EXTRA_TOPIC_LIMIT) {
+                showToast('附加考向最多添加 ' + PARSED_CARD_EXTRA_TOPIC_LIMIT + ' 个', 'info');
+                return false;
+            }
+            buildParsedCardExtraTopicPicker(card, q, function (slot) {
+                const list = readParsedCardExtraTopics(q);
+                const dup = list.some(function (s) {
+                    return s.compulsory === slot.compulsory
+                        && s.chapter === slot.chapter
+                        && s.knowledge === slot.knowledge
+                        && s.topic === slot.topic;
+                });
+                if (dup) {
+                    showToast('该考向已经附加过了', 'info');
+                    return;
+                }
+                list.push(slot);
+                renderParsedCardExtraTopics(card, q);
+            });
+            return true;
         }
 
         // ---- 插图来源标记 + 一键转 TikZ（拆题预览区）----
@@ -4766,7 +6427,7 @@
 
         // 「整行只有图片」判据：用于「标号一行、图形另起一行」的形态。
         // 少了它，紧跟选项行之后的普通配图（`如图 ![](url) 所示` 那种）会被误判成选项图。
-        const PARSED_IMAGE_ONLY_RE = /^[ \t]*(?:!\[[^\]]*\]\([^)]*\)[ \t]*)+$/;
+        const PARSED_IMAGE_ONLY_RE = /^[ \t]*(?:(?:!\[[^\]]*\]\([^)]*\))|(?:\\includegraphics(?:\[[^\]]*\])?\{[^}]*\}))(?:[ \t]*(?:!\[[^\]]*\]\([^)]*\))|(?:\\includegraphics(?:\[[^\]]*\])?\{[^}]*\}))*[ \t]*$/;
 
         // **裸标号行**：整行只有标号（`A` / `A．`），后面没有正文。
         // 「标号在上一行 → 图片属于该选项」只允许用裸标号行做依据：
@@ -4779,6 +6440,10 @@
         // 判据认不出来，选项图会被错标成「题干图」（与后端同口径的第三种形态）。
         const PARSED_CHOICES_ITEM_RE = /\\item\b/;
 
+        // LaTeX 图片语法：\includegraphics[可选参数]{路径}（后端入库后的 content 用此形态）。
+        // 旧判据只认 Markdown ![]()，导致入库后的 \includegraphics 选项图被误判成「题干图」。
+        const _LATEX_IMG_RE = /\\includegraphics(?:\[[^\]]*\])?\{([^}]*)\}/g;
+
         // 选项图：`A．![](url)` 同行直接认；或是「裸标号一行 + 下一行**只有图片**」；
         // 或是 choices 环境内的 `\item` 行。
         // 必须与后端 `parsing_pipeline._strip_image_reference` 同口径，否则会出现
@@ -4787,7 +6452,23 @@
             const text = String(contentText || '');
             if (!text) return [];
             const found = [];
-            const imgRe = /!\[[^\]]*\]\(([^)]+)\)/g;
+            const _mdImgRe = /!\[[^\]]*\]\(([^)]+)\)/g;
+            // 同时认 Markdown ![]() 与 LaTeX \includegraphics{xxx.jpg}（入库后 content 的形态）。
+            const _extractLineImages = (line) => {
+                const out = [];
+                let m;
+                _mdImgRe.lastIndex = 0;
+                while ((m = _mdImgRe.exec(line)) !== null) {
+                    const p = window.MathBankSafe.safeImageUrl(m[1]);
+                    if (p) out.push(p);
+                }
+                _LATEX_IMG_RE.lastIndex = 0;
+                while ((m = _LATEX_IMG_RE.exec(line)) !== null) {
+                    const p = window.MathBankSafe.safeImageUrl(m[1]);
+                    if (p) out.push(p);
+                }
+                return out;
+            };
             let lastMeaningful = '';
             let inChoices = false;
             text.split('\n').forEach(line => {
@@ -4801,14 +6482,15 @@
                 const onlyImage = PARSED_IMAGE_ONLY_RE.test(stripped);
                 const choicesItem = inChoices && PARSED_CHOICES_ITEM_RE.test(stripped);
                 if (sameLine || choicesItem || (belowLabel && onlyImage)) {
-                    let match;
-                    imgRe.lastIndex = 0;
-                    while ((match = imgRe.exec(line)) !== null) {
-                        const safePath = window.MathBankSafe.safeImageUrl(match[1]);
-                        if (safePath && found.indexOf(safePath) < 0) found.push(safePath);
-                    }
+                    _extractLineImages(line).forEach(p => {
+                        if (found.indexOf(p) < 0) found.push(p);
+                    });
                 }
-                const remainder = line.replace(/!\[[^\]]*\]\([^)]*\)/g, '').trim();
+                // 把已识别的图（Markdown + LaTeX 两种）从行中剔除，避免污染 lastMeaningful。
+                const remainder = line
+                    .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
+                    .replace(/\\includegraphics(?:\[[^\]]*\])?\{[^}]*\}/g, '')
+                    .trim();
                 if (remainder) lastMeaningful = remainder;
             });
             return found;
@@ -5270,6 +6952,79 @@
             return String(safePath).split('?')[0].split('#')[0].split('/').pop();
         }
 
+        // 把正文里对某张图的引用换到另一张图。两类形态都要认：
+        //   ① Markdown 图片语法 `![](/static/uploads/tmp/pic.png)`
+        //   ② 入库后的结构层写法 `\includegraphics[opt]{pic.png}`（只写 basename）
+        // basename 那条必须加「后面不接文件名字符」的前瞻，否则
+        // `pdf_crop_t_1_0.png` 会被当成 `pdf_crop_t_1_0.png.bak` 的前缀误替换。
+        function replaceParsedImageReference(text, oldPath, newPath) {
+            if (typeof text !== 'string' || !text) return text;
+            const oldSafe = window.MathBankSafe.safeImageUrl(oldPath) || String(oldPath || '');
+            const newSafe = window.MathBankSafe.safeImageUrl(newPath) || String(newPath || '');
+            let out = text;
+            if (oldSafe && newSafe && oldSafe !== newSafe) {
+                out = out.split(oldSafe).join(newSafe);
+            }
+            const oldBase = parsedImageBasename(oldSafe);
+            const newBase = parsedImageBasename(newSafe);
+            if (oldBase && newBase && oldBase !== newBase) {
+                const pattern = new RegExp(
+                    oldBase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?![\\w.-])',
+                    'g'
+                );
+                out = out.replace(pattern, () => newBase);
+            }
+            return out;
+        }
+
+        // 「图形替换」：把某张配图换成用户新上传的图（典型场景：原图被学科网水印压住，
+        // 去小猿搜题重新截一张再传回来）。
+        //
+        // 口径必须与 softDeleteParsedCardImage 完全一致 —— **编辑框才是保存时读取的
+        // 数据来源**，所以 q 上的字段与两个 textarea 要一起改，否则保存时又把旧图带回来。
+        function replaceParsedCardImage(index, oldSafePath, newSafePath) {
+            const q = parsedQuestionsData[index];
+            if (!q || !oldSafePath || !newSafePath) return false;
+            const paths = (Array.isArray(q.image_paths) ? q.image_paths : [])
+                .map(p => window.MathBankSafe.safeImageUrl(p));
+            if (paths.indexOf(oldSafePath) < 0) return false;
+
+            const swap = value => replaceParsedImageReference(value, oldSafePath, newSafePath);
+
+            q.image_paths = paths.map(p => (p === oldSafePath ? newSafePath : p));
+            ['content', 'answer_markdown'].forEach(key => {
+                if (typeof q[key] === 'string') q[key] = swap(q[key]);
+            });
+            if (Array.isArray(q.referenced_images)) {
+                q.referenced_images = q.referenced_images
+                    .map(ref => window.MathBankSafe.safeImageUrl(ref))
+                    .map(ref => (ref === oldSafePath ? newSafePath : ref));
+            }
+            // TikZ 资产是「以这张图为参考重绘」的凭据：图换了但已生成的 tikz_code 仍然有效，
+            // 所以只把参考图改指新图，不要顺手把资产删掉（删了用户得重画）。
+            [q.content_tikz_assets, q.answer_tikz_assets].forEach(list => {
+                if (!Array.isArray(list)) return;
+                list.forEach(asset => {
+                    if (!asset) return;
+                    if (window.MathBankSafe.safeImageUrl(asset.reference_image_path) === oldSafePath) {
+                        asset.reference_image_path = newSafePath;
+                    }
+                });
+            });
+            if (typeof window.registerMathbankImages === 'function') {
+                window.registerMathbankImages([newSafePath]);
+            }
+
+            const card = document.getElementById('parsed-card-' + index);
+            if (card) {
+                const contentInput = card.querySelector('.card-content-textarea');
+                const answerInput = card.querySelector('.card-answer-textarea');
+                if (contentInput) contentInput.value = swap(contentInput.value);
+                if (answerInput) answerInput.value = swap(answerInput.value);
+            }
+            return true;
+        }
+
         // 裁剪图文件名自带定位信息（pdf_crop_{task}_{page}_{idx}.png），
         // 用「页序_序号」数值排序才能得到稳定的文档顺序。
         function parsedImageDocumentOrder(safePath) {
@@ -5567,7 +7322,7 @@
                             <input type="checkbox" id="parsedOverviewShowEmpty" class="h-3.5 w-3.5 rounded border-slate-300 text-brand-600 focus:ring-brand-500" checked>
                             <span>列出没有配图的题</span>
                         </label>
-                        <span id="parsedOverviewToolbarNote" class="text-[10px] text-slate-400">删除是软删除：只摘引用、不物理删文件</span>
+                        <span id="parsedOverviewToolbarNote" class="text-[10px] text-slate-400">删除是软删除：只摘引用、不物理删文件；选中一张后可「替换选中图」（上传 / 拖入 / Ctrl+V 粘贴截图）</span>
                     </div>
                     <div id="parsedOverviewList" class="flex-1 min-h-0 overflow-y-auto px-5 py-4 space-y-4 custom-scrollbar"></div>
                     <div class="flex items-center justify-between gap-3 border-t border-slate-200/60 px-5 py-3">
@@ -5575,6 +7330,8 @@
                         <div class="flex items-center gap-2 shrink-0">
                             <select id="parsedOverviewAssignTarget" class="hidden h-7 px-2 rounded-lg text-[10px] border border-slate-200 focus:border-brand-500 focus:ring-2 focus:ring-brand-100 transition-all"></select>
                             <button type="button" id="parsedOverviewAssignBtn" class="hidden px-3 py-1.5 rounded-lg text-[10px] font-bold border border-brand-200 bg-brand-50 text-brand-700 hover:bg-brand-100 transition-colors">指派给该题</button>
+                            <input type="file" id="parsedOverviewReplaceInput" accept="image/png,image/jpeg,image/webp" class="hidden">
+                            <button type="button" id="parsedOverviewReplaceBtn" class="px-3 py-1.5 rounded-lg text-[10px] font-bold border border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 transition-colors">替换选中图</button>
                             <button type="button" id="parsedOverviewDeleteBtn" class="px-3 py-1.5 rounded-lg text-[10px] font-bold border border-rose-200 bg-rose-50 text-rose-600 hover:bg-rose-100 transition-colors">删除选中</button>
                             <button type="button" id="parsedOverviewConvertBtn" class="px-3 py-1.5 rounded-lg text-[10px] font-bold border border-indigo-200 bg-indigo-50 text-indigo-600 hover:bg-indigo-100 transition-colors">批量转 TikZ</button>
                         </div>
@@ -5616,6 +7373,50 @@
                 .addEventListener('click', () => handleParsedImageOverviewDelete(modal));
             modal.querySelector('#parsedOverviewConvertBtn')
                 .addEventListener('click', () => handleParsedImageOverviewConvert(modal));
+
+            // 「图形替换」三个入口共用同一条链路（上传 → 换引用 → 重渲染）：
+            //   ① 点按钮选文件；② 把图片文件拖进面板；③ 面板内 Ctrl+V 粘贴截图。
+            // 粘贴/拖拽都必须支持：用户是去小猿搜题截图，直接粘贴比存文件再选快得多。
+            const replaceInput = modal.querySelector('#parsedOverviewReplaceInput');
+            const replaceBtn = modal.querySelector('#parsedOverviewReplaceBtn');
+            if (replaceBtn) {
+                replaceBtn.addEventListener('click', () => {
+                    if (replaceInput) replaceInput.click();
+                });
+            }
+            if (replaceInput) {
+                replaceInput.addEventListener('change', function () {
+                    const file = this.files && this.files[0];
+                    this.value = '';  // 立刻清空，否则同一张图第二次选不触发 change
+                    if (file) handleParsedOverviewImageReplace(modal, file);
+                });
+            }
+            modal.addEventListener('paste', event => {
+                const items = (event.clipboardData && event.clipboardData.items) || [];
+                for (let i = 0; i < items.length; i += 1) {
+                    if (items[i].type && items[i].type.indexOf('image/') === 0) {
+                        const file = items[i].getAsFile();
+                        if (file) {
+                            event.preventDefault();
+                            handleParsedOverviewImageReplace(modal, file);
+                            return;
+                        }
+                    }
+                }
+            });
+            modal.addEventListener('dragover', event => {
+                if (event.dataTransfer) event.preventDefault();
+            });
+            modal.addEventListener('drop', event => {
+                const files = (event.dataTransfer && event.dataTransfer.files) || [];
+                for (let i = 0; i < files.length; i += 1) {
+                    if (/^image\//.test(files[i].type || '')) {
+                        event.preventDefault();
+                        handleParsedOverviewImageReplace(modal, files[i]);
+                        return;
+                    }
+                }
+            });
 
             renderParsedImageOverviewGroups(modal, parsedOverviewTab);
         }
@@ -6036,6 +7837,74 @@
             renderParsedImageOverviewGroups(modal, 'gallery');
         }
             
+        // 把用户新给的一张图替换掉「当前唯一选中」的那张配图。
+        //
+        // 存在理由：水印压在图上是图像级的问题，自动擦除没有稳妥办法（浅灰填充会被
+        // 一起抹掉），所以给一条确定可用的手工通道 —— 用户去小猿搜题之类的站搜到题、
+        // 重新截图，回来替换即可。原文件不删（软替换），随时可以再换回来。
+        async function handleParsedOverviewImageReplace(modal, file) {
+            if (!file) return;
+            const picked = parsedOverviewPicked(modal)
+                .map(box => ({
+                    index: parseInt(box.getAttribute('data-index'), 10),
+                    safePath: box.getAttribute('data-path')
+                }))
+                .filter(item => item.index >= 0 && item.safePath);
+
+            const hint = modal.querySelector('#parsedOverviewHint');
+            if (picked.length !== 1) {
+                if (hint) {
+                    hint.className = 'text-[10px] font-semibold text-amber-600';
+                    hint.textContent = '替换是「一对一」的：请在图墙里只选中一张要替换的图，再试。';
+                }
+                showToast('请先在图墙里只选中一张要替换的图。', 'info');
+                return;
+            }
+
+            const target = picked[0];
+            if (hint) {
+                hint.className = 'text-[10px] font-semibold text-slate-500';
+                hint.textContent = '正在上传替换图…';
+            }
+            try {
+                const form = new FormData();
+                form.append('files', file, file.name || 'replacement.png');
+                const response = await fetch('/api/upload/batch', {
+                    method: 'POST',
+                    headers: { 'X-Local-Token': parsedCardLocalToken() },
+                    body: form
+                });
+                const payload = await response.json().catch(() => ({}));
+                if (!response.ok || payload.status !== 'success') {
+                    throw new Error(payload.message || ('HTTP ' + response.status));
+                }
+                const mapping = payload.mapping || {};
+                const uploaded = Object.keys(mapping).map(key => mapping[key])[0];
+                if (!uploaded) throw new Error('上传成功但未拿到图片地址。');
+                const safeNew = window.MathBankSafe.safeImageUrl(uploaded) || uploaded;
+                if (!replaceParsedCardImage(target.index, target.safePath, safeNew)) {
+                    throw new Error('这张图已不属于当前题，请重新选中后再试。');
+                }
+                if (hint) {
+                    hint.className = 'text-[10px] font-semibold text-emerald-600';
+                    hint.textContent = '已替换第 ' + (target.index + 1) + ' 题的这张配图（原文件保留）。';
+                }
+                showToast(
+                    '已替换第 ' + (target.index + 1) + ' 题的这张配图（原文件保留，可再换回来）。',
+                    'success'
+                );
+                renderParsedQuestionsList(parsedQuestionsData);
+                renderParsedImageOverviewGroups(modal, 'gallery');
+            } catch (error) {
+                const message = (error && error.message) ? error.message : String(error);
+                if (hint) {
+                    hint.className = 'text-[10px] font-semibold text-rose-600';
+                    hint.textContent = '替换失败：' + message;
+                }
+                showToast('替换失败：' + message, 'info');
+            }
+        }
+
         async function handleParsedImageOverviewConvert(modal) {
             const targets = parsedOverviewPicked(modal).map(box => ({
                 index: parseInt(box.getAttribute('data-index'), 10),
@@ -6425,9 +8294,6 @@
             } else {
                 try {
                     let processedContent = contentText;
-                    if (typeof window.cleanChoiceStemParentheses === 'function') {
-                        processedContent = window.cleanChoiceStemParentheses(processedContent);
-                    }
                     // 未落地的占位图（如 placeholder.png）在预览里换成明确的“插图待补”，
                     // 避免显示成破图；真实的裁剪插图会以缩略图形式追加在下方。
                     processedContent = processedContent.replace(
@@ -6751,22 +8617,33 @@
                 const resp = await fetch('/api/school-regions', {
                     headers: { 'X-Local-Token': window.LOCAL_TOKEN || '' }
                 });
-                if (!resp.ok) return;
-                const data = await resp.json();
-                window._regionsTree = (data && data.regions) || [];
-                fillProvinceSelect();
+                if (resp.ok) window._regionsTree = ((await resp.json()) || {}).regions || [];
             } catch (e) { /* 静默 */ }
+            try {
+                const resp = await fetch('/api/display-config', {
+                    headers: { 'X-Local-Token': window.LOCAL_TOKEN || '' }
+                });
+                if (resp.ok) {
+                    const data = await resp.json();
+                    if (data && Array.isArray(data.provinces)) window._displayConfig = data;
+                }
+            } catch (e) { /* 静默：排序数据缺失只影响顺序，不影响可用性 */ }
+            fillProvinceSelect();
         }
 
         function fillProvinceSelect() {
             const sel = document.getElementById('importSrcProvince');
             if (!sel) return;
             const cur = sel.value;
+            const cfg = window._displayConfig;
             sel.innerHTML = '<option value="">不选（全国）</option>';
-            for (const r of window._regionsTree) {
+            const provs = (cfg && Array.isArray(cfg.provinces) && cfg.provinces.length)
+                ? cfg.provinces : (window._regionsTree || []).map(r => r.province);
+            for (const p of provs) {
+                if (!p) continue;
                 const opt = document.createElement('option');
-                opt.value = r.province;
-                opt.textContent = r.province;
+                opt.value = p;
+                opt.textContent = p;
                 sel.appendChild(opt);
             }
             if (cur) sel.value = cur;
@@ -6780,14 +8657,18 @@
             const prov = provSel.value;
             const cur = citySel.value;
             citySel.innerHTML = '<option value="">不选</option>';
-            const node = window._regionsTree.find(r => r.province === prov);
-            if (node) {
-                for (const c of node.cities) {
-                    const opt = document.createElement('option');
-                    opt.value = c;
-                    opt.textContent = c;
-                    citySel.appendChild(opt);
-                }
+            const cfg = window._displayConfig;
+            let cities = null;
+            if (cfg && cfg.cities && Array.isArray(cfg.cities[prov])) cities = cfg.cities[prov];
+            if (!cities) {
+                const node = (window._regionsTree || []).find(r => r.province === prov);
+                cities = node ? node.cities : [];
+            }
+            for (const c of cities) {
+                const opt = document.createElement('option');
+                opt.value = c;
+                opt.textContent = c;
+                citySel.appendChild(opt);
             }
             if (cur && prov) {
                 // 选了省后若当前市不在该省里则清空
@@ -6809,9 +8690,22 @@
             const q = regionEl ? regionEl.value.trim() : '';
             const dl = document.getElementById('dlSrcRegions');
             if (!dl) return;
+            // 排序口径（置顶→引用次数→字母序）由后端 display-config 一次算好；
+            // 取不到时回落词库原序，不得因排序数据缺失而让联想变空。
+            const orderKey = prov + '|' + city;
+            const ordered = (window._displayConfig && window._displayConfig.schools
+                && window._displayConfig.schools[orderKey]) || null;
             let items = window._schoolsDict.slice();
             if (prov) items = items.filter(s => (s.province || '') === prov);
             if (city) items = items.filter(s => (s.city || '') === city);
+            if (ordered) {
+                const byName = {};
+                items.forEach(s => { if (s.name && !(s.name in byName)) byName[s.name] = s; });
+                const ranked = ordered.map(n => byName[n]).filter(Boolean);
+                const picked = new Set(ranked.map(s => s.name));
+                // 有序表没覆盖到的（新加载/该父级未排序）按原序补在尾部，绝不丢题
+                items = ranked.concat(items.filter(s => !picked.has(s.name)));
+            }
             if (q) items = items.filter(s => s.name && s.name.includes(q));
             items = items.slice(0, 80);
             dl.innerHTML = '';
@@ -6865,24 +8759,39 @@
             const examEl = document.getElementById('importSrcExamType');
             const regionEl = document.getElementById('importSrcRegion');
             const provSel = document.getElementById('importSrcProvince');
-            // 学年度对（如 2023-2024 学年）：上学期→第一年，下学期→第二年
-            const ymPair = n.match(/(20\d{2})\s*[-—–~]\s*(20\d{2})\s*学年/);
+            // 学年度对（如 2023-2024 学年 / 2023-2024）：上学期→第一年，下学期→第二年
+            const ymPair = n.match(/(20\d{2})\s*[-—–~]\s*(20\d{2})\s*(?:学年)?/);
             window._srcYearPair = ymPair ? [ymPair[1], ymPair[2]] : null;
             // 年份
             const ym = n.match(/(20\d{2})/);
             if (ym && yearEl && !yearEl.value.trim()) yearEl.value = ym[1];
-            // 年级学期：高二下 / 高2下
-            const gm = n.match(/高\s*([一二三123])\s*([上下])/);
+            // 年级学期：高二下 / 高2下 / 高一上学期 / 高一上半学期
+            const gm = n.match(/高\s*([一二三123])\s*([上下])(?:半?学期|学期)?/);
             if (gm) {
                 const gMap = { '一': 'g1', '二': 'g2', '三': 'g3', '1': 'g1', '2': 'g2', '3': 'g3' };
                 const g = gMap[gm[1]] || '';
                 if (g && gradeEl && !gradeEl.value) gradeEl.value = g;
                 if (semEl && !semEl.value) semEl.value = gm[2];
             }
-            // 考试类型
-            const em = n.match(/(期末|期中|月考|一模|二模|三模|联考|高考|模考|学考|会考)/);
-            if (em && examEl && !examEl.value.trim()) examEl.value = em[1];
+            // 考试类型（库内标准形态是「N月月考」，实测占 405/411）：
+            //   ① 「9月月考」→ 原样取；
+            //   ② 「第一次月考」→ **保留原文整段**，不归一化、不改写，用户可自行手改；
+            //   ③ 「9月第一次月考」这类同现 → **归一为「9月月考」**。
+            //      ⚠️ 不能写成 /(\d{1,2}月月考)/ 的"优先级更高"：文件名里的「9月」和「月考」
+            //      是两个不同的「月」字，那个 token 在「9月第一次月考」里根本不存在（实测 match
+            //      为 null），照字面写规则等于该形态永远命中不到、序数形态把月份吃掉。也不能把
+            //      整段「9月第一次月考」原样塞进字段：库内考试类型口径是「N月月考」（实测 405/411），
+            //      混进长尾写法会让这道题在按考试类型筛选时自成一类、查不出来。
+            // 序数词必须和「月考」绑在一起才认：单字捕获会把「第一试卷」「三轮复习」切成「一」「轮」。
+            const emMonth = n.match(/(\d{1,2})月(?:第[一二三四五六七八九十]+(?:次|轮)?)?月考/);
+            const emOrdinal = !emMonth && n.match(/(第[一二三四五六七八九十]+(?:次|轮)?月考)/);
+            const em = emMonth || emOrdinal
+                || n.match(/(期末|期中|一模|二模|三模|高考|学考|会考|联考|模考|月考)/);
+            if (em && examEl && !examEl.value.trim()) {
+                examEl.value = emMonth ? `${emMonth[1]}月月考` : em[1];
+            }
             // 学校：词库最长匹配
+            let matchedSchool = null;
             if (window._schoolsDict && window._schoolsDict.length && regionEl && !regionEl.value.trim()) {
                 let best = null;
                 for (const s of window._schoolsDict) {
@@ -6891,6 +8800,7 @@
                     }
                 }
                 if (best) {
+                    matchedSchool = best;
                     regionEl.value = best.name;
                     if (provSel) provSel.value = best.province || '';
                     fillCitySelect();
@@ -6898,6 +8808,26 @@
                     if (citySel) citySel.value = best.city || '';
                     window._lastSrcProvince = best.province || '';
                     window._lastSrcCity = best.city || '';
+                }
+            }
+            // 未匹配到学校时，从文件名中直接提取「省 + 市」（如 辽宁省抚顺市第一中学...）
+            if (!matchedSchool && provSel && window._regionsTree && window._regionsTree.length) {
+                const citySel = document.getElementById('importSrcCity');
+                for (const r of window._regionsTree) {
+                    if (!r.province || !n.includes(r.province)) continue;
+                    if (!provSel.value) provSel.value = r.province;
+                    fillCitySelect();
+                    if (r.cities && citySel) {
+                        for (const c of r.cities) {
+                            if (c && n.includes(c)) {
+                                citySel.value = c;
+                                window._lastSrcCity = c;
+                                break;
+                            }
+                        }
+                    }
+                    window._lastSrcProvince = r.province;
+                    break;
                 }
             }
             // 学年联动：上学期→学年度第一年，下学期→学年度第二年
@@ -6935,7 +8865,84 @@
             const titleInput = document.getElementById('importPaperTitle');
             if (!titleInput) return;
             const std = buildStandardPaperTitle();
-            if (std) titleInput.value = std;
+            if (!std) return;
+            const prev = titleInput.value;
+            if (prev !== std) titleInput.value = std;
+            // ⚠️ 即使标题字符串与旧值相同也必须下发同步：新渲染的卡片可能还带着
+            //    后端 q.source（AI 原始标题），面板标题留空时 prev 也为空——这两种
+            //    情况旧实现都因提前 return 而漏同步。
+            syncInheritedCardSource(prev, std);
+        }
+
+        // 把标准标题下发给「尚未被用户手改过」的卡片来源。
+        // ⚠️ 旧判据是「卡片值 === 旧面板标题」，对不上：卡片来源的初值是后端
+        //    q.source（AI 抄的原卷标题，见 parsing_pipeline 的 `source or paper_title`），
+        //    与面板标题通常并不相等；面板标题留空时 `!prevTitle` 更会直接短路。
+        //    两者叠加 → 改来源字段后卡片纹丝不动。改为「没被手改就覆盖」，
+        //    手改过的（data-user-edited）一律尊重用户输入。
+        function syncInheritedCardSource(prevTitle, newTitle) {
+            if (!newTitle) return;
+            document
+                .querySelectorAll('#parsedCardsContainer .card-source')
+                .forEach((el) => {
+                    if (el.dataset && el.dataset.userEdited === '1') return;
+                    el.value = newTitle;
+                });
+            if (Array.isArray(parsedQuestionsData)) {
+                parsedQuestionsData.forEach((q) => {
+                    if (q && q.__sourceUserEdited !== true) q.source = newTitle;
+                });
+            }
+        }
+
+        // ===== #13 学校输入软警告 =====
+        // 词库只收录了 347 所，用户手输一个没收录的校名是完全正常的教研行为，所以这里
+        // **只提示、不阻断、不清空**：命中（全称/简称/name 任一）就收起，未命中给一行黄字。
+        // 警告节点一律 createElement + textContent（见第 6 节净化白名单规则），不拼 innerHTML。
+        const SCHOOL_ALIAS_KEYS = ['name', 'short_name', 'full_name'];
+
+        function isSchoolInLibrary(value) {
+            const v = String(value || '').trim();
+            if (!v) return true;   // 空值不算「词库外」，交给必填校验
+            const dict = window._schoolsDict || [];
+            for (const s of dict) {
+                for (const key of SCHOOL_ALIAS_KEYS) {
+                    const cand = String((s && s[key]) || '').trim();
+                    if (cand && cand === v) return true;
+                }
+            }
+            return false;
+        }
+
+        function ensureSchoolWarnEl() {
+            const regionEl = document.getElementById('importSrcRegion');
+            if (!regionEl) return null;
+            let warn = document.getElementById('importSrcRegionWarn');
+            if (warn) return warn;
+            warn = document.createElement('p');
+            warn.id = 'importSrcRegionWarn';
+            warn.setAttribute('role', 'status');
+            warn.className = 'mt-1 text-[10px] leading-snug font-semibold text-amber-600 dark:text-amber-400';
+            warn.hidden = true;
+            const host = regionEl.parentElement;
+            if (!host) return null;
+            // 紧跟输入框之后插入，而不是 appendChild 到末尾——宿主 div 里可能还有别的控件。
+            if (regionEl.nextSibling) host.insertBefore(warn, regionEl.nextSibling);
+            else host.appendChild(warn);
+            return warn;
+        }
+
+        function updateSchoolSoftWarning() {
+            const regionEl = document.getElementById('importSrcRegion');
+            if (!regionEl) return;
+            const warn = ensureSchoolWarnEl();
+            if (!warn) return;
+            const val = regionEl.value.trim();
+            // 词库还没加载完时不做判断，否则会把所有输入都误报成「未找到」。
+            const dictReady = (window._schoolsDict || []).length > 0;
+            const show = dictReady && !!val && !isSchoolInLibrary(val);
+            warn.textContent = show ? `未找到该学校「${val}」，确认继续？（不影响保存）` : '';
+            warn.hidden = !show;
         }
 
         function initSourceSmartFields() {
@@ -6949,12 +8956,22 @@
                 window._lastSrcCity = citySel.value;
                 refreshSchoolDatalist();
             });
+            // 来源字段（年份/学校/学期/考试类型/年级）变动 → 重算「试卷标题」，
+            // 把考试类型等一并拼进去，并同步到仍沿用标题的题目卡片来源。
+            ['importSrcYear', 'importSrcRegion', 'importSrcSemester', 'importSrcExamType', 'importApplicableGrade'].forEach((id) => {
+                const el = document.getElementById(id);
+                if (el) el.addEventListener('change', applyStandardPaperTitle);
+            });
             if (!regionEl) return;
             regionEl.addEventListener('input', () => {
                 clearTimeout(_schoolDebounceTimer);
                 _schoolDebounceTimer = setTimeout(refreshSchoolDatalist, 150);
+                updateSchoolSoftWarning();
             });
-            regionEl.addEventListener('change', tryMatchSchoolToGeo);
+            regionEl.addEventListener('change', () => { tryMatchSchoolToGeo(); updateSchoolSoftWarning(); });
+            // 文件名预填会绕过 input 事件直接改 value，预填完也要复核一次警告状态。
+            const titleElForWarn = document.getElementById('importPaperTitle');
+            if (titleElForWarn) titleElForWarn.addEventListener('change', updateSchoolSoftWarning);
             // 文件名预填：监听试卷标题自动赋值
             const titleEl = document.getElementById('importPaperTitle');
             if (titleEl) {
@@ -7088,6 +9105,10 @@ function saveParsedQuestion(index) {
                 formData.append('category_chapter', category_chapter);
                 formData.append('category_knowledge', category_knowledge);
                 if (topic) formData.append('topic', topic);
+                // 附加考向与编辑器路径同格式（JSON 数组，最多 3 条）。后端 create/update
+                // 的 extra_topics 默认 "[]"，不传即只写主考向。
+                const parsedExtraTopics = collectParsedCardExtraTopics(q);
+                formData.append('extra_topics', JSON.stringify(parsedExtraTopics));
                 formData.append('difficulty', difficulty);
                 formData.append('source', source);
                 // 题号以卡片输入框为准（缺省已回落为本题顺序号），保证写入元数据。
@@ -7096,6 +9117,11 @@ function saveParsedQuestion(index) {
                     ? String(cardQuestionNoInput.value || '').trim()
                     : String(q.paper_question_no || '').trim();
                 if (paperQuestionNo) formData.append('paper_question_no', paperQuestionNo);
+                // 选项列数：后端 create_question 用 _parse_int_or_default(..., 0) 接收。
+                const optionColumnsEl = card ? card.querySelector('.card-option-columns') : null;
+                if (optionColumnsEl) {
+                    formData.append('option_columns', optionColumnsEl.value || '0');
+                }
                 formData.append('answer_markdown', answer_markdown);
                 const applicableGrade = (q && q.applicable_grade)
                     || (typeof getUnifiedApplicableGrade === 'function' ? getUnifiedApplicableGrade() : '')
@@ -7168,6 +9194,15 @@ function saveParsedQuestion(index) {
                 // must never mutate the new import session or its card.
                 if (!isParsedQuestionSaveContextCurrent(saveGeneration, index, q)) return true;
                 q.saved = true;
+                // 入库成功后回填数据库主键：查重弹窗里预约的「标记为相似题」要在
+                // 批量结束后拿这个 id 调 POST /api/questions/{id}/associate。
+                if (data.question && data.question.id) {
+                    q.saved_id = Number(data.question.id);
+                }
+                // 单题入口（非批量池）没有统一结算点，入库后立即兑现本题关联。
+                if (options.fromBatch !== true) {
+                    drainParsedDuplicateAssociationRequests();
+                }
                 q.duplicateIndexWarning = String(data.warning || '');
                 const statusBadge = card.querySelector('.card-status-badge');
                 statusBadge.textContent = '已导入';
@@ -7473,6 +9508,28 @@ function saveParsedQuestion(index) {
                         } else if (action === 'independent') {
                             suspectIndices.forEach(index => independentOverrideIndices.add(index));
                         }
+                        // 逐题队列的【跳过】只剔除被跳过的冲突题，其余照常入库。
+                        const queueSkipped = new Set(
+                            parsedDuplicateQueueEntries
+                                .filter(item => item && item.skipped)
+                                .map(item => item.index)
+                        );
+                        if (queueSkipped.size > 0) {
+                            indicesToSave = indicesToSave.filter(index => !queueSkipped.has(index));
+                            queueSkipped.forEach(index => independentOverrideIndices.delete(index));
+                        }
+                    }
+                }
+                // 本次审查里被「并入已有题」的疑似题不入库：并入只追加来源，
+                // 正文与解析保持不变，本题本身不作为新题写入题库。
+                if (parsedDuplicateMergedIndices.size > 0) {
+                    const mergedSet = new Set(parsedDuplicateMergedIndices);
+                    indicesToSave = indicesToSave.filter(index => !mergedSet.has(index));
+                    showToast(`本次有 ${mergedSet.size} 道疑似题已并入已有题，未作为新题入库。`, 'success');
+                    if (indicesToSave.length === 0) {
+                        showToast('所选题目均已并入已有题，本次没有执行导入。', 'info');
+                        focusFirstParsedDuplicate(suspectIndices);
+                        return false;
                     }
                 }
                 // When the check endpoint fails, outcome.ok is false and the
@@ -7502,6 +9559,8 @@ function saveParsedQuestion(index) {
                 }, 3);
 
                 if (batchGeneration !== parsedQuestionsGeneration) return false;
+                // 弹窗里预约的「标记为相似题」此刻才执行：关联需要入库后的真实主键。
+                drainParsedDuplicateAssociationRequests();
                 const successCount = results.filter(result => result === true).length;
                 const fingerprintWarningCount = indicesToSave.filter(index =>
                     parsedQuestionsData[index] && parsedQuestionsData[index].duplicateIndexWarning
@@ -8239,13 +10298,11 @@ function saveParsedQuestion(index) {
                     setTikzWorkbenchStatus('等待输入', 'idle');
                 }
 
-                modal.classList.remove('hidden');
-                modal.classList.add('flex');
-                window.MathBankModal.open(modal, { onEscape: window.closeTikzWorkbench });
-                requestAnimationFrame(() => {
-                    modal.classList.remove('opacity-0');
-                    surface.classList.remove('scale-95');
-                    surface.classList.add('scale-100');
+                // 旧实现只挂 rAF：标签页在后台时 rAF 冻结，弹窗会永远停在透明态吞点击，
+                // 公共助手带 setTimeout 兜底，两种环境都能揭示。
+                window.openModalWithTransition(modal, {
+                    onEscape: window.closeTikzWorkbench,
+                    surface: surface
                 });
             };
 
@@ -8263,19 +10320,9 @@ function saveParsedQuestion(index) {
                     return;
                 }
                 const modal = document.getElementById('answerTikzWorkbenchModal');
-                const surface = modal && modal.querySelector('[data-modal-surface]');
                 if (!modal || modal.classList.contains('hidden')) return;
-                window.MathBankModal.close(modal);
-                modal.classList.add('opacity-0');
-                if (surface) {
-                    surface.classList.remove('scale-100');
-                    surface.classList.add('scale-95');
-                }
-                setTimeout(() => {
-                    modal.classList.add('hidden');
-                    modal.classList.remove('flex');
-                    clearTikzReference();
-                }, 200);
+                window.closeModalWithTransition(modal);
+                clearTikzReference();
             };
 
             async function renderTikzWorkbenchCode(tikzCode) {
@@ -8690,7 +10737,7 @@ function saveParsedQuestion(index) {
         }
 
         // 智能并发队列解答生成器
-        async function processAsyncAnswerGeneration(questions, generation = parsedQuestionsGeneration) {
+        async function processAsyncAnswerGeneration(questions, generation = parsedQuestionsGeneration, onlyEmpty = false, protectOverwrite = false) {
             if (!questions || questions.length === 0) return;
             const requestIsCurrent = () => generation === parsedQuestionsGeneration &&
                 questions === parsedQuestionsData;
@@ -8699,8 +10746,17 @@ function saveParsedQuestion(index) {
             const needAnswersIndices = [];
             questions.forEach((q, idx) => {
                 const ans = (q.answer_markdown || '').trim();
-                // 仅对未包含解答且未被打上原版提取标记的题目自动推导
-                if (!ans || (!ans.includes('[EXTRACTED_ORIGINAL]') && ans.length < 5)) {
+                // onlyEmpty=true（顶部「批量生成解析」按钮）：只对**真正空答案**的题生成，
+                // 不动已有内容（原卷提取答案、短选项答案等都不碰）。
+                // onlyEmpty=false（拆卷自动推导，保持旧行为）：空答案，或
+                // 无原版提取标记且内容过短（<5）的题也一并推导。
+                let need;
+                if (onlyEmpty) {
+                    need = ans.length === 0;
+                } else {
+                    need = !ans || (!ans.includes('[EXTRACTED_ORIGINAL]') && ans.length < 5);
+                }
+                if (need) {
                     needAnswersIndices.push(idx);
                 }
             });
@@ -8708,6 +10764,17 @@ function saveParsedQuestion(index) {
             if (needAnswersIndices.length === 0) {
                 appendImportLog('试卷成功提取到所有原版参考答案/解析，无须额外推导。', 'success');
                 return;
+            }
+
+            // 防覆盖快照：记下「发起生成时」每题解析框内容。生成期间若用户手改了某题，
+            // 写回前比对不一致则跳过写回，保留用户手改（见下方成功分支）。
+            const answerSnapshotMap = new Map();
+            if (protectOverwrite) {
+                needAnswersIndices.forEach(idx => {
+                    const snapCard = document.getElementById(`parsed-card-${idx}`);
+                    const snapTa = snapCard ? snapCard.querySelector('.card-answer-textarea') : null;
+                    answerSnapshotMap.set(idx, snapTa ? snapTa.value : (questions[idx].answer_markdown || ''));
+                });
             }
 
             appendImportLog(`已开启 AI 自动解析，正在为 ${needAnswersIndices.length} 道题目并发推导解答步骤 (并发上限: 3)...`, 'info');
@@ -8726,6 +10793,7 @@ function saveParsedQuestion(index) {
             // 控制并发池 (Concurrency Limit: 3)
             const MAX_CONCURRENCY = 3;
             let finishedCount = 0;
+            let skippedOverwrite = 0;
             let currentPointer = 0;
 
             async function worker() {
@@ -8762,17 +10830,30 @@ function saveParsedQuestion(index) {
                             const data = await res.json();
                             if (!requestIsCurrent()) return;
                             if (data.status === 'success' && data.solution) {
-                                q.answer_markdown = data.solution;
-                                invalidateParsedDuplicateCheck(taskIdx);
-                                finishedCount++;
-                                appendImportLog(`[解答进度 ${finishedCount}/${needAnswersIndices.length}] 第 ${taskIdx + 1} 题 AI 解析生成完毕。`, 'success');
-                                if (card) {
-                                    const answerTextarea = card.querySelector('.card-answer-textarea');
-                                    if (answerTextarea) answerTextarea.value = data.solution;
-                                    renderParsedCardPreview(card, q.content || '', q.answer_markdown);
-                                    const btn = card.querySelector('.card-solve-btn');
-                                    if (btn) btn.innerHTML = '<i class="fa-solid fa-wand-magic-sparkles text-indigo-500"></i><span>重生成解析</span>';
+                                let skipWrite = false;
+                                if (protectOverwrite) {
+                                    const nowCard = document.getElementById(`parsed-card-${taskIdx}`);
+                                    const nowTa = nowCard ? nowCard.querySelector('.card-answer-textarea') : null;
+                                    const snapshot = answerSnapshotMap.get(taskIdx);
+                                    if (nowTa && nowTa.value !== snapshot) {
+                                        appendImportLog(`[解答跳过] 第 ${taskIdx + 1} 题：生成期间您已手动修改解析，已保留您的修改（未覆盖）。`, 'warning');
+                                        skippedOverwrite++;
+                                        skipWrite = true;
+                                    }
                                 }
+                                if (!skipWrite) {
+                                    q.answer_markdown = data.solution;
+                                    invalidateParsedDuplicateCheck(taskIdx);
+                                    if (card) {
+                                        const answerTextarea = card.querySelector('.card-answer-textarea');
+                                        if (answerTextarea) answerTextarea.value = data.solution;
+                                        renderParsedCardPreview(card, q.content || '', q.answer_markdown);
+                                        const btn = card.querySelector('.card-solve-btn');
+                                        if (btn) btn.innerHTML = '<i class="fa-solid fa-wand-magic-sparkles text-indigo-500"></i><span>重生成解析</span>';
+                                    }
+                                }
+                                finishedCount++;
+                                appendImportLog(`[解答进度 ${finishedCount}/${needAnswersIndices.length}] 第 ${taskIdx + 1} 题 AI 解析${skipWrite ? '已完成，但您手改的内容已保留' : '生成完毕'}。`, 'success');
                             }
                         }
                     } catch (e) {
@@ -8791,7 +10872,11 @@ function saveParsedQuestion(index) {
             }
             await Promise.all(workers);
             if (!requestIsCurrent()) return;
-            appendImportLog(`🎉 试卷所有空缺题目（共 ${needAnswersIndices.length} 题）的 AI 解答推导全部完成！`, 'success');
+            let doneMsg = `🎉 试卷空缺题目（共 ${needAnswersIndices.length} 题）的 AI 解答推导全部完成！`;
+            if (protectOverwrite && skippedOverwrite > 0) {
+                doneMsg += `（其中 ${skippedOverwrite} 题因您生成期间手改解析而未被覆盖）`;
+            }
+            appendImportLog(doneMsg, 'success');
         }
 
         window.generateSingleAnswer = generateSingleAnswer;
@@ -8802,9 +10887,919 @@ function saveParsedQuestion(index) {
         window.replaceParsedQuestions = replaceParsedQuestions;
         window.renderParsedQuestionsList = renderParsedQuestionsList;
         window.processAsyncAnswerGeneration = processAsyncAnswerGeneration;
+
+        // 顶部工具栏「批量生成解析」按钮：只对 answer_markdown 为空的题批量调用 AI 生成，
+        // 并开启防覆盖（生成期间用户手改过的题不会被写回覆盖）。
+        async function batchGenerateAnswers() {
+            const questions = parsedQuestionsData;
+            if (!questions || questions.length === 0) {
+                showToast('当前没有可处理的拆解题目。', 'info');
+                return;
+            }
+            const btn = document.getElementById('batchGenerateAnswersBtn');
+            const btnText = document.getElementById('batchGenerateAnswersBtnText');
+            const prevDisabled = btn ? btn.disabled : false;
+            const prevText = btnText ? btnText.textContent : '';
+            if (btn) btn.disabled = true;
+            if (btnText) btnText.textContent = '生成中...';
+            try {
+                await processAsyncAnswerGeneration(
+                    questions,
+                    parsedQuestionsGeneration,
+                    true,   // onlyEmpty：只生成空答案的题
+                    true    // protectOverwrite：防覆盖
+                );
+            } finally {
+                if (btn) btn.disabled = prevDisabled;
+                if (btnText) btnText.textContent = prevText;
+            }
+        }
+        window.batchGenerateAnswers = batchGenerateAnswers;
+        // 并行会话重构查重弹窗（阶段1：openParsedDuplicateReviewModal → 逐题队列）时，
+        // 单题入口 openParsedDuplicateReview 的定义被删、导出行与卡片 onclick 调用点却留着——
+        // 模块级 ReferenceError 会吞掉其后全部导出（批1 排序面板因此整条死透）。
+        // 按 HEAD 原语义补回定义；卡片徽标 onclick 走 window 查找，行为不变。
+        function openParsedDuplicateReview(index) {
+            const result = parsedDuplicateResults.get(index);
+            if (!result) return;
+            openParsedDuplicateReviewModal(parsedDuplicateReviewEntries([index]), 'inspect');
+        }
         window.openParsedDuplicateReview = openParsedDuplicateReview;
         window.closeParsedDuplicateReviewModal = closeParsedDuplicateReviewModal;
         window.associateRelatedQuestion = associateRelatedQuestion;
         window.clearRelatedQuestion = clearRelatedQuestion;
+        // 排序面板与编辑器路径共用：暴露词库加载/下拉重排入口
+        // （批1 面板 IIFE 之后追加；绝不能放在 openParsedDuplicateReview 导出行之前——
+        //   该定义曾缺失时 ReferenceError 会吞掉其后所有导出，实测踩过。）
+        window.loadSchoolDict = loadSchoolDict;
+        window.fillProvinceSelect = fillProvinceSelect;
+        window.fillCitySelect = fillCitySelect;
+        window.refreshSchoolDatalist = refreshSchoolDatalist;
 
 if (typeof handleTexFileSelect === 'function') { window.handleTexFileSelect = handleTexFileSelect; }
+
+// ===== 省/市/校展示顺序面板（批1改版：置顶 + 引用次数 + 改名，去掉拖动）=====
+// 排序口径 = 置顶（父级内生效，按最近点击时间倒序）→ 引用次数降序 → 字母序。
+// 列表全部 createElement 构建（净化白名单不吃内联交互）。
+// 保存 → POST /api/display-order；改名 → PUT /api/school-short-name。
+(function () {
+    let state = null; // {pinned, dirty, tab, province, city}
+    let saving = false; // save() 防重入标志（不靠禁用按钮）
+    let addSchoolState = null; // {values, submitting}——新增学校弹窗的唯一状态来源
+
+    function tokenHeaders() {
+        return { 'Content-Type': 'application/json', 'X-Local-Token': window.LOCAL_TOKEN || '' };
+    }
+
+    async function fetchDisplayOrder() {
+        try {
+            const resp = await fetch('/api/display-order', { headers: { 'X-Local-Token': window.LOCAL_TOKEN || '' } });
+            if (!resp.ok) return null;
+            const data = await resp.json();
+            // 改版后 provinces 是置顶表 {_: [...]}；旧的裸数组形态在此一次性收敛，
+            // 不得当作「无置顶」——否则用户排好的省会掉回引用次数序。
+            let provPinned = [];
+            if (data && data.provinces && !Array.isArray(data.provinces) && typeof data.provinces === 'object') {
+                provPinned = data.provinces._ || [];
+            } else if (data && Array.isArray(data.provinces)) {
+                provPinned = data.provinces.slice();
+            } else {
+                return null;
+            }
+            const counts = (data.counts && typeof data.counts === 'object') ? data.counts : {};
+            return {
+                provinces: provPinned,
+                // 三层键必须齐备：缺一层就会让 state.pinned.<layer>[key] 抛 TypeError
+                // （校档首开即崩实测踩过）。
+                cities: data.cities || {},
+                schools: data.schools || {},
+                counts: { schools: counts.schools || {}, provinces: counts.provinces || {}, cities: counts.cities || {} },
+            };
+        } catch (e) {
+            return null;
+        }
+    }
+
+    function libraryProvinces() {
+        const set = [];
+        for (const r of (window._regionsTree || [])) {
+            if (r && r.province && set.indexOf(r.province) < 0) set.push(r.province);
+        }
+        return set;
+    }
+
+    /** 置顶在前（按给定顺序）→ 引用次数降序 → 字母序。 */
+    function rank(names, pinned, counts) {
+
+        const rm = {}; (pinned || []).forEach((n, i) => { rm[n] = i; });
+
+        const rankMap = rm;
+        const pool = (names || []).filter(Boolean);
+        const seen = {};
+        const uniq = pool.filter(n => (!seen[n] && (seen[n] = true)));
+        return uniq.slice().sort((a, b) => {
+            const pa = a in rankMap ? rankMap[a] : 1e9;
+            const pb = b in rankMap ? rankMap[b] : 1e9;
+            if (pa !== pb) return pa - pb;
+            const ca = (counts && counts[a]) || 0;
+            const cb = (counts && counts[b]) || 0;
+            if (ca !== cb) return cb - ca;
+            return String(a).localeCompare(String(b));
+        });
+    }
+
+    function schoolKey(province, city) { return (province || '') + '|' + (city || ''); }
+
+    /** 落盘结构是 {省: [...]} / {'省|市': [...]}，所以只有校档桶键含 '|'。
+     *  判据写错会把市档误分进校层、往 undefined 上索引（实测：面板保存整条存不下去）。 */
+    function isSchoolParent(parentKey) { return parentKey.indexOf('|') >= 0; }
+
+    /** 载入时给每个已存桶建一份空会话副本：payload 才能区分「本次没动过（原样回传）」
+     *  与「本次清空了该桶」，否则未触碰的层会从载荷里整个消失并被后端抹掉。 */
+    function seedSessionBuckets() {
+        state.pinned.cities = {};
+        Object.keys(state.order.cities || {}).forEach(k => { state.pinned.cities[k] = []; });
+        state.pinned.schools = {};
+        Object.keys(state.order.schools || {}).forEach(k => { state.pinned.schools[k] = []; });
+    }
+
+    function storedPinned(parentKey) {
+        return getBucket(storedBucket(parentKey), parentKey, false);
+    }
+
+    /** 三层容器统一按「省层扁平数组 / 市校层按父级键分桶」读写，只此一处判形状。 */
+    function storedBucket(parentKey) {
+        if (parentKey === '_prov_') return state.order.provinces;
+        return isSchoolParent(parentKey) ? state.order.schools : state.order.cities;
+    }
+
+    function sessionBucket(parentKey) {
+        if (parentKey === '_prov_') return state.pinned.provinces;
+        return isSchoolParent(parentKey) ? state.pinned.schools : state.pinned.cities;
+    }
+
+    function getBucket(container, parentKey, create) {
+        if (Array.isArray(container)) return container;              // 省层：整层就是一个数组
+        if (!container) return [];
+        let arr = container[parentKey];
+        if (!arr && create) arr = container[parentKey] = [];
+        return arr || [];
+    }
+
+    function setBucket(container, parentKey, list) {
+        if (Array.isArray(container)) { state.pinned.provinces = list; return; }
+        container[parentKey] = list;
+    }
+
+    function sessionPinned(parentKey) {
+        // 一律走 getBucket：直接索引会在「已存表有这个键、会话还没动过」时返回 undefined
+        return getBucket(sessionBucket(parentKey), parentKey, false);
+    }
+
+    function setSessionPinned(parentKey, list) {
+        setBucket(sessionBucket(parentKey), parentKey, list);
+    }
+
+    /** 该父级「本次新置顶 + 已落盘未取消」合并后的置顶集合（读取与保存同一口径）。 */
+    function effectivePinned(parentKey) {
+        const gone = state.removed[parentKey] || [];
+        return (sessionPinned(parentKey) || []).concat(
+            storedPinned(parentKey).filter(p => gone.indexOf(p) < 0));
+    }
+
+    function orderedProvinces() {
+        return rank(libraryProvinces(), effectivePinned('_prov_'), (state.order.counts || {}).provinces);
+    }
+
+    function citiesOf(province) {
+        if (!province) return [];
+        const node = (window._regionsTree || []).find(r => r.province === province);
+        const lib = node ? (node.cities || []).slice() : [];
+        const counts = {};
+        lib.forEach(c => { counts[c] = ((state.order.counts || {}).cities || {})[province + '|' + c] || 0; });
+        return rank(lib, effectivePinned(province), counts);
+    }
+
+    function schoolsOf(province, city) {
+        if (!province) return [];
+        const dict = window._schoolsDict || [];
+        let items = dict.filter(s => s && (s.province || '') === province);
+        if (city) items = items.filter(s => (s.city || '') === city);
+        const names = items.map(s => s.name).filter(Boolean);
+        const ordered = rank(names, effectivePinned(schoolKey(province, city)),
+                             (state.order.counts || {}).schools || {});
+        return ordered.map(name => items.find(s => s.name === name)).filter(Boolean);
+    }
+
+    function currentList() {
+        if (state.tab === 'province') return orderedProvinces();
+        if (!state.province) return [];   // 市/校档必须先有省份上下文，否则串档
+        if (state.tab === 'city') return citiesOf(state.province);
+        return schoolsOf(state.province, state.city);
+    }
+
+    function currentParentKey() {
+        if (state.tab === 'province') return '_prov_';
+        if (state.tab === 'city') return state.province;
+        return schoolKey(state.province, state.city);
+    }
+
+    /** 当前可见列表里属于置顶区的那一段（置顶项恒排在最前，故取前缀即可）。 */
+    function pinnedZone(parentKey) {
+        const shown = currentList().map(x => (x && x.name) ? x.name : x);
+        return effectivePinned(parentKey).filter(n => shown.indexOf(n) >= 0);
+    }
+
+    function isPinned(name) {
+        return pinnedZone(currentParentKey()).indexOf(name) >= 0;
+    }
+
+    function togglePin(name) {
+        const parentKey = currentParentKey();
+        const zone = pinnedZone(parentKey);
+        const at = zone.indexOf(name);
+        const wasPinned = at >= 0;
+        if (wasPinned) zone.splice(at, 1);
+        else zone.unshift(name);           // 最近点击的排最前（置顶按时间倒序）
+        const stored = storedPinned(parentKey);
+        setSessionPinned(parentKey, zone.filter(n => stored.indexOf(n) < 0));
+        state.removed[parentKey] = stored.filter(n => zone.indexOf(n) < 0);
+        state.dirty = true;
+        setStatus(wasPinned ? ('已取消置顶「' + name + '」') : ('已置顶「' + name + '」'));
+        renderAll();   // 必须整组重绘：选择器与省/市/校三档都读同一份置顶表
+    }
+
+    function setStatus(text) {
+        const el = document.getElementById('displayOrderStatus');
+        if (el) el.textContent = text;
+    }
+
+    function buildTabBar() {
+        const bar = document.getElementById('displayOrderTabs');
+        bar.textContent = '';
+        [['province', '省'], ['city', '市'], ['school', '校']].forEach(([id, label]) => {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.setAttribute('role', 'tab');
+            btn.setAttribute('aria-selected', String(state.tab === id));
+            btn.textContent = label;
+            btn.className = 'min-h-[36px] rounded-lg px-3 text-xs font-bold transition-colors ' + (state.tab === id
+                ? 'bg-brand-600 text-white'
+                : 'border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200');
+            btn.addEventListener('click', () => { state.tab = id; renderAll(); });
+            bar.appendChild(btn);
+        });
+        // 「+ 新增学校」只在「校」档出现：省市是词库派生维度，不该手建。
+        const add = document.createElement('button');
+        add.type = 'button';
+        add.id = 'displayOrderAddSchoolBtn';
+        add.textContent = '+ 新增学校';
+        add.className = 'min-h-[36px] rounded-lg border border-dashed px-3 text-xs font-bold transition-colors ' + (
+            state.tab === 'school'
+                ? 'border-brand-400 text-brand-600 hover:bg-brand-50 dark:border-brand-500 dark:text-brand-200 dark:hover:bg-slate-700'
+                : 'border-slate-200 text-slate-300 dark:border-slate-700 dark:text-slate-600');
+        if (state.tab !== 'school') add.setAttribute('aria-disabled', 'true');
+        else add.removeAttribute('aria-disabled');
+        add.addEventListener('click', () => {
+            if (state.tab !== 'school') {
+                setStatus('请先切到「校」再新增学校');
+                return;
+            }
+            openAddSchoolModal();
+        });
+        bar.appendChild(add);
+    }
+
+    function buildSelectors() {
+        const host = document.getElementById('displayOrderSelectors');
+        host.textContent = '';
+        if (state.tab === 'province') return;
+        const mk = (labelText, value, options, onChange) => {
+            const wrap = document.createElement('label');
+            wrap.className = 'flex items-center gap-1 text-[11px] font-bold text-slate-500 dark:text-slate-300';
+            wrap.appendChild(document.createTextNode(labelText));
+            const sel = document.createElement('select');
+            sel.className = 'rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100';
+            for (const opt of options) {
+                const o = document.createElement('option');
+                o.value = opt; o.textContent = opt || '（先选择）';
+                if (!opt) o.disabled = true;
+                sel.appendChild(o);
+            }
+            sel.value = value || '';
+            sel.addEventListener('change', () => onChange(sel.value));
+            wrap.appendChild(sel);
+            host.appendChild(wrap);
+        };
+        mk('省份', state.province, orderedProvinces(), v => { state.province = v; state.city = ''; renderAll(); });
+        if (state.tab === 'school') {
+            mk('城市', state.city, [''].concat(citiesOf(state.province)), v => { state.city = v; renderAll(); });
+        }
+    }
+
+    function makeRow(name, index, listEl) {
+        const row = document.createElement('div');
+        row.className = 'display-order-row flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-2.5 py-2 text-xs font-semibold text-slate-700 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200';
+        row.dataset.name = name;
+        const pinned = isPinned(name);
+        const pin = document.createElement('button');
+        pin.type = 'button';
+        pin.className = 'shrink-0 h-7 w-7 inline-flex items-center justify-center rounded-lg border text-[11px] transition-colors ' + (pinned
+            ? 'border-brand-500 bg-brand-600 text-white'
+            : 'border-slate-200 bg-white text-slate-400 hover:text-brand-600 hover:border-brand-400 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-400');
+        pin.innerHTML = '<i class="fa-solid fa-thumbtack" aria-hidden="true"></i>';
+        pin.title = pinned ? '取消置顶' : '置顶（排在同层最前）';
+        pin.setAttribute('aria-pressed', String(pinned));
+        pin.setAttribute('aria-label', (pinned ? '取消置顶「' : '置顶「') + name + '」');
+        pin.addEventListener('click', (ev) => { ev.stopPropagation(); togglePin(name); });
+        row.appendChild(pin);
+        const label = document.createElement('span');
+        label.className = 'min-w-0 flex-1 truncate';
+        label.textContent = name;
+        row.appendChild(label);
+        const count = currentCount(name);
+        if (count > 0) {
+            const badge = document.createElement('span');
+            badge.className = 'shrink-0 rounded-md bg-slate-100 px-1.5 py-0.5 text-[10px] font-normal text-slate-500 dark:bg-slate-700 dark:text-slate-300';
+            badge.textContent = count + '题';
+            badge.title = '被引用 ' + count + ' 次';
+            row.appendChild(badge);
+        }
+        if (state.tab === 'school') {
+            const school = (window._schoolsDict || []).find(s => s.name === name && (s.province || '') === state.province && (state.city ? (s.city || '') === state.city : true));
+            const full = school && school.full_name ? school.full_name : '';
+            if (full && full !== name) {
+                const tag = document.createElement('span');
+                tag.className = 'shrink-0 max-w-[40%] truncate text-[10px] font-normal text-slate-400';
+                tag.textContent = full;
+                tag.title = '全称：' + full;
+                row.appendChild(tag);
+            }
+            const edit = document.createElement('button');
+            edit.type = 'button';
+            edit.className = 'shrink-0 h-7 w-7 inline-flex items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 hover:text-brand-600 hover:border-brand-400 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300';
+            edit.innerHTML = '<i class="fa-solid fa-pen text-[10px]" aria-hidden="true"></i>';
+            edit.title = '修改简称';
+            edit.setAttribute('aria-label', '修改「' + name + '」的简称');
+            edit.addEventListener('click', (ev) => { ev.stopPropagation(); renameSchool(row, name, edit); });
+            row.appendChild(edit);
+        }
+        return row;
+    }
+
+    function currentCount(name) {
+        const counts = (state && state.order && state.order.counts) || {};
+        if (state.tab === 'province') return (counts.provinces || {})[name] || 0;
+        if (state.tab === 'city') return (counts.cities || {})[state.province + '|' + name] || 0;
+        return (counts.schools || {})[name] || 0;
+    }
+
+    function renameSchool(row, oldName, buttonEl) {
+        const label = row.querySelector('span.min-w-0');
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.value = oldName;
+        input.maxLength = 64;
+        input.className = 'min-w-0 flex-1 rounded-lg border border-brand-400 bg-white px-2 py-1 text-xs outline-none dark:bg-slate-900 dark:text-slate-100';
+        input.setAttribute('aria-label', '新简称');
+        label.replaceWith(input);
+        buttonEl.disabled = true;
+        input.focus();
+        input.select();
+        const restore = () => {
+            const span = document.createElement('span');
+            span.className = 'min-w-0 flex-1 truncate';
+            span.textContent = row.dataset.name;
+            input.replaceWith(span);
+            buttonEl.disabled = false;
+        };
+        const submit = async () => {
+            const next = input.value.trim();
+            if (!next || next === row.dataset.name) { restore(); return; }
+            const school = (window._schoolsDict || []).find(s => s.name === row.dataset.name && (s.province || '') === state.province);
+            if (!school || !school.id) {
+                setStatus('改简称失败：该行不在词库（无稳定 id），不得盲改');
+                restore();
+                return;
+            }
+            setStatus('保存中…');
+            try {
+                const resp = await fetch('/api/school-short-name', {
+                    method: 'PUT', headers: tokenHeaders(),
+                    body: JSON.stringify({
+                        id: school.id, short_name: next,
+                    }),
+                });
+                const data = await resp.json().catch(() => ({}));
+                if (!resp.ok || !data || data.status !== 'success') {
+                    throw new Error((data && data.message) || ('HTTP ' + resp.status));
+                }
+                // 本地词库同步，下拉与面板立即反映新简称
+                if (school) { school.name = next; school.short_name = next; }
+                row.dataset.name = next;
+                setStatus('已更新简称（即时生效）');
+                renderList();
+                if (typeof window.refreshSchoolDatalist === 'function') window.refreshSchoolDatalist();
+                const regionEl = document.getElementById('importSrcRegion');
+                if (regionEl && regionEl.value.trim() === oldName) {
+                    regionEl.value = next;
+                    regionEl.dispatchEvent(new Event('change', { bubbles: true }));
+                }
+            } catch (err) {
+                setStatus('改简称失败：' + err.message);
+                restore();
+            } finally {
+                buttonEl.disabled = false;
+            }
+        };
+        input.addEventListener('keydown', (ev) => {
+            if (ev.key === 'Enter') { ev.preventDefault(); submit(); }
+            else if (ev.key === 'Escape') { ev.preventDefault(); restore(); }
+        });
+        input.addEventListener('blur', () => submit());
+    }
+
+    function renderList() {
+        const listEl = document.getElementById('displayOrderList');
+        // 置空 children（innerHTML='' 在桩与真实 DOM 语义一致），textContent 不删子节点
+        listEl.innerHTML = '';
+        listEl.textContent = '';
+        const items = currentList();
+        if (!items.length) {
+            const empty = document.createElement('p');
+            empty.className = 'py-8 text-center text-xs text-slate-400';
+            empty.textContent = state.tab === 'province' ? '词库还没有省份数据' : '请先选择省份';
+            listEl.appendChild(empty);
+            return;
+        }
+        items.forEach((item, i) => {
+            const name = state.tab === 'school' ? (item && item.name) : item;
+            if (!name) return;
+            listEl.appendChild(makeRow(name, i, listEl));
+        });
+    }
+
+    function renderAll() {
+        buildTabBar();
+        buildSelectors();
+        renderList();
+    }
+
+    // -----------------------------------------------------------------------
+    // 「+ 新增学校」：POST /api/schools。表单全部 createElement + addEventListener，
+    // 不拼 innerHTML（净化白名单不吃 <button>/内联 onclick，拼串会得到一个点不动的壳）。
+    // -----------------------------------------------------------------------
+
+    const ADD_SCHOOL_TIERS = [
+        { value: '', label: '留空（判断不了就空着）' },
+        { value: '国重', label: '国重' },
+        { value: '省重', label: '省重' },
+        { value: '市重', label: '市重' },
+        { value: '普高', label: '普高' },
+    ];
+    const ADD_SCHOOL_NATURES = [
+        { value: '', label: '留空' },
+        { value: '公办', label: '公办' },
+        { value: '民办', label: '民办' },
+    ];
+
+    function addSchoolModal() {
+        let modal = document.getElementById('addSchoolModal');
+        if (modal) return modal;
+        modal = document.createElement('div');
+        modal.id = 'addSchoolModal';
+        modal.setAttribute('role', 'dialog');
+        modal.setAttribute('aria-modal', 'true');
+        modal.setAttribute('aria-hidden', 'true');
+        modal.setAttribute('aria-labelledby', 'addSchoolTitle');
+        modal.className = 'fixed inset-0 z-[97] hidden items-center justify-center bg-slate-950/55 p-4 opacity-0 backdrop-blur-sm transition-opacity duration-200';
+        const surface = document.createElement('div');
+        surface.setAttribute('data-modal-surface', '');
+        surface.className = 'w-full max-w-lg scale-95 rounded-2xl border border-slate-200 bg-white shadow-2xl transition-transform duration-200 dark:border-slate-600 dark:bg-slate-800';
+        modal.appendChild(surface);
+        document.body.appendChild(modal);
+        return modal;
+    }
+
+    /** 只降级、不丢内容：整棵表单每次重建，值从 state 回填，失败时用户输入原样还在。 */
+    function renderAddSchoolForm(values, errorText) {
+        const modal = addSchoolModal();
+        const surface = modal.querySelector('[data-modal-surface]');
+        surface.textContent = '';
+
+        const head = document.createElement('div');
+        head.className = 'flex items-center justify-between border-b border-slate-100 px-4 py-3 dark:border-slate-700';
+        const title = document.createElement('h3');
+        title.id = 'addSchoolTitle';
+        title.tabIndex = -1;
+        title.textContent = '新增学校';
+        title.className = 'text-base font-bold text-slate-800 dark:text-slate-100';
+        head.appendChild(title);
+        const closeBtn = document.createElement('button');
+        closeBtn.type = 'button';
+        closeBtn.setAttribute('data-modal-close', '');
+        closeBtn.setAttribute('aria-label', '关闭');
+        closeBtn.className = 'min-h-11 w-11 rounded-xl text-slate-400 transition-colors hover:bg-slate-100 dark:hover:bg-slate-700';
+        closeBtn.innerHTML = '<i class="fa-solid fa-xmark" aria-hidden="true"></i>';
+        closeBtn.addEventListener('click', () => closeAddSchoolModal());
+        head.appendChild(closeBtn);
+        surface.appendChild(head);
+
+        const body = document.createElement('div');
+        body.className = 'space-y-3 px-4 py-3';
+
+        const field = (labelText, control, required) => {
+            const wrap = document.createElement('label');
+            wrap.className = 'block';
+            const lab = document.createElement('span');
+            lab.className = 'mb-1 block text-xs font-bold text-slate-600 dark:text-slate-300';
+            lab.textContent = labelText + (required ? ' *' : '');
+            wrap.appendChild(lab);
+            wrap.appendChild(control);
+            return wrap;
+        };
+        const inputCls = 'w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-brand-500 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100';
+        const mkInput = (id, placeholder) => {
+            const el = document.createElement('input');
+            el.type = 'text';
+            el.id = id;
+            el.value = values[id] || '';
+            el.placeholder = placeholder;
+            el.className = inputCls;
+            el.addEventListener('input', () => { values[id] = el.value; });
+            return el;
+        };
+        const mkSelect = (id, options) => {
+            const el = document.createElement('select');
+            el.id = id;
+            el.className = inputCls;
+            options.forEach(o => {
+                const opt = document.createElement('option');
+                opt.value = o.value;
+                opt.textContent = o.label;
+                el.appendChild(opt);
+            });
+            // 存量值不在选项里时补一项，否则 select.value 回落成空、下一次改动就把该键覆写掉
+            const wanted = values[id] || '';
+            if (wanted && !options.some(o => o.value === wanted)) {
+                const opt = document.createElement('option');
+                opt.value = wanted;
+                opt.textContent = wanted;
+                el.insertBefore(opt, el.firstChild);
+            }
+            el.value = wanted;
+            el.addEventListener('change', () => { values[id] = el.value; });
+            return el;
+        };
+
+        const provinces = orderedProvinces();
+        const cities = [''].concat(state.province ? citiesOf(state.province) : []);
+        body.appendChild(field('省份', mkSelect('addSchoolProvince',
+            [{ value: '', label: '（选择省份）' }].concat(provinces.map(p => ({ value: p, label: p })))), true));
+        body.appendChild(field('城市', mkSelect('addSchoolCity',
+            [{ value: '', label: '（选择城市）' }].concat(cities.filter(Boolean).map(c => ({ value: c, label: c })))), true));
+        body.appendChild(field('全称', mkInput('addSchoolFullName', '如 呼和浩特市第一中学'), true));
+        body.appendChild(field('简称', mkInput('addSchoolShortName', '如 呼和浩特市第一中学'), true));
+        body.appendChild(field('档次', mkSelect('addSchoolTier', ADD_SCHOOL_TIERS), false));
+        body.appendChild(field('性质', mkSelect('addSchoolNature', ADD_SCHOOL_NATURES), false));
+
+        const err = document.createElement('p');
+        err.id = 'addSchoolError';
+        err.setAttribute('role', 'alert');
+        err.className = 'text-xs font-bold text-red-500' + (errorText ? '' : ' hidden');
+        err.textContent = errorText || '';
+        body.appendChild(err);
+        surface.appendChild(body);
+
+        const foot = document.createElement('div');
+        foot.className = 'flex items-center gap-2 border-t border-slate-100 px-4 py-3 dark:border-slate-700';
+        const statusEl = document.createElement('span');
+        statusEl.className = 'mr-auto text-[11px] text-slate-500 dark:text-slate-300';
+        statusEl.textContent = '简称在同省内必须唯一；档次/性质不确定就留空。';
+        foot.appendChild(statusEl);
+        const cancel = document.createElement('button');
+        cancel.type = 'button';
+        cancel.textContent = '取消';
+        cancel.className = 'min-h-11 rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700';
+        cancel.addEventListener('click', () => closeAddSchoolModal());
+        foot.appendChild(cancel);
+        const submit = document.createElement('button');
+        submit.type = 'button';
+        submit.id = 'addSchoolSubmitBtn';
+        submit.textContent = '保存';
+        submit.className = 'min-h-11 rounded-xl bg-brand-600 px-4 py-2 text-xs font-bold text-white hover:bg-brand-700 disabled:opacity-50';
+        submit.addEventListener('click', () => submitAddSchool(values));
+        foot.appendChild(submit);
+        surface.appendChild(foot);
+    }
+
+    function showAddSchoolModal() {
+        const modal = addSchoolModal();
+        modal.classList.remove('hidden');
+        modal.classList.add('flex');
+        window.revealModalWithTransition(modal);
+    }
+
+    function hideAddSchoolModal() {
+        const modal = document.getElementById('addSchoolModal');
+        if (!modal) return;
+        window.closeModalWithTransition(modal);
+    }
+
+    function closeAddSchoolModal() {
+        const modal = document.getElementById('addSchoolModal');
+        if (modal) window.MathBankModal.close(modal);
+        hideAddSchoolModal();
+    }
+
+    function openAddSchoolModal() {
+        const modal = addSchoolModal();
+        const values = {
+            addSchoolProvince: state.province || '',
+            addSchoolCity: state.city || '',
+            addSchoolFullName: '',
+            addSchoolShortName: '',
+            addSchoolTier: '',
+            addSchoolNature: '公办',
+        };
+        addSchoolState = { values, submitting: false };
+        showAddSchoolModal();
+        // 必须先上树（hidden→flex）再绘制：外壳还 hidden 时，真实浏览器里对游离/隐藏
+        // 节点的 getElementById 与焦点转移都不可靠——桩更宽容，宽容不是正确。
+        renderAddSchoolForm(values, '');
+        // 重绘会换掉标题节点，且弹窗是运行时挂进 body 的：必须从 modal 作用域现查，
+        // 不能拿 getElementById 的旧引用（那是上一棵废树）。
+        window.MathBankModal.open(modal, {
+            initialFocus: modal.querySelector('#addSchoolTitle') || null,
+            onEscape: () => closeAddSchoolModal(),
+        });
+    }
+
+    async function submitAddSchool(values) {
+        if (!addSchoolState || addSchoolState.submitting) return;
+        const province = (values.addSchoolProvince || '').trim();
+        const city = (values.addSchoolCity || '').trim();
+        const fullName = (values.addSchoolFullName || '').trim();
+        const shortName = (values.addSchoolShortName || '').trim();
+        const missing = [['省份', province], ['城市', city], ['全称', fullName], ['简称', shortName]]
+            .filter(([, v]) => !v).map(([l]) => l);
+        if (missing.length) {
+            // 必须在发请求前就返回，且**不能**先清空错误位：先清后写会把刚给出的必填提示抹掉。
+            setAddSchoolError('请填写' + missing.join('、'));
+            return;
+        }
+        addSchoolState.submitting = true;
+        const btn = document.getElementById('addSchoolSubmitBtn');
+        if (btn) { btn.disabled = true; btn.setAttribute('aria-busy', 'true'); }
+        setAddSchoolError('');
+        try {
+            const resp = await fetch('/api/schools', {
+                method: 'POST',
+                headers: tokenHeaders(),
+                body: JSON.stringify({
+                    full_name: fullName, short_name: shortName,
+                    province: province, city: city,
+                    tier: (values.addSchoolTier || '').trim(),
+                    nature: (values.addSchoolNature || '').trim(),
+                }),
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok || !data || data.ok !== true) {
+                throw new Error((data && data.error) || ('HTTP ' + resp.status));
+            }
+            closeAddSchoolModal();
+            await reloadLibraryAfterAdd(data.school);
+        } catch (err) {
+            // 失败保持弹窗打开、输入原样留着，用户改一个字就能重试
+            setAddSchoolError('新增失败：' + err.message);
+        } finally {
+            if (addSchoolState) addSchoolState.submitting = false;
+            const b = document.getElementById('addSchoolSubmitBtn');
+            if (b) { b.disabled = false; b.removeAttribute('aria-busy'); }
+        }
+    }
+
+    function setAddSchoolError(text) {
+        const modal = document.getElementById('addSchoolModal');
+        // 必须现查：错误节点会随表单重绘而更换，缓存下来的旧引用只改到一棵废树上
+        // （实测：文案写进了游离节点，界面上永远看不到错误）。
+        const el = modal ? modal.querySelector('#addSchoolError') : null;
+        if (!el) return;
+        el.textContent = text || '';
+        el.classList.toggle('hidden', !text);
+    }
+
+    /** 入库成功后：词库/区划下拉重新拉取，面板停在能看到新校的那一档。 */
+    async function reloadLibraryAfterAdd(school) {
+        window._schoolsDict = null;
+        window._regionsTree = null;
+        window._displayConfig = null;
+        setStatus('已新增「' + (school && school.short_name ? school.short_name : '学校') + '」，刷新列表…');
+        await new Promise(resolve => { loadSchoolDictThen(resolve); });
+        // 宿主 loadSchoolDict 若已在页面加载时把词库填好，这里就不会再发请求；
+        // 新学校必须进得了下拉，所以下面两个缓存为空时自己补一次原始请求，
+        // 不得把「没刷新」当成成功静默放过。
+        if (!window._schoolsDict || !window._schoolsDict.length) await refetchSchoolsDict();
+        if (!window._regionsTree || !window._regionsTree.length) await refetchRegionsTree();
+        if (school && school.province) state.province = school.province;
+        if (school && school.city) state.city = school.city;
+        state.tab = 'school';
+        await loadDisplayConfigThen();
+        if (typeof window.fillProvinceSelect === 'function') window.fillProvinceSelect();
+        renderAll();
+        setStatus('已新增「' + (school && school.short_name ? school.short_name : '学校') + '」');
+        if (typeof window.showToast === 'function') {
+            window.showToast('已新增学校：' + (school && school.short_name ? school.short_name : ''), 'success');
+        }
+    }
+
+    async function refetchSchoolsDict() {
+        try {
+            const resp = await fetch('/api/school-suggestions?limit=500',
+                { headers: { 'X-Local-Token': window.LOCAL_TOKEN || '' } });
+            if (!resp.ok) return;
+            const data = await resp.json();
+            window._schoolsDict = (data && data.suggestions) || [];
+        } catch (e) { /* 保持空词库，联想降级为手输 */ }
+    }
+
+    async function refetchRegionsTree() {
+        try {
+            const resp = await fetch('/api/school-regions',
+                { headers: { 'X-Local-Token': window.LOCAL_TOKEN || '' } });
+            if (!resp.ok) return;
+            const data = await resp.json();
+            window._regionsTree = (data && data.regions) || [];
+        } catch (e) { /* 同上 */ }
+    }
+
+    function buildPayload() {
+        // 载荷必须覆盖**全部三层**：后端 POST 是整文件替换，漏一层等于把用户那一层的
+        // 置顶全清掉（实测：只发省层就把市/校两层抹平）。未动过的层原样回传。
+        const finalFor = (parentKey) => {
+            const session = sessionPinned(parentKey) || [];
+            const gone = state.removed[parentKey] || [];
+            return session.concat(storedPinned(parentKey).filter(n => gone.indexOf(n) < 0));
+        };
+        const layerOf = (orderMap, sessionMap) => {
+            const result = {};
+            const keys = [];
+            Object.keys(orderMap || {}).concat(Object.keys(sessionMap || {})).forEach(k => {
+                if (keys.indexOf(k) < 0) keys.push(k);
+            });
+            keys.forEach(k => {
+                // 该父级本次没动过 → 原样回传，不得让别的桶的改动牵连它
+                const final = (sessionMap[k] || state.removed[k]) ? finalFor(k) : (orderMap[k] || []);
+                if (final.length) result[k] = final;
+            });
+            return result;
+        };
+        return {
+            provinces: { _: finalFor('_prov_') },
+            cities: layerOf(state.order.cities, state.pinned.cities),
+            schools: layerOf(state.order.schools, state.pinned.schools),
+        };
+    }
+
+    async function save() {
+        const btn = document.getElementById('displayOrderSaveBtn');
+        // 防重入一律用局部标志：禁用按钮会把「保存失败→重试」一起禁死（实测踩过——
+        // 一次异常抛出后按钮永久 disabled，面板再也存不了）。
+        if (saving) return;
+        saving = true;
+        btn.setAttribute('aria-busy', 'true');
+        btn.disabled = true; // 视觉反馈：保存中不可再点（成功路径随即关面板）
+        setStatus('保存中…');
+        let payload;
+        try {
+            payload = buildPayload();
+        } catch (e) {
+            setStatus('构造载荷失败：' + (e.stack || e.message));
+            saving = false; btn.disabled = false; btn.removeAttribute('aria-busy');
+            return;
+        }
+        try {
+            const resp = await fetch('/api/display-order', {
+                method: 'POST', headers: tokenHeaders(), body: JSON.stringify(payload),
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok || !data || data.status !== 'success') {
+                throw new Error((data && data.message) || ('HTTP ' + resp.status));
+            }
+            state.dirty = false;
+            setStatus('已保存');
+            saving = false;
+            window._displayConfig = null;   // 下拉排序变了，下次填充前重新拉取
+            await loadDisplayConfigThen();
+            // 表单三个下拉立刻按新序重排
+            if (typeof window.fillProvinceSelect === 'function') window.fillProvinceSelect();
+            closePanel();
+        } catch (err) {
+            setStatus('保存失败：' + err.message);
+            saving = false;
+            btn.disabled = false; // 失败必须可重试（实测曾永久禁用导致面板存不了）
+            btn.removeAttribute('aria-busy');
+        }
+    }
+
+    function showPanel() {
+        // MathBankModal 只负责焦点/Escape/背景隔离，hidden→flex 的可见切换归各弹窗自己，
+        // 但 opacity/scale 的揭示一律走公共助手（下一帧 + setTimeout 兜底，杜绝隐形吞点击层）。
+        const modal = document.getElementById('displayOrderModal');
+        if (!modal) return;
+        modal.classList.remove('hidden');
+        modal.classList.add('flex');
+        window.revealModalWithTransition(modal);
+    }
+
+    function hidePanel() {
+        // hidden 立刻归位，不留"看不见但吞点击"的淡出窗口期
+        window.closeModalWithTransition('displayOrderModal');
+    }
+
+    function closePanel() {
+        const modal = document.getElementById('displayOrderModal');
+        if (!modal) return;
+        window.closeModalWithTransition(modal);   // 助手内含 MathBankModal.close，不再二次关栈
+    }
+
+    async function openDisplayOrderPanel() {
+        const modal = document.getElementById('displayOrderModal');
+        if (!modal || modal.__opening) return;
+        modal.__opening = true;
+        try {
+            if (!window._schoolsDict || !window._schoolsDict.length) {
+                setStatus('加载词库…');
+                await new Promise(resolve => {
+                    loadSchoolDictThen(resolve);
+                });
+            }
+            const order = (await fetchDisplayOrder()) || {
+                provinces: [], cities: {}, schools: {},
+                counts: { schools: {}, provinces: {}, cities: {} },
+            };
+            // 先占位再算默认省：orderedProvinces/citiesOf/schoolsOf 都读 state.order，
+            // state 未初始化时直接调用会 TypeError（实测首开即崩、弹窗永远不出）。
+            state = {
+                // 三层键必须齐备：市/校层是分桶对象，缺一层就会在写入时炸
+                // （Cannot set properties of undefined），面板整条存不下去。
+                order: order,
+                pinned: { provinces: [], cities: {}, schools: {} },
+                removed: {}, dirty: false,
+                tab: 'province', province: '', city: '',
+            };
+            seedSessionBuckets();
+            state.province = (document.getElementById('importSrcProvince') || {}).value || orderedProvinces()[0] || '';
+            state.city = (document.getElementById('importSrcCity') || {}).value || '';
+            setStatus('');
+            showPanel();
+            renderAll();
+            window.MathBankModal.open(modal, {
+                // 焦点必须进弹窗：open() 会把 <main> 设成 aria-hidden，若焦点仍留在背景里
+                // 刚按下的 [⚙] 按钮上，Chrome 会对 aria-hidden 子树节流输入事件（实测表现为
+                // 「点按钮后界面卡死」+ 控制台 Blocked aria-hidden 警告）。
+                // data-modal-initial-focus 是 open 内部消费的一次性标记，静态写在 HTML 会被
+                // 首次打开就抹掉，所以这里显式传 initialFocus。
+                initialFocus: document.getElementById('displayOrderTitle'),
+                onEscape: () => { if (!state || !state.dirty || window.confirm('有未保存的顺序调整，确定关闭？')) closePanel(); },
+            });
+        } finally {
+            modal.__opening = false;
+        }
+    }
+
+    async function loadDisplayConfigThen() {
+        try {
+            const resp = await fetch('/api/display-config', { headers: { 'X-Local-Token': window.LOCAL_TOKEN || '' } });
+            if (!resp.ok) return;
+            const data = await resp.json();
+            if (data && Array.isArray(data.provinces)) window._displayConfig = data;
+        } catch (e) { /* 静默 */ }
+    }
+
+    function loadSchoolDictThen(resolve) {
+        Promise.resolve(typeof window.loadSchoolDict === 'function' ? window.loadSchoolDict() : null)
+            .catch(() => null)
+            .then(() => resolve());
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+        const trigger = document.getElementById('importSortOrderBtn');
+        const saveBtn = document.getElementById('displayOrderSaveBtn');
+        const cancelBtn = document.getElementById('displayOrderCancelBtn');
+        const modal = document.getElementById('displayOrderModal');
+        if (trigger) trigger.addEventListener('click', () => openDisplayOrderPanel());
+        const closeBtn = modal ? modal.querySelector('[data-modal-close]') : null;
+        // 该属性不是全局处理器：api.js 只在 Escape 兜底时查它，不绑 click。
+        // 不显式接线的话 ✕ 按钮点了毫无反应（closePanel 内部自带未开保护，可重复调）。
+        if (closeBtn) closeBtn.addEventListener('click', () => {
+            if (!state || !state.dirty || window.confirm('有未保存的顺序调整，确定关闭？')) closePanel();
+        });
+        if (saveBtn) saveBtn.addEventListener('click', save);
+        if (cancelBtn) cancelBtn.addEventListener('click', () => {
+            if (!state || !state.dirty || window.confirm('有未保存的顺序调整，确定放弃？')) closePanel();
+        });
+    });
+
+    window.openDisplayOrderPanel = openDisplayOrderPanel;
+})();

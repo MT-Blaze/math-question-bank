@@ -978,6 +978,15 @@
         container.innerHTML = html;
 
         // Render math formulas for Part 3 question cards
+        //
+        // 这里的两种渲染必须拆开走（2026-09-25 性能修复，方案 2）：
+        //   · KaTeX 只能**逐卡**调 —— renderMathInElement 只处理传入子树，无法
+        //     一次覆盖 349 个彼此独立的容器。
+        //   · 选项列数自适应恰恰相反 —— adaptChoicesGridLayout(root) 本就支持传
+        //     任意 root，内部自己做 querySelectorAll('.choices-grid') 收全部。
+        //     原先放在循环里逐卡调用，等于把同一份查询重复 349 遍：在这个 10.8
+        //     万节点的文档上，实测 350 次 querySelectorAll 纯属浪费。故统一挪到
+        //     循环外，对整个 container 只算一次（见本段结尾）。
         displayList.forEach(q => {
             const el = document.getElementById(`paper-q-render-${q.id}`);
             if (el && typeof renderMathInElement === 'function') {
@@ -991,9 +1000,6 @@
                         ],
                         throwOnError: false
                     });
-                    if (typeof window.adaptChoicesGridLayout === 'function') {
-                        window.adaptChoicesGridLayout(el);
-                    }
                 } catch (e) { }
             }
 
@@ -1012,6 +1018,14 @@
                 } catch (e) { }
             }
         });
+
+        // Part 3 选项列数自适应：整个题目流一次算完（理由见本段开头注释）。
+        // 放在全部 KaTeX 渲染之后，保证自适应读到的是最终布局。
+        if (typeof window.adaptChoicesGridLayout === 'function') {
+            try {
+                window.adaptChoicesGridLayout(container);
+            } catch (e) { }
+        }
     }
 
     // Render Part 4: Right A4 Canvas & Action Bar
@@ -1422,16 +1436,10 @@
                             choicesGrid = match[2];
                         }
                     }
-                    if (typeof window.cleanChoiceStemParentheses === 'function') {
-                        stemContent = window.cleanChoiceStemParentheses(stemContent);
-                    } else {
-                        stemContent = stemContent.replace(/(?:[\s\xa0\u3000]*[\(（]\s*\$?\s*(?:\\quad|\\qquad|\\hspace\{.*?\}|[\s\xa0\u3000_])*?\s*\$?\s*[\)）]\s*)+$/, '').replace(/\\paren\b/g, '').trim();
-                    }
 
                     stemLine = `
                         <div class="paper-choice-stem-row flex justify-between items-baseline mb-1">
                             <div class="flex-1">${stemContent}</div>
-                            <div class="shrink-0 ml-4 font-serif text-slate-900 font-normal select-none">（ &nbsp; ）</div>
                         </div>
                         <div class="paper-choice-options-row">${choicesGrid}</div>
                     `;
@@ -2070,23 +2078,16 @@
     function setPandocModalVisible(visible) {
         const modal = document.getElementById('pandocInstallModal');
         if (!modal) return;
-        const surface = modal.querySelector('[data-modal-surface]');
         if (visible) {
             modal.classList.remove('hidden');
             modal.classList.add('flex');
-            requestAnimationFrame(() => {
-                modal.classList.remove('opacity-0');
-                if (surface) surface.classList.remove('scale-95');
-            });
             modal.setAttribute('aria-hidden', 'false');
+            // 旧实现只挂 rAF：后台标签页里 rAF 被冻结，弹窗会永远停在 opacity:0 吞点击。
+            // 公共助手自带 setTimeout 兜底，两种环境都能揭示。
+            window.revealModalWithTransition(modal);
         } else {
-            modal.classList.add('opacity-0');
-            if (surface) surface.classList.add('scale-95');
             modal.setAttribute('aria-hidden', 'true');
-            setTimeout(() => {
-                modal.classList.add('hidden');
-                modal.classList.remove('flex');
-            }, 200);
+            window.closeModalWithTransition(modal);
         }
     }
 
@@ -2621,23 +2622,139 @@
         }
     };
 
-    window.deleteSavedPaper = async function (paperId) {
-        if (!confirm('确定要删除这份历史试卷记录吗？（不会影响题库中的题目数据）')) return;
+    window.deleteSavedPaper = function (paperId) {
+        return window.openDeletePaperConfirm(paperId);
+    };
 
+    // 删卷确认弹窗：统一走 MathBankModal（焦点陷阱/Esc/背景隔离/焦点恢复），
+    // 裸 confirm 既给不出「含 N 题、题目保留」的实数据，也不符合项目弹窗规范。
+    // 文案与按钮一律 createElement + textContent 构建，不拼 innerHTML 交互。
+    let deleteConfirmState = null;
+
+    function closeDeletePaperConfirm() {
+        const modal = document.getElementById('deletePaperConfirmModal');
+        if (!modal) return;
+        window.MathBankModal.close(modal);
+        modal.remove();
+        deleteConfirmState = null;
+    }
+
+    window.openDeletePaperConfirm = async function (paperId) {
+        if (deleteConfirmState && deleteConfirmState.id === paperId) return;
+        let preview = null;
+        try {
+            const res = await fetch(`/api/papers/${paperId}/delete-preview`);
+            const data = await res.json();
+            if (data && data.status === 'success') preview = data.data;
+        } catch (e) { /* 预检失败也要能删，退化成通用文案 */ }
+
+        const modal = document.createElement('div');
+        modal.id = 'deletePaperConfirmModal';
+        modal.className = 'fixed inset-0 z-[97] flex items-center justify-center bg-slate-950/55 p-4 backdrop-blur-sm';
+        modal.setAttribute('role', 'dialog');
+        modal.setAttribute('aria-modal', 'true');
+        modal.setAttribute('aria-hidden', 'false');
+        modal.setAttribute('aria-labelledby', 'deletePaperConfirmTitle');
+
+        const surface = document.createElement('div');
+        surface.className = 'w-full max-w-md rounded-2xl border border-slate-200 bg-white p-5 shadow-2xl dark:border-slate-600 dark:bg-slate-800';
+        modal.appendChild(surface);
+
+        const title = document.createElement('h3');
+        title.id = 'deletePaperConfirmTitle';
+        title.tabIndex = -1;
+        title.textContent = '删除这份试卷？';
+        title.className = 'text-base font-bold text-slate-800 dark:text-slate-100';
+        surface.appendChild(title);
+
+        const body = document.createElement('div');
+        body.className = 'mt-3 space-y-2 text-xs leading-relaxed text-slate-600 dark:text-slate-300';
+        const nameLine = document.createElement('p');
+        nameLine.textContent = preview ? `《${preview.paper_name}》` : '该历史试卷记录';
+        nameLine.className = 'font-bold text-slate-800 dark:text-slate-100';
+        body.appendChild(nameLine);
+        const countLine = document.createElement('p');
+        // 这条文案是「题目不会被级联删」的唯一口头承诺，必须真的加粗：本弹窗全程用
+        // createElement + textContent 构建（见第 6 节净化白名单规则），而 Markdown 的
+        // 星号强调在 textContent 上不会生效——实测弹窗里会直接印出一对字面星号。
+        // 强调一律用 <strong> 元素。
+        if (preview) {
+            countLine.appendChild(document.createTextNode(
+                `该试卷包含 ${preview.question_count} 道题。删除试卷`));
+            const emphasis = document.createElement('strong');
+            emphasis.className = 'font-bold text-slate-800 dark:text-slate-100';
+            emphasis.textContent = '不会影响题库中的题目';
+            countLine.appendChild(emphasis);
+            countLine.appendChild(document.createTextNode('——题目全部保留，只是不再属于这份卷。'));
+        } else {
+            countLine.textContent = '删除试卷不会影响题库中的题目——题目全部保留，只是不再属于这份卷。';
+        }
+        body.appendChild(countLine);
+        const warnLine = document.createElement('p');
+        warnLine.textContent = '试卷记录本身删除后不可撤销（系统会先自动落一份完整备份 ZIP，可用它恢复）。';
+        warnLine.className = 'text-slate-400 dark:text-slate-400';
+        body.appendChild(warnLine);
+        surface.appendChild(body);
+
+        const errLine = document.createElement('p');
+        errLine.id = 'deletePaperConfirmError';
+        errLine.setAttribute('role', 'alert');
+        errLine.className = 'mt-2 hidden text-xs font-bold text-red-500';
+        surface.appendChild(errLine);
+
+        const foot = document.createElement('div');
+        foot.className = 'mt-4 flex items-center justify-end gap-2';
+        const cancelBtn = document.createElement('button');
+        cancelBtn.type = 'button';
+        cancelBtn.textContent = '取消';
+        cancelBtn.className = 'min-h-11 rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700';
+        cancelBtn.addEventListener('click', () => closeDeletePaperConfirm());
+        foot.appendChild(cancelBtn);
+        const okBtn = document.createElement('button');
+        okBtn.type = 'button';
+        okBtn.id = 'deletePaperConfirmOk';
+        okBtn.textContent = '确认删除试卷';
+        okBtn.className = 'min-h-11 rounded-xl bg-rose-600 px-4 py-2 text-xs font-bold text-white hover:bg-rose-700 disabled:opacity-50';
+        okBtn.addEventListener('click', () => runDeletePaper(paperId));
+        foot.appendChild(okBtn);
+        surface.appendChild(foot);
+
+        document.body.appendChild(modal);
+        deleteConfirmState = { id: paperId };
+        window.MathBankModal.open(modal, {
+            initialFocus: title,
+            onEscape: () => closeDeletePaperConfirm(),
+        });
+    };
+
+    async function runDeletePaper(paperId) {
+        const btn = document.getElementById('deletePaperConfirmOk');
+        const errEl = document.getElementById('deletePaperConfirmError');
+        if (btn) { btn.disabled = true; btn.setAttribute('aria-busy', 'true'); }
+        if (errEl) { errEl.textContent = ''; errEl.classList.add('hidden'); }
         try {
             const res = await fetch(`/api/papers/${paperId}`, { method: 'DELETE' });
             const data = await res.json();
             if (data.status === 'success') {
-                if (window.showToast) window.showToast('历史试卷已删除', 'success');
+                closeDeletePaperConfirm();
+                if (window.showToast) window.showToast('历史试卷已删除（题目保留在题库）', 'success');
                 window.openSavedPapersModal();
             } else {
-                if (window.showToast) window.showToast(data.message || '删除失败', 'error');
+                // 失败保持弹窗打开，用户能看到原因并决定重试或放弃
+                if (errEl) {
+                    errEl.textContent = '删除失败：' + (data.message || ('HTTP ' + res.status));
+                    errEl.classList.remove('hidden');
+                }
+                if (btn) { btn.disabled = false; btn.removeAttribute('aria-busy'); }
             }
         } catch (e) {
-            console.error('Delete paper failed:', e);
-            if (window.showToast) window.showToast('删除试卷请求失败', 'error');
+            if (errEl) {
+                errEl.textContent = '删除请求失败：' + e.message;
+                errEl.classList.remove('hidden');
+            }
+            if (btn) { btn.disabled = false; btn.removeAttribute('aria-busy'); }
         }
-    };
+    }
 
     window.quickExportPaperPdf = async function (paperId) {
         try {
@@ -2866,15 +2983,10 @@
         let html = String(raw).trim();
         figAlign = figAlign || 'right';
 
-        if (typeof window.cleanChoiceStemParentheses === 'function' && (html.includes('choices') || html.match(/^\s*[-*]?\s*[A-D][\.、\s]/m))) {
-            if (html.includes('\\begin{choices}')) {
-                const parts = html.split('\\begin{choices}');
-                parts[0] = window.cleanChoiceStemParentheses(parts[0]);
-                html = parts[0] + '\\begin{choices}' + parts[1];
-            } else {
-                html = window.cleanChoiceStemParentheses(html);
-            }
-        }
+        // ⚠️ 这里**不**再剥题干末尾的 \paren / 空括号，也不自己画作答括号：
+        // 括号的唯一渲染出口是 editor.js 的 transformExamZhParenForPreview
+        // （在 parseMarkdownWithMath 里被调用）。在这之前剥掉，transform 就无
+        // 货可画（0 个括号）；在这之后补画，就和 transform 重复（2 个括号）。
 
         if (shouldPreserveInlinePaperImages(html)) {
             const inlineHtml = typeof window.parseMarkdownWithMath === 'function'

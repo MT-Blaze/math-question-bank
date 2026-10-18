@@ -73,7 +73,9 @@ function findTopicLevel(comp, chap, know, topicName) {
                 });
             }
 
-            document.addEventListener('mousemove', function(e) {
+            // 命名函数 + 松手即摘：全局 mousemove 监听器若常驻，会在弹窗打开期间
+            // 继续每帧触发（getBoundingClientRect 强制布局），放大输入节流的影响面。
+            function onResizerMouseMove(e) {
                 if (!isResizingRight) return;
                 const containerRect = mainContainer.getBoundingClientRect();
                 let newWidth = containerRect.right - e.clientX;
@@ -89,16 +91,19 @@ function findTopicLevel(comp, chap, know, topicName) {
                     }
                     preview.style.width = newWidth + 'px';
                 }
-            });
+            }
+            document.addEventListener('mousemove', onResizerMouseMove);
 
-            document.addEventListener('mouseup', function() {
+            function onResizerMouseUp() {
                 if (isResizingRight) {
                     isResizingRight = false;
                     document.body.style.cursor = '';
                     document.body.classList.remove('select-none');
                     window.dispatchEvent(new Event('resize'));
                 }
-            });
+                document.removeEventListener('mousemove', onResizerMouseMove);
+            }
+            document.addEventListener('mouseup', onResizerMouseUp);
         }
 
         // Save callbacks may arrive after the user has typed more text. Accepting
@@ -538,24 +543,16 @@ function findTopicLevel(comp, chap, know, topicName) {
                 `;
                 document.body.appendChild(modalDiv);
 
-                // Add fade-in transition
-                setTimeout(() => {
-                    modalDiv.classList.remove('opacity-0');
-                    modalDiv.querySelector('div').classList.remove('scale-95');
-                    modalDiv.querySelector('div').classList.add('scale-100');
-                }, 50);
-
                 const closeModal = (result) => {
-                    window.MathBankModal.close(modalDiv);
-                    modalDiv.classList.add('opacity-0');
-                    modalDiv.querySelector('div').classList.remove('scale-100');
-                    modalDiv.querySelector('div').classList.add('scale-95');
-                    setTimeout(() => {
-                        document.body.removeChild(modalDiv);
-                        resolve(result);
-                    }, 300);
+                    // 一次性弹窗：公共助手关栈+复位后直接摘除节点，不再保留淡出窗口期
+                    window.closeModalWithTransition(modalDiv);
+                    document.body.removeChild(modalDiv);
+                    resolve(result);
                 };
-                window.MathBankModal.open(modalDiv, { onEscape: () => closeModal('cancel') });
+                window.openModalWithTransition(modalDiv, {
+                    onEscape: () => closeModal('cancel'),
+                    surface: modalDiv.querySelector('div')
+                });
 
                 document.getElementById('manualCompulsoryBtn').onclick = () => closeModal('manual');
                 document.getElementById('autoSaveClassifyBtn').onclick = () => closeModal('ai');
@@ -700,11 +697,13 @@ function findTopicLevel(comp, chap, know, topicName) {
             
             // Populate form fields
             document.getElementById('editContent').value = draft.content || '';
+            requestAnimationFrame(() => { if (window.__autoResizeContent) window.__autoResizeContent(); });
             document.getElementById('editQType').value = draft.question_type || 'single_choice';
             document.getElementById('editDifficulty').value = draft.difficulty || 'L2';
             document.getElementById('editSource').value = draft.source || '';
             if (document.getElementById('editPaperCategory')) document.getElementById('editPaperCategory').value = draft.paper_category || '';
             document.getElementById('editAnswerMarkdown').value = draft.answer_markdown || '';
+            requestAnimationFrame(() => { if (window.__autoResizeAnswer) window.__autoResizeAnswer(); });
             document.getElementById('editReview').value = draft.review || '';
             if (document.getElementById('editTags')) {
                 document.getElementById('editTags').value = draft.tags || '';
@@ -955,18 +954,15 @@ function deleteDraft(id) {
             document.getElementById('scanDupResults').innerHTML = '<div class="p-10 text-center text-slate-400 text-xs">点击「开始扫描」检查全库的重复与近似题目。</div>';
             document.getElementById('scanDupStatus').textContent = '';
             document.body.classList.add('modal-active');
-            modal.classList.remove('hidden');
-            window.MathBankModal.open(modal, { onEscape: closeScanDuplicatesModal });
-            setTimeout(() => {
-                modal.classList.remove('opacity-0');
-                modal.querySelector('div').classList.remove('scale-95');
-                modal.querySelector('div').classList.add('scale-100');
-            }, 50);
+            window.openModalWithTransition(modal, { onEscape: closeScanDuplicatesModal });
         }
 
         function closeScanDuplicatesModal() {
             const modal = document.getElementById('scanDuplicatesModal');
-            window.MathBankModal.close(modal);
+            // 原实现只关了焦点栈：弹窗既不 hidden 也不复位 opacity-0，叠加 modal-active
+            // 把 header/main 压成 opacity:0——又一类"整页点不动"的事故形态，走公共助手补齐。
+            window.closeModalWithTransition(modal);
+            document.body.classList.remove('modal-active');
         }
 
         async function runScanDuplicates() {
@@ -1130,13 +1126,7 @@ function deleteDraft(id) {
                         
                         // 数据和图表完全就绪，再顺滑滑入弹窗并淡化背景
                         document.body.classList.add('modal-active');
-                        modal.classList.remove('hidden');
-                        window.MathBankModal.open(modal, { onEscape: closeStatsModal });
-                        setTimeout(() => {
-                            modal.classList.remove('opacity-0');
-                            modal.querySelector('div').classList.remove('scale-95');
-                            modal.querySelector('div').classList.add('scale-100');
-                        }, 50);
+                        window.openModalWithTransition(modal, { onEscape: closeStatsModal });
                     } else {
                         showToast('获取统计大屏数据失败: ' + data.message, 'error');
                     }
@@ -1154,15 +1144,8 @@ function deleteDraft(id) {
 
         function closeStatsModal() {
             const modal = document.getElementById('statsModal');
-            window.MathBankModal.close(modal);
+            window.closeModalWithTransition(modal);
             document.body.classList.remove('modal-active');
-            
-            modal.classList.add('opacity-0');
-            modal.querySelector('div').classList.remove('scale-100');
-            modal.querySelector('div').classList.add('scale-95');
-            setTimeout(() => {
-                modal.classList.add('hidden');
-            }, 300);
         }
 
         function populateStatsQueryCompulsory() {
@@ -1477,6 +1460,129 @@ function deleteDraft(id) {
             }
         }
 
+        // ---- 考向（考点）写入大纲的唯一出口 ----
+        // 手动新增/改名都走「直接写大纲」这条路，**不经过** mathbank/metadata.py 的
+        // STRICT_AUTO_TOPICS 闸门 —— 那道闸只管录题时按名字猜建档（防 AI 幻觉）。
+        // 拆卷卡片与编辑器都必须调这两个助手，别再各抄一份：两份实现一旦分叉，
+        // 「push 裸字符串 vs push {id,name}」这种差别不会报错，只会让 topic_id 漂移。
+        window.locateCurriculumSection = function(meta, comp, chap, know, createIfMissing) {
+            if (!meta || typeof meta !== 'object') return null;
+            if (!meta.curriculum) meta.curriculum = {};
+            if (!comp || !chap || !know) return null;
+            if (!meta.curriculum[comp]) meta.curriculum[comp] = {};
+            if (!Array.isArray(meta.curriculum[comp][chap])) meta.curriculum[comp][chap] = [];
+            const list = meta.curriculum[comp][chap];
+            let idx = -1;
+            for (let i = 0; i < list.length; i++) {
+                const it = list[i];
+                if ((it && typeof it === 'object' && it.name === know) || it === know) {
+                    idx = i;
+                    break;
+                }
+            }
+            if (idx === -1) {
+                if (!createIfMissing) return null;
+                list.push({ name: know, topics: [] });
+                idx = list.length - 1;
+            } else if (typeof list[idx] === 'string') {
+                list[idx] = { name: know, topics: [] };
+            }
+            if (!Array.isArray(list[idx].topics)) list[idx].topics = [];
+            return list[idx];
+        };
+
+        // 取当前活跃大纲的可编辑深拷贝。刻意**不**以 window.systemMetadata 兜底：
+        // 那是页面加载时的快照，别的会话改过大纲后拿它整棵 POST 回去会把新内容覆盖掉
+        // （读-改-写窗口）。GET 失败就直接报错，不做静默降级。
+        window.fetchEditableMetadata = function() {
+            return fetch('/api/config/metadata')
+                .then(function(r) {
+                    if (!r.ok) throw new Error('读取大纲失败 HTTP ' + r.status);
+                    return r.json();
+                })
+                .then(function(meta) {
+                    if (!meta || typeof meta !== 'object' || !meta.curriculum) {
+                        throw new Error('大纲响应缺少 curriculum');
+                    }
+                    return JSON.parse(JSON.stringify(meta));
+                });
+        };
+
+        window.createCurriculumTopic = function(comp, chap, know, name) {
+            const clean = String(name || '').trim();
+            if (!clean) return Promise.reject(new Error('请输入考点名称'));
+            if (clean.indexOf(',') !== -1 || clean.indexOf('，') !== -1) {
+                return Promise.reject(new Error('考点名称不能包含逗号'));
+            }
+            if (typeof window.isGCurriculum === 'function' && window.isGCurriculum()) {
+                return Promise.reject(new Error('高三专题大纲下小节即考向，无需新增考点'));
+            }
+            if (!comp || !chap || !know) {
+                return Promise.reject(new Error('请先选择册次 / 章节 / 小节'));
+            }
+            return window.fetchEditableMetadata().then(function(meta) {
+                const section = window.locateCurriculumSection(meta, comp, chap, know, true);
+                if (section.topics.some(t => window.topicName(t) === clean)) {
+                    throw new Error('该考点已存在，可直接选用');
+                }
+                // 必须是对象形态：裸字符串要靠后端 normalize_topic_list 自愈成 {id,name}，
+                // 少一次依赖就少一处可能漂移的地方。
+                section.topics.push({ id: '', name: clean });
+                return fetch('/api/config/metadata', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(meta)
+                }).then(function(r) {
+                    if (!r.ok) {
+                        return r.json().catch(() => null).then(function(d) {
+                            throw new Error((d && d.detail) || ('HTTP ' + r.status));
+                        });
+                    }
+                    return r.json();
+                }).then(function() { return clean; });
+            });
+        };
+
+        // 保 ID 改名：只动 name，id 原样带回。题目侧存的是 topic_id（确定性哈希含名字），
+        // 展示层每次按当前大纲翻译 —— 所以 id 不变旧题就自动跟随新名。
+        // 若改成「先删后加」或按名字重新算 id，旧题会指向一个大纲里已不存在的 id，
+        // 变成显示为空的孤儿考向。
+        window.renameCurriculumTopic = function(comp, chap, know, topicId, newName) {
+            const clean = String(newName || '').trim();
+            if (!clean) return Promise.reject(new Error('请输入考点名称'));
+            if (clean.indexOf(',') !== -1 || clean.indexOf('，') !== -1) {
+                return Promise.reject(new Error('考点名称不能包含逗号'));
+            }
+            if (!topicId) return Promise.reject(new Error('该考向没有稳定 ID，无法安全改名'));
+            return window.fetchEditableMetadata().then(function(meta) {
+                const section = window.locateCurriculumSection(meta, comp, chap, know, false);
+                if (!section) throw new Error('找不到该小节，未能定位要改名的考向');
+                // 关键：按 id 定位，不按名字匹配。
+                const target = section.topics.find(function(t) {
+                    return t && typeof t === 'object' && t.id === topicId;
+                });
+                if (!target) throw new Error('大纲里找不到 ID 为 ' + topicId + ' 的考向');
+                if (section.topics.some(function(t) {
+                    return t !== target && window.topicName(t) === clean;
+                })) {
+                    throw new Error('同一小节已有同名考向');
+                }
+                target.name = clean;
+                return fetch('/api/config/metadata', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(meta)
+                }).then(function(r) {
+                    if (!r.ok) {
+                        return r.json().catch(() => null).then(function(d) {
+                            throw new Error((d && d.detail) || ('HTTP ' + r.status));
+                        });
+                    }
+                    return r.json();
+                }).then(function() { return clean; });
+            });
+        };
+
         window.openAddTopicModal = function() {
             const compSel = document.getElementById('editCompulsory');
             const chapSel = document.getElementById('editChapter');
@@ -1519,61 +1625,10 @@ function deleteDraft(id) {
             input.select();
             const doAdd = () => {
                 const newTopic = input.value.trim();
-                if (!newTopic) {
-                    showToast('请输入考点名称', 'info');
-                    return;
-                }
-                if (newTopic.indexOf(',') !== -1 || newTopic.indexOf('，') !== -1) {
-                    showToast('考点名称不能包含逗号', 'error');
-                    return;
-                }
                 const btn = document.getElementById('addTopicConfirmBtn');
                 if (btn) btn.disabled = true;
-                let meta;
-                try {
-                    meta = JSON.parse(JSON.stringify(window.systemMetadata || {}));
-                } catch (e) {
-                    meta = {};
-                }
-                if (!meta.curriculum) meta.curriculum = {};
-                if (!meta.curriculum[comp]) meta.curriculum[comp] = {};
-                if (!Array.isArray(meta.curriculum[comp][chap])) meta.curriculum[comp][chap] = [];
-                const list = meta.curriculum[comp][chap];
-                let idx = -1;
-                for (let i = 0; i < list.length; i++) {
-                    const it = list[i];
-                    if ((it && typeof it === 'object' && it.name === know) || it === know) {
-                        idx = i;
-                        break;
-                    }
-                }
-                if (idx === -1) {
-                    list.push({ name: know, topics: [] });
-                    idx = list.length - 1;
-                } else if (typeof list[idx] === 'string') {
-                    list[idx] = { name: know, topics: [] };
-                }
-                const section = list[idx];
-                if (!Array.isArray(section.topics)) section.topics = [];
-                if (section.topics.some(t => window.topicName(t) === newTopic)) {
-                    showToast('该考点已存在，可直接选用', 'info');
-                    if (btn) btn.disabled = false;
-                    return;
-                }
-                section.topics.push(newTopic);
-                fetch('/api/config/metadata', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(meta)
-                })
-                .then(r => {
-                    if (!r.ok) {
-                        return r.json().catch(() => null).then(d => {
-                            throw new Error((d && d.detail) || ('HTTP ' + r.status));
-                        });
-                    }
-                    return r.json();
-                })
+                // 写入统一走 window.createCurriculumTopic（拆卷卡片同一个出口）。
+                window.createCurriculumTopic(comp, chap, know, newTopic)
                 .then(() => {
                     const modal = document.getElementById('addTopicModal');
                     if (modal) modal.remove();
@@ -1845,7 +1900,19 @@ function deleteDraft(id) {
         }
         window.renderEditorPaperMeta = renderEditorPaperMeta;
 
+        // 2026-09-25 性能修复（方案 1）：把「每个 grid 一个 ResizeObserver」改成
+        // 「全局单例 RO + 尺寸去重 + 单帧批量」。详细动机见 adaptChoicesGridLayout。
+        //   choicesGridResizeObservers : WeakMap<grid, {width, height}>，存**上一次
+        //     adapt 之后的 border-box 尺寸**，RO 回调拿它当基准做去重。键是 DOM
+        //     节点，grid 被 innerHTML 换掉后条目自动回收，不需要手动清理。
+        //   choicesGridPending   : 本帧待重算的 grid（Set 是强引用，故 flush 时
+        //     显式剔除 isConnected === false 的脏引用）。
+        //   choicesGridRafId     : 合并同一帧内多次请求用的 rAF 句柄（null = 空闲）。
+        //   choicesGridResizeObserver : 全局唯一的 RO 实例（惰性创建）。
         const choicesGridResizeObservers = new WeakMap();
+        const choicesGridPending = new Set();
+        let choicesGridRafId = null;
+        let choicesGridResizeObserver = null;
 
         function getPreferredChoicesColumns(grid) {
             const stored = parseInt(grid.dataset.preferredColumns || '', 10);
@@ -1862,25 +1929,222 @@ function deleteDraft(id) {
             });
         }
 
-        function adaptSingleChoicesGrid(grid) {
+        // 2026-09-25 超宽公式兜底：降到 1 列仍装不下时，把整行选项等比缩小。
+        //
+        // 「装不下就降列」只能解决列数，而列数最低就是 1 —— 若算式本体的自然宽
+        // 超过 1 列的可用宽（A4 内容宽 714px → 1 列时 `.choices-content` 可用
+        // 690px），KaTeX 的 `.katex .base` 自带 white-space:nowrap，物理上折不了
+        // 行，结果只剩一条横向滚动条，等于没排。
+        //
+        // 按最宽的那一格算出 scale 并**整行统一应用**（不是逐格），保证同一题的
+        // A/B/C/D 字号一致。下限 FLOOR=0.5：再宽的式子宁可退回滚动条，也不缩成
+        // 一团糊 —— 实测缩到 0.5 仍能覆盖 ≤1380px 的式子。
+        //
+        // 不用 transform: scale()：它不改变布局宽度，scrollWidth 依旧溢出、
+        // 滚动条照样在，缩放文字还容易发虚；改 font-size 会真正回流，滚动条
+        // 自然消失（CSS 侧对应 .choices-grid .choices-content 的 --choices-scale）。
+        function fitOversizedChoicesContent(grid) {
             if (!grid || !grid.isConnected || grid.clientWidth <= 0) return;
-            const preferred = getPreferredChoicesColumns(grid);
-            const candidates = [4, 2, 1].filter(cols => cols <= preferred);
-            let selected = 1;
+            // 每次进来先回到 1:1：容器变宽（ResizeObserver 重入）后必须能重新
+            // 测量，否则会一直挂着上一次的缩小值、再也回不到原字号。
+            grid.style.removeProperty('--choices-scale');
+            void grid.offsetWidth;
 
-            for (const columns of candidates) {
-                grid.style.setProperty('--choices-columns', String(columns));
-                // Force the browser to resolve the candidate track widths before
-                // comparing each rendered KaTeX option's real scroll width.
-                void grid.offsetWidth;
-                if (!choicesGridOverflows(grid)) {
-                    selected = columns;
-                    break;
+            const FLOOR = 0.5;
+            let needed = 1;      // 最宽内容的 scrollW / 可用 clientW
+            let hasKatex = false;
+            const items = Array.from(grid.children);
+            for (const item of items) {
+                const content = item.querySelector('.choices-content') || item;
+                if (content.querySelector('.katex')) hasKatex = true;
+                const avail = content.clientWidth;
+                if (avail > 0 && content.scrollWidth > avail + 1) {
+                    needed = Math.max(needed, content.scrollWidth / avail);
                 }
             }
+            if (!hasKatex) return;    // 缩不动的东西（超宽图片）别白设变量
+            if (needed <= 1) return;  // 本来就没溢出
+            grid.style.setProperty(
+                '--choices-scale',
+                String(Math.max(FLOOR, Math.min(1, 1 / needed)))
+            );
+        }
 
+        // 2026-09-25：列数一律「先试满 4 列，装不下再降」，不再受首选值掐死。
+        //
+        // 旧实现把候选表裁成 `[4,2,1].filter(cols => cols <= preferred)`，而
+        // preferred 来自 \begin{choices} 渲染期的**源码字符数**估算（>18 字符→2、
+        // >40 字符→1）。一条 32 字符的纯公式就被判成「长选项」→ preferred=2 →
+        // 候选只剩 [2,1]，连「4 列到底装不装得下」这一问都没问过。
+        //
+        // 又：测量期必须真的不折行，否则内容一折行、`scrollWidth === clientWidth`
+        // （这正是当初 nowrap 选择器写错 `> .katex` 的直接后果），检测器每次都
+        // 看到「没溢出」，列数就此卡在首选值上下不来。
+        //
+        // 落地后摘掉 .is-measuring：最终 ≥2 列时内容本就装得下（不折行也不会
+        // 溢出）；若降到 1 列仍装不下，就让它折行——与导出侧 exam-zh「减列、
+        // 绝不折行」的排印语义对齐。
+        // ── 单格适配拆成两步，供「逐格」与「整批」两条路径复用 ─────────────
+        // 拆出来的唯一目的是**批量化**：`.is-measuring` 的加与摘都会触发 Tailwind
+        // 运行时 JIT 的 MutationObserver 重扫**整个文档**（组卷页十余万节点）。
+        // 原先每格各加各摘 → 近 200 格共约 400 次全文档扫描，这正是 Profiler 里
+        // tailwind `pf` 占 41% CPU 的直接来源。批量化后全批只扫 2 次。
+
+        // 步骤一：**必须在测量态（`.is-measuring` ⇒ nowrap）下**试列数，返回与 live
+        // 等长的选中列数数组。
+        //
+        // 关键在「按列数整批试」而不是「按格逐个试」：同一轮里先把该轮列数**一次
+        // 性**写进所有还没定的 grid（只让样式失效一次），再去统一测量 —— 布局在每轮
+        // 第一次读时才发生一次，后续读复用同一份布局。逐格试的话每格都要自己触发
+        // 一次强制布局：196 格 × 平均 1.5 档 ≈ 300 次，这正是批量化 class 之后
+        // 剩余那几秒的来源（Profiler：measureChoicesGridColumns + 其强制的 native
+        // 布局仍占大头）。整批后布局次数降到「档数」量级，与卡片数量无关。
+        //
+        // 与逐格版语义等价：某个 grid 在第 k 轮不溢出即定稿（对应原来的 break），
+        // 之后各轮不再改它的列数；各 grid 的列数互不影响，因此「先全写后全读」与
+        // 「各自写读」得到的布局结果一致。
+        function measureChoicesGridsBatch(live) {
+            // 2026-09-25 补丁 B：候选表恒为 [4,2,1]，不再按 preferred 裁剪。
+            // 两条写入点（editor.js 渲染期 / import.js 解析卡）目前都写 4，filter
+            // 恒等、是死逻辑；但只要有任何路径写入 1 或 2，候选表就会被裁剪成
+            // 不含 4 的 [2,1] / [1]，「4 列到底装不装得下」这一问再也不会被问到，
+            // 该题永远试不到 4 列（最坏情况直接锁死单列）。preferred 仍作兜底读取
+            // 但不再裁剪；把列数上限交给浏览器实测。
+            const picked = new Array(live.length).fill(0);
+
+            // 测量前先回到 1:1：上一次可能因容器变窄而缩过，带着它测会偏小。
+            for (const grid of live) grid.style.removeProperty('--choices-scale');
+
+            for (const columns of [4, 2, 1]) {
+                let pending = false;
+                for (let i = 0; i < live.length; i++) {
+                    if (picked[i]) continue;
+                    live[i].style.setProperty('--choices-columns', String(columns));
+                    pending = true;
+                }
+                if (!pending) break;          // 已全部定稿，后面几档不必再试
+                // 先结算本轮的样式失效（读任意元素的布局属性都会触发一次全文档
+                // 样式重算 + 布局），后面的测量就都复用这一份布局。
+                void live[0].offsetWidth;
+                for (let i = 0; i < live.length; i++) {
+                    if (picked[i]) continue;
+                    if (!choicesGridOverflows(live[i])) picked[i] = columns;
+                }
+            }
+            for (let i = 0; i < live.length; i++) if (!picked[i]) picked[i] = 1;
+            return picked;
+        }
+
+        // 步骤二：**必须在摘掉 `.is-measuring` 之后**落地。摘掉 nowrap 后 1 列装
+        // 不下才允许折行；fitOversizedChoicesContent 也要在这个最终布局下测，否则
+        // 会把「折行后其实装得下」判成溢出、把字号缩过头。
+        //
+        // 只有 selected === 1 才需要跑超宽兜底，两条依据：
+        //   · ≥2 列时测量期已确认不溢出（choicesGridOverflows 返回 false）→ fit
+        //     进去也只会走到 `needed <= 1` 直接 return；
+        //   · 摘掉 nowrap 只会让内容更容易折行、更不容易溢出，不会反过来。
+        // 而 fit 每次都带一次 `void grid.offsetWidth` 强制 reflow + 逐子元素读
+        // scrollWidth/clientWidth，对占 94% 的多列 grid 纯属白付（组卷页实测
+        // 196 格里只有 12 格降到 1 列）。缩放值不会因此残留：measureChoicesGridColumns
+        // 每一轮进来都先清 --choices-scale，容器变宽后自然回到 1:1。
+        function applyChoicesGridColumns(grid, selected) {
             grid.style.setProperty('--choices-columns', String(selected));
             grid.dataset.choiceColumns = String(selected);
+            if (selected === 1) {
+                // 降到 1 列仍装不下时，KaTeX 物理折不了行、只剩横向滚动条 ——
+                // 交给 fitOversizedChoicesContent 整行等比缩小（1:1 重测，幂等）。
+                fitOversizedChoicesContent(grid);
+            }
+        }
+
+        function canAdaptChoicesGrid(grid) {
+            return Boolean(grid) && grid.isConnected && grid.clientWidth > 0;
+        }
+
+        // 整批适配：把「进入测量态 → 整批试列数 → 摘测量态 → 逐格落地」四段分开。
+        // class 切换从 2N 次收敛成 2 次；强制布局次数从「N × 档数」降到「档数」。
+        function adaptChoicesGridsBatch(grids) {
+            const live = [];
+            for (const grid of grids) {
+                if (!canAdaptChoicesGrid(grid)) continue;
+                getPreferredChoicesColumns(grid);   // 保留原有的兜底读取语义
+                live.push(grid);
+            }
+            if (!live.length) return;
+
+            for (const grid of live) grid.classList.add('is-measuring');
+            const picked = measureChoicesGridsBatch(live);
+            // 测量期结束：撤掉 nowrap，1 列装不下时允许折行。
+            for (const grid of live) grid.classList.remove('is-measuring');
+            for (let i = 0; i < live.length; i++) {
+                applyChoicesGridColumns(live[i], picked[i]);
+            }
+        }
+
+        // 单格适配：对外语义与改造前完全一致（等价于只含一个 grid 的整批）。
+        function adaptSingleChoicesGrid(grid) {
+            adaptChoicesGridsBatch([grid]);
+        }
+
+        // 记录「刚 adapt 完」的尺寸，作为下一次 RO 回调的去重基准。
+        // 必须在 adaptSingleChoicesGrid 之后读，拿到的才是适配后的最终值 —— 这样
+        // RO 回调看到「尺寸没变」即可判定「这是我上一轮自己改出来的」，不再重算，
+        // 自激循环在第一圈后即收敛。读 offsetWidth 会触发一次强制 reflow，但此处
+        // 紧随 adaptSingleChoicesGrid（其内部本就要量 scrollWidth），属既有成本。
+        function noteChoicesGridSize(grid) {
+            choicesGridResizeObservers.set(grid, {
+                width: grid.offsetWidth,
+                height: grid.offsetHeight
+            });
+        }
+
+        // 单帧批量：同一帧内被标记的 grid 只排一次 rAF，避免 N 个变更各排一帧。
+        function flushChoicesGridPending() {
+            choicesGridRafId = null;
+            const pending = Array.from(choicesGridPending);
+            choicesGridPending.clear();
+            const grids = [];
+            for (const grid of pending) {
+                if (!grid.isConnected) continue;   // 已被换掉：丢弃，WeakMap 自行回收
+                grids.push(grid);
+            }
+            if (!grids.length) return;
+            adaptChoicesGridsBatch(grids);         // 整批一次，class 切换只 2 次
+            for (const grid of grids) noteChoicesGridSize(grid);
+        }
+
+        function scheduleChoicesGridLayout(grid) {
+            choicesGridPending.add(grid);
+            if (choicesGridRafId !== null) return;
+            if (typeof window.requestAnimationFrame === 'function') {
+                choicesGridRafId = window.requestAnimationFrame(flushChoicesGridPending);
+            } else {
+                flushChoicesGridPending();     // 无 rAF 的极老环境：同步兜底
+            }
+        }
+
+        // 全局唯一 RO：惰性创建一次，所有 grid 共用同一个实例。
+        // 旧实现每个 grid 各 new 一个（组卷页实测 186 个），每个回调只认自己的
+        // grid、且无任何去重 —— adapt 改尺寸 → 自己又被唤醒 → 再 adapt，如此往复。
+        function ensureChoicesGridResizeObserver() {
+            if (choicesGridResizeObserver || typeof ResizeObserver === 'undefined') return;
+            choicesGridResizeObserver = new ResizeObserver(entries => {
+                for (const entry of entries) {
+                    const grid = entry.target;
+                    const prev = choicesGridResizeObservers.get(grid);
+                    if (!prev) { noteChoicesGridSize(grid); continue; }
+                    // border-box 口径，与 noteChoicesGridSize 的 offsetWidth/Height 对齐
+                    const bbs = entry.borderBoxSize;
+                    const box = Array.isArray(bbs) ? bbs[0] : bbs;
+                    const w = box ? box.inlineSize : grid.offsetWidth;
+                    const h = box ? box.blockSize : grid.offsetHeight;
+                    if (Math.abs(prev.width - w) < 0.5 && Math.abs(prev.height - h) < 0.5) {
+                        continue;      // 尺寸没变 = 上一轮自己 adapt 的结果，跳过
+                    }
+                    noteChoicesGridSize(grid);
+                    scheduleChoicesGridLayout(grid);
+                }
+            });
         }
 
         function adaptChoicesGridLayout(root) {
@@ -1889,22 +2153,81 @@ function deleteDraft(id) {
             if (root.matches && root.matches('.choices-grid')) grids.push(root);
             if (root.querySelectorAll) grids.push(...root.querySelectorAll('.choices-grid'));
 
-            grids.forEach(grid => {
-                adaptSingleChoicesGrid(grid);
-                if (typeof ResizeObserver !== 'undefined' && !choicesGridResizeObservers.has(grid)) {
-                    const observer = new ResizeObserver(() => {
-                        window.requestAnimationFrame(() => adaptSingleChoicesGrid(grid));
-                    });
-                    observer.observe(grid);
-                    choicesGridResizeObservers.set(grid, observer);
+            if (!grids.length) return;
+            ensureChoicesGridResizeObserver();
+            adaptChoicesGridsBatch(grids);       // 整批一次，class 切换只 2 次
+            if (choicesGridResizeObserver) {
+                for (const grid of grids) {
+                    noteChoicesGridSize(grid);
+                    choicesGridResizeObserver.observe(grid);   // 重复 observe 同一元素是幂等的
                 }
-            });
+            }
         }
         window.adaptChoicesGridLayout = adaptChoicesGridLayout;
+
+        // 自动高度：随内容伸缩 textarea，改善编辑体验
+
+        // 2026-09-24 回退：曾用 CSS `field-sizing: content` 撑高，但其存在已知渲染
+        // bug——撑高后点击坐标映射错乱，编辑框内点击任意位置插入符都停在框顶、不跟随
+        // 点击。现改回 **纯 JS 撑高**：autoResizeTextarea 始终写 inline height，不依赖
+        // field-sizing，也不注册任何"切窗后自愈"的钩子。
+
+        function autoResizeTextarea(el, opts) {
+            if (!el) return;
+            opts = opts || {};
+            const bindWindowResize = opts.bindWindowResize !== false;
+            // 首次布局可能还没完成（容器尚未 display、字体未加载、滚动条未出现），
+            // 此时 scrollHeight 为 0。历史 bug：直接 return 后就再没重试，框停在
+            // 浏览器默认高度（~130px）把内容截断。改为定时重试，最多 10 次 × 100ms。
+            let retryLeft = 10;
+            function resize() {
+                el.style.height = 'auto';               // 先重置，才能正确测量 scrollHeight
+                const scrollH = el.scrollHeight;
+                if (scrollH === 0 && retryLeft-- > 0) {
+                    setTimeout(resize, 100);
+                    return;                              // 量不到就先不动，等下一次重试
+                }
+                retryLeft = 10;                          // 已经量到，恢复重试额度
+                // 底部留白按「实际行高 × 2」算，不硬编码 px —— 行高随字号/字体变化，
+                // 写死 44/52 在别的字号下就不是「正好 2 行」了。
+                const cs = getComputedStyle(el);
+                let lineH = parseFloat(cs.lineHeight);
+                if (!lineH || isNaN(lineH)) lineH = (parseFloat(cs.fontSize) || 14) * 1.5;
+                const bottomPad = opts.bottomPadding != null
+                    ? opts.bottomPadding
+                    : Math.round(lineH * 2);
+                const minH = opts.minHeight != null ? opts.minHeight : Math.round(lineH * 3);
+                const maxH = opts.maxHeight != null ? opts.maxHeight : window.innerHeight * 0.7;
+                const target = Math.min(Math.max(scrollH + bottomPad, minH), maxH);
+                el.style.height = target + 'px';
+                el.style.overflowY = (scrollH + bottomPad > maxH) ? 'auto' : 'hidden';
+            }
+            el.addEventListener('input', resize);
+            if (bindWindowResize) {
+                window.addEventListener('resize', resize);   // 视口变化时重算上限
+            }
+            // ResizeObserver：容器/布局变化时（Modal 展开、字体加载完、父级尺寸变化）
+            // 自动重算。
+            if (typeof ResizeObserver !== 'undefined' && !el.__autoResizeObs) {
+                el.__autoResizeObs = new ResizeObserver(resize);
+                el.__autoResizeObs.observe(el);
+            }
+            resize();                                    // 立即量一次（失败会自行重试）
+            requestAnimationFrame(resize);               // 下一帧再量一次（布局更稳）
+            return resize;                                // 返回给外部，加载题目时手动触发
+        }
+        window.autoResizeTextarea = autoResizeTextarea;
 
         function setupRealtimePreviews() {
             const editContent = document.getElementById('editContent');
             const editAnswer = document.getElementById('editAnswerMarkdown');
+
+            // 真自适应：不传参数，由 autoResizeTextarea 按实际行高自己算
+            // （内容高度 + 2 行留白；封顶视口 70% 后滚动）。
+            const _resizeContent = autoResizeTextarea(editContent, {});
+            const _resizeAnswer = autoResizeTextarea(editAnswer, {});
+            window.__autoResizeContent = _resizeContent;
+            window.__autoResizeAnswer = _resizeAnswer;
 
             const updateContentPreview = () => {
                 const text = editContent.value;
@@ -2144,7 +2467,9 @@ function deleteDraft(id) {
 
         function transformExamZhParenForPreview(text) {
             if (!text) return "";
-            return text.replace(/\\paren\b/g, '<span class="exam-zh-paren-preview" role="img" aria-label="选择题作答括号">（&nbsp;&nbsp;）</span>');
+            // 括号内部用两个**全角空格** U+3000，与导出侧 _render_choice_paren 的
+            // 「（　　）」同宽（半角 &nbsp; 只有一半宽，看着挤、也和 PDF 不一致）。
+            return text.replace(/\\paren\b/g, '<span class="exam-zh-paren-preview" role="img" aria-label="选择题作答括号">（\u3000\u3000）</span>');
         }
 
         // 全局图片解析表：basename -> 完整 URL。彻底 LaTeX 化后正文只写
@@ -2422,22 +2747,19 @@ function deleteDraft(id) {
             tempText = tempText.replace(/\\begin\{choices\}([\s\S]*?)\\end\{choices\}/g, function(match, inner) {
                 const items = inner.split(/\\item/).map(item => item.trim()).filter(item => item.length > 0);
                 const labels = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];
-                let maxLen = 0;
-                items.forEach(item => {
-                    const approxText = item.replace(/@@MATH_PLACEHOLDER_\d+@@/g, '********');
-                    if (approxText.length > maxLen) {
-                        maxLen = approxText.length;
-                    }
-                });
 
-                let gridCols = "grid-cols-4";
-                if (maxLen > 40) {
-                    gridCols = "grid-cols-1";
-                } else if (maxLen > 18) {
-                    gridCols = "grid-cols-2";
-                }
-
-                const preferredColumns = gridCols === 'grid-cols-1' ? 1 : (gridCols === 'grid-cols-2' ? 2 : 4);
+                // 2026-09-25：首选列数固定为 4，不再按源码字符数估算。
+                //
+                // 旧判据（>18 字符→2 列、>40 字符→1 列）是拿**源码字节**当像素用：
+                // LaTeX 里一条 `$\exists x \in R, x^2-2mx+m^2-4=0$` 源码才 32 字符，
+                // 被判成「长选项」→ 4 个选项压成 2 列 2 行；可它 KaTeX 实测宽
+                // 211px，A4 下 4 列内容宽 165px 装不下、2 列 367px 装得下 ——
+                // 到底几列得量了才知道，凭字符数猜必错（近似值还把公式折算成 8
+                // 星号，跟真实渲染毫无关系）。
+                //
+                // 与 import.js 重组选项段时写死的 data-preferred-columns="4" 同源。
+                const preferredColumns = 4;
+                const gridCols = 'grid-cols-4';
                 let html = `<div class="grid ${gridCols} gap-2 my-2 select-none choices-grid items-baseline" data-preferred-columns="${preferredColumns}">`;
                 items.forEach((item, idx) => {
                     const label = labels[idx] || (idx + 1);
@@ -2610,13 +2932,29 @@ function deleteDraft(id) {
             // Replace LaTeX line breaks with HTML br tags outside math environments
             tempText = tempText.replace(/\\\\/g, '<br>');
             
-            // 小问分行自愈：单回车或标点后紧跟小问编号 (如 \n(1), \n(2), \n(i), \n（1）) 自动升格为段落换行 <br><br>
-            tempText = tempText.replace(/(?:\r?\n|\s+|[。；;!！\.]\s*)([(（]?(?:[1-9]|10|[ivxIVX]+|[①②③④⑤⑥⑦⑧⑨⑩])[)）\.]|\([1-9]\)|（[1-9]）|\([ivxIVX]+\)|（[ivxIVX]+）)(?=\s*[\u4e00-\u9fa5a-zA-Z\$])/g, '<br><br>$1 ');
+            // 小问分行自愈：单回车或标点后紧跟小问编号 (如 \n(1), \n(2), \n(i), \n（1）, \n①) 自动升格为段落换行 <br><br>
+            // ⚠️ 圈号必须**独立成一支**。原先它写在 `[(（]?(?:…)[)）\.]` 里，要求后面还要跟
+            // `)`/`）`/`.`；而 AI 的实际形态是裸的 `①求证：…`（后面直接跟汉字）→ 永远匹配
+            // 不上，预览既不换行也不缩进（用户反馈过）。圈号后允许跟 `./．/、`：一起吃掉，
+            // 否则会留下「① . 求证」这种中间多一个点的怪形态。
+            tempText = tempText.replace(/(?:\r?\n|\s+|[。；;!！\.]\s*)([(（]?(?:[1-9]|10|[ivxIVX]+)[)）\.]|\([1-9]\)|（[1-9]）|\([ivxIVX]+\)|（[ivxIVX]+）|[①②③④⑤⑥⑦⑧⑨⑩][.．、]?)(?=\s*[\u4e00-\u9fa5a-zA-Z\$])/g, '<br><br>$1 ');
 
             // 严格遵循 LaTeX 标准规范：双回车 (\n\n+) 代表起新段落 (<br><br>)；单回车 (\n) 仅视为空格，不产生硬换行；显式 \\\\ 代表强制换行 (<br>)
             tempText = tempText.replace(/\r\n/g, '\n')
                                .replace(/\n\n+/g, '<br><br>')
                                .replace(/\n/g, ' ');
+
+            // 小问分级缩进：圈号（①②③…）是 (1)/(2) 内部的**小小问**，必须比一级再深一层，
+            // 否则预览里两者齐平、看不出层级（用户反馈过）。这段放在 <br><br> 归一化之后，
+            // 因为此刻「段落」的边界已经统一成 <br><br>；段落内容直到下一个 <br><br> 或文本结束。
+            // 只能挂 class 不能写 inline style —— DOMPurify 白名单（api.js RICH_HTML_CONFIG）
+            // 只放行 class，style 属性会被剥掉。样式见 app.css 的 .preview-subitem。
+            // 圈号段落包成块级 div 做分级缩进；不再带前导 <br>——div 是块级，
+            // 自带换行，再叠一个 <br> 会多出一行间距（第6题 ①②③ 紧挨着显得空）。
+            // 段间距完全交给 app.css 的 .preview-subitem margin-top 控制。
+            tempText = tempText.replace(/(<br><br>|^)\s*([①②③④⑤⑥⑦⑧⑨⑩][\s\S]*?)(?=<br><br>|$)/g, function (_match, separator, segment) {
+                return '<div class="preview-subitem">' + segment.replace(/\s+$/, '') + '</div>';
+            });
                                
             // 彻底 LaTeX 化：\includegraphics[选项]{文件名} -> <img>。文件名按 basename 在
             // 全局解析表里找完整 URL（导入预览期指向 tmp，保存后指向根目录），找不到兜底根目录。
@@ -2678,9 +3016,13 @@ function deleteDraft(id) {
         // 且 ALLOW_DATA_ATTR: false + 不放行 onclick。任何拼进 HTML 的按钮都会被拆掉，
         // 只剩文本 "TikZ"，既点不动又像"已经是 TikZ"的标记。
         //
-        // 跳过两类图：
-        //  - 已经是 TikZ 渲染结果（资产的 image_path）——它本来就是 TikZ，无需再转；
+        // 跳过三类图：
+        //  - 已经是 TikZ 渲染结果（文件名 tikz_*，或资产的 image_path）——它本来就是 TikZ；
         //  - AI 专用参考图（资产的 reference_image_path）——本就不该在正文里给操作入口。
+        //
+        // 「文件名以 tikz_ 开头」这一条并不可省：TikzState 是纯内存态，老题目刷新后
+        // hydrate 到空的 content_tikz_assets、或资产记录因迁移丢失时，图还是那张
+        // 转好的 TikZ，靠资产表已经判不出来。文件名是后端与前端共同承认的物理事实。
         function decoratePreviewIllustrationButtons(container) {
             if (!container || typeof container.querySelectorAll !== 'function') return;
             if (typeof document === 'undefined' || typeof window === 'undefined') return;
@@ -2704,9 +3046,16 @@ function deleteDraft(id) {
             }
 
             Array.prototype.forEach.call(container.querySelectorAll('img'), img => {
-                if (img.closest('[data-preview-illustration]')) return;
+                // wrapper 是 img 的**父节点**（下面 insertBefore + appendChild 就是这么搭的），
+                // 而 closest() 从 img 自身往上找祖先，永远找不到那个 wrapper —— 这道
+                // 「别给同一张图挂第二个按钮」的守卫因此一直是空转的。增量重渲染时
+                // （对同一容器再调一次本函数）旧按钮会原样留着、新按钮照样追加。
+                if (img.parentElement
+                    && img.parentElement.hasAttribute('data-preview-illustration')) return;
                 const src = window.MathBankSafe.safeImageUrl(img.getAttribute('src'));
-                if (!src || skipPaths.has(src)) return;
+                if (!src) return;
+                if (window.isTikzRenderImage(src)) return;
+                if (skipPaths.has(src)) return;
                 if (!img.parentNode) return;
 
                 const wrapper = document.createElement('span');
@@ -2824,6 +3173,56 @@ function deleteDraft(id) {
         }, 15000);
 
 
+        // 按卷分组视图：调用 /api/questions/papers 聚合，列出全部试卷，点击跳转到该卷扁平视图
+        window.renderBankGroups = function () {
+            const container = document.getElementById('questionsList');
+            if (!container) return;
+            const srcEl = document.getElementById('filterSource');
+            const source = srcEl ? srcEl.value.trim() : '';
+            let url = '/api/questions/papers';
+            if (source) url += '?source=' + encodeURIComponent(source);
+            container.innerHTML = '<div class="p-6 text-center text-slate-400 text-xs"><i class="fa-solid fa-spinner fa-spin"></i> 加载试卷列表…</div>';
+            fetch(url, { headers: { 'X-Local-Token': window.getLocalToken ? window.getLocalToken() : '' } })
+                .then(r => r.json())
+                .then(data => {
+                    const groups = (data && data.groups) || [];
+                    if (!groups.length) {
+                        container.innerHTML = '<div class="p-6 text-center text-slate-400 text-xs">没有可分组的试卷</div>';
+                        return;
+                    }
+                    container.innerHTML = '';
+                    groups.forEach(g => {
+                        const row = document.createElement('div');
+                        row.className = 'question-card bank-group-row p-3.5 mb-2 flex items-center justify-between cursor-pointer group hover:border-brand-400 transition-colors';
+                        const meta = [g.year, g.school, g.exam_type].filter(Boolean).join(' · ');
+                        row.innerHTML = `
+                            <div class="min-w-0">
+                                <div class="text-sm font-semibibold text-slate-800 dark:text-slate-100 truncate">${window.MathBankSafe.escapeText(g.source)}</div>
+                                <div class="text-[10px] text-slate-400 mt-0.5">${window.MathBankSafe.escapeText(meta)}</div>
+                            </div>
+                            <div class="flex items-center gap-2 shrink-0">
+                                <span class="text-[10px] font-bold px-2 py-0.5 rounded bg-brand-50 text-brand-600">${g.count} 题</span>
+                                <i class="fa-solid fa-chevron-right text-slate-300 group-hover:text-brand-500 transition-transform"></i>
+                            </div>`;
+                        row.addEventListener('click', () => {
+                            const se = document.getElementById('filterSource');
+                            if (se) se.value = g.source;
+                            const ge = document.getElementById('filterGroupMode');
+                            if (ge) {
+                                ge.dataset.active = 'false';
+                                ge.classList.remove('bg-brand-50', 'border-brand-500', 'text-brand-700', 'dark:bg-slate-700');
+                                ge.classList.add('bg-white', 'dark:bg-slate-800', 'border-slate-300', 'text-slate-700', 'dark:text-slate-200');
+                            }
+                            const so = document.getElementById('filterSort');
+                            if (so) so.value = 'paper_no';
+                            loadQuestions();
+                        });
+                        container.appendChild(row);
+                    });
+                })
+                .catch(() => { container.innerHTML = '<div class="p-6 text-center text-slate-400 text-xs">试卷列表加载失败</div>'; });
+        };
+
         function loadQuestions(retryCount = 0) {
             const loadSequence = ++bankQuestionsLoadSequence;
             if (bankQuestionsRetryTimer) {
@@ -2864,9 +3263,21 @@ function deleteDraft(id) {
             params.append('page', String(requestedPage));
             params.append('page_size', String(PAGE_LIMIT));
             params.append('sort', sortOrder === 'asc' ? 'asc' : 'desc');
+            // 默认视图排除烂题（可由筛选区的「显示烂题」开关关闭）
+            const excludeBadEl = document.getElementById('filterExcludeBad');
+            if (!excludeBadEl || excludeBadEl.dataset.active !== 'false') {
+                params.append('exclude_quality', 'bad');
+            }
             
             const qListContainer = document.getElementById('questionsList');
             if (!qListContainer) return;
+
+            // 按卷分组模式：渲染试卷聚合视图（不再走扁平列表）
+            const groupEl = document.getElementById('filterGroupMode');
+            if (groupEl && groupEl.dataset.active === 'true') {
+                window.renderBankGroups();
+                return;
+            }
             qListContainer.setAttribute('aria-busy', 'true');
             const fetchOptions = requestController ? { signal: requestController.signal } : undefined;
             
@@ -2908,11 +3319,26 @@ function deleteDraft(id) {
                         return;
                     }
                     
+                    // 质量标签：四档单击循环（普通→好题→经典→烂题→普通）
+                    const QUALITY_LABEL = { 0: '普通', 1: '好题', 2: '经典', '-1': '烂题' };
+                    const QUALITY_NEXT = { 0: 1, 1: 2, 2: -1, '-1': 0 };
+                    const QUALITY_BADGE_CLASS = {
+                        0: 'text-slate-400 bg-transparent border-slate-200 dark:text-slate-500 dark:border-slate-700',
+                        1: 'text-emerald-600 bg-emerald-50 border-emerald-300/60 dark:bg-emerald-900/30 dark:text-emerald-400',
+                        2: 'text-amber-600 bg-amber-50 border-amber-300/60 dark:bg-amber-900/30 dark:text-amber-400',
+                        '-1': 'text-rose-600 bg-rose-50 border-rose-300/60 dark:bg-rose-900/30 dark:text-rose-400',
+                    };
+                    function qualityBadgeHtml(level) {
+                        const lv = String(Number(level) || 0);
+                        return `<span class="quality-badge text-[9px] font-bold px-1.5 py-0.5 rounded-full border cursor-pointer hover:opacity-80 transition-opacity ${QUALITY_BADGE_CLASS[lv]}" title="点击切换质量标签（普通→好题→经典→烂题→普通）">${QUALITY_LABEL[lv]}</span>`;
+                    }
+
                     questions.forEach(item => {
                         // Create card element
                         const difficultyBadge = getDifficultyBadge(item.difficulty);
                         const typeText = getTypeText(item.question_type);
-                        
+                        const qualityLevel = Number(item.quality) || 0;
+
                         const itemCard = document.createElement('div');
                         itemCard.className = `question-card p-3.5 mx-1.5 flex flex-col space-y-2 select-none group relative ${EditorState.questionId === item.id ? 'active' : ''}`;
                         itemCard.dataset.id = item.id;
@@ -2947,17 +3373,20 @@ function deleteDraft(id) {
 
                         itemCard.innerHTML = `
                             <div class="flex items-start justify-between">
-                                <span class="text-[10px] font-bold px-2 py-0.5 rounded bg-slate-100 text-slate-500 shrink-0 mt-0.5">${window.MathBankSafe.escapeText(typeText)}</span>
-                                <div class="flex items-center gap-1.5 justify-end flex-wrap flex-1 ml-2">
-                                    ${tagsHtml}
+                                <div class="flex items-center gap-2 flex-wrap">
+                                    <span class="text-[10px] font-bold px-2 py-0.5 rounded bg-slate-100 text-slate-500 shrink-0 mt-0.5">${window.MathBankSafe.escapeText(typeText)}</span>
                                     ${difficultyBadge}
+                                </div>
+                                <div class="flex items-center gap-1.5 justify-end flex-wrap flex-1 ml-2 pr-9">
+                                    ${qualityBadgeHtml(qualityLevel)}
+                                    ${tagsHtml}
                                     <span class="text-[10px] font-extrabold px-1.5 py-0.5 rounded bg-brand-50 text-brand-600 shadow-sm">#${window.MathBankSafe.escapeText(item.seq_num)}</span>
-                                    <!-- Delete Button -->
-                                    <button type="button" aria-label="删除题目" onclick="event.stopPropagation(); deleteQuestion(${item.id})" class="text-slate-400 hover:text-red-500 p-0.5 rounded hover:bg-slate-100 transition-all opacity-0 group-hover:opacity-100" title="删除">
-                                        <i class="fa-solid fa-trash-can text-[10px]"></i>
-                                    </button>
                                 </div>
                             </div>
+                            <!-- Delete Button -->
+                            <button type="button" aria-label="删除题目" onclick="event.stopPropagation(); deleteQuestion(${item.id})" class="absolute top-3 right-3 w-7 h-7 flex items-center justify-center rounded-lg text-slate-400 hover:text-white hover:bg-red-500 transition-colors" title="删除此题">
+                                <i class="fa-solid fa-trash-can text-[13px]"></i>
+                            </button>
                             <div class="text-xs text-slate-700 leading-relaxed font-medium line-clamp-2 card-formula-render">${cleanContent || '[空白题干]'}</div>
                             <!-- Time Badge -->
                             <div class="text-[8px] text-slate-400/80 flex items-center space-x-1 py-0.5">
@@ -2984,7 +3413,31 @@ function deleteDraft(id) {
                         } catch(e) {
                             console.error('KaTeX sidebar rendering error: ', e);
                         }
-                        
+
+                        // 质量标签单击循环
+                        const qBadge = itemCard.querySelector('.quality-badge');
+                        if (qBadge) {
+                            qBadge.addEventListener('click', (e) => {
+                                e.stopPropagation();
+                                const cur = Number(item.quality) || 0;
+                                const nxt = QUALITY_NEXT[String(cur)];
+                                fetch(`/api/questions/${item.id}/quality`, {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json', 'X-Local-Token': window.getLocalToken ? window.getLocalToken() : '' },
+                                    body: JSON.stringify({ level: nxt })
+                                }).then(r => r.json()).then(res => {
+                                    if (!res || res.status !== 'success') { if (window.showToast) window.showToast('质量标签更新失败', 'error'); return; }
+                                    item.quality = res.level;
+                                    qBadge.className = `quality-badge text-[9px] font-bold px-1.5 py-0.5 rounded-full border cursor-pointer hover:opacity-80 transition-opacity ${QUALITY_BADGE_CLASS[String(res.level)]}`;
+                                    qBadge.textContent = QUALITY_LABEL[String(res.level)];
+                                    if (res.level === -1 && document.getElementById('filterExcludeBad') && document.getElementById('filterExcludeBad').dataset.active === 'true') {
+                                        itemCard.remove();
+                                    }
+                                    if (window.showToast) window.showToast('质量：' + QUALITY_LABEL[String(res.level)], 'success');
+                                }).catch(() => { if (window.showToast) window.showToast('质量标签更新失败', 'error'); });
+                            });
+                        }
+
                         itemCard.onclick = () => {
                             checkAndSwitch(() => {
                                 if (typeof window.selectWorkspace === 'function') {
@@ -3249,6 +3702,76 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             currentBankPage = 1;
             loadQuestions();
+        });
+    }
+
+    // 质量：显示烂题 开关（默认关闭 = 排除烂题）
+    const filterExcludeBad = document.getElementById('filterExcludeBad');
+    if (filterExcludeBad) {
+        filterExcludeBad.addEventListener('click', () => {
+            const active = filterExcludeBad.dataset.active !== 'true';
+            filterExcludeBad.dataset.active = String(active);
+            if (active) {
+                filterExcludeBad.classList.add('bg-brand-50', 'border-brand-500', 'text-brand-700', 'dark:bg-slate-700');
+                filterExcludeBad.classList.remove('bg-white', 'dark:bg-slate-800', 'border-slate-300', 'text-slate-700', 'dark:text-slate-200');
+            } else {
+                filterExcludeBad.classList.remove('bg-brand-50', 'border-brand-500', 'text-brand-700', 'dark:bg-slate-700');
+                filterExcludeBad.classList.add('bg-white', 'dark:bg-slate-800', 'border-slate-300', 'text-slate-700', 'dark:text-slate-200');
+            }
+            currentBankPage = 1;
+            loadQuestions();
+        });
+    }
+
+    // 按卷分组 开关（切换试卷聚合视图）
+    const filterGroupMode = document.getElementById('filterGroupMode');
+    if (filterGroupMode) {
+        filterGroupMode.addEventListener('click', () => {
+            const active = filterGroupMode.dataset.active !== 'true';
+            filterGroupMode.dataset.active = String(active);
+            if (active) {
+                filterGroupMode.classList.add('bg-brand-50', 'border-brand-500', 'text-brand-700', 'dark:bg-slate-700');
+                filterGroupMode.classList.remove('bg-white', 'dark:bg-slate-800', 'border-slate-300', 'text-slate-700', 'dark:text-slate-200');
+            } else {
+                filterGroupMode.classList.remove('bg-brand-50', 'border-brand-500', 'text-brand-700', 'dark:bg-slate-700');
+                filterGroupMode.classList.add('bg-white', 'dark:bg-slate-800', 'border-slate-300', 'text-slate-700', 'dark:text-slate-200');
+            }
+            currentBankPage = 1;
+            loadQuestions();
+        });
+    }
+
+    // 列表 / 网格 视图切换（持久化到 localStorage）
+    const filterViewMode = document.getElementById('filterViewMode');
+    const questionsListEl = document.getElementById('questionsList');
+    function applyBankViewMode(mode) {
+        const btn = document.getElementById('filterViewMode');
+        const list = document.getElementById('questionsList');
+        if (!btn || !list) return;
+        const isGrid = mode === 'grid';
+        list.classList.toggle('bank-grid', isGrid);
+        try { localStorage.setItem('bankViewMode', mode); } catch (e) {}
+        const icon = btn.querySelector('i');
+        const label = document.getElementById('filterViewModeText');
+        if (isGrid) {
+            if (icon) icon.className = 'fa-solid fa-grip mr-1';
+            if (label) label.textContent = '网格';
+            btn.classList.add('bg-brand-50', 'border-brand-500', 'text-brand-700', 'dark:bg-slate-700');
+            btn.classList.remove('bg-white', 'dark:bg-slate-800', 'border-slate-300', 'text-slate-700', 'dark:text-slate-200');
+        } else {
+            if (icon) icon.className = 'fa-solid fa-list mr-1';
+            if (label) label.textContent = '列表';
+            btn.classList.remove('bg-brand-50', 'border-brand-500', 'text-brand-700', 'dark:bg-slate-700');
+            btn.classList.add('bg-white', 'dark:bg-slate-800', 'border-slate-300', 'text-slate-700', 'dark:text-slate-200');
+        }
+    }
+    if (filterViewMode && questionsListEl) {
+        let savedMode = 'list';
+        try { savedMode = localStorage.getItem('bankViewMode') || 'list'; } catch (e) {}
+        applyBankViewMode(savedMode);
+        filterViewMode.addEventListener('click', () => {
+            const next = questionsListEl.classList.contains('bank-grid') ? 'list' : 'grid';
+            applyBankViewMode(next);
         });
     }
 });

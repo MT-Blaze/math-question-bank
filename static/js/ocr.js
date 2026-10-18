@@ -455,6 +455,10 @@
 
             uploadedImages.forEach((path, idx) => {
                 if (hiddenReferencePaths.has(path)) return;
+                // TikZ 渲染结果（tikz_*.png）不是待转位图：它已经在「TikZ 绘图」
+                // 面板里列一条；再挂一个「TikZ」按钮等于让用户拿转好的图重转一次。
+                if (typeof window.isTikzRenderImage === 'function'
+                    && window.isTikzRenderImage(path)) return;
                 const filename = path.split('/').pop();
                 const safePath = (window.MathBankSafe && window.MathBankSafe.safeImageUrl)
                     ? window.MathBankSafe.safeImageUrl(path) : path;
@@ -939,13 +943,12 @@
             const lightboxImg = document.getElementById('lightboxImg');
             if (lightbox && lightboxImg) {
                 lightboxImg.src = src;
-                lightbox.classList.remove('hidden');
-                window.MathBankModal.open(lightbox, { onEscape: closeLightbox });
-                // Force reflow for transitions
-                lightbox.offsetHeight;
-                lightbox.classList.remove('opacity-0');
-                lightboxImg.classList.remove('scale-95');
-                lightboxImg.classList.add('scale-100');
+                // 统一走 api.js 的公共开关助手：灯箱的 scale 过渡面是 img 本身，显式传入；
+                // 揭示自带 rAF+setTimeout 双保险，杜绝"透明全屏层吞点击"的整页假死。
+                window.openModalWithTransition(lightbox, {
+                    onEscape: closeLightbox,
+                    surface: lightboxImg
+                });
             }
         }
 
@@ -953,14 +956,8 @@
             const lightbox = document.getElementById('imageLightbox');
             const lightboxImg = document.getElementById('lightboxImg');
             if (lightbox && lightboxImg) {
-                window.MathBankModal.close(lightbox);
-                lightbox.classList.add('opacity-0');
-                lightboxImg.classList.remove('scale-100');
-                lightboxImg.classList.add('scale-95');
-                setTimeout(() => {
-                    lightbox.classList.add('hidden');
-                    lightboxImg.src = '';
-                }, 300);
+                window.closeModalWithTransition(lightbox);
+                lightboxImg.src = '';
             }
         }
 

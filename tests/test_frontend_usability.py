@@ -128,8 +128,12 @@ const rendered = transformExamZhParenForPreview(String.raw`题干 \paren`);
 if (rendered.includes(String.raw`\paren`)) {
   throw new Error(`paren macro leaked into preview: ${rendered}`);
 }
-if (!rendered.includes('class="exam-zh-paren-preview"') || !rendered.includes('（&nbsp;&nbsp;）')) {
+// 括号内必须是两个**全角空格** U+3000，与导出侧 _render_choice_paren 的「（　　）」同宽
+if (!rendered.includes('class="exam-zh-paren-preview"') || !rendered.includes('（\u3000\u3000）')) {
   throw new Error(`paren preview markup missing: ${rendered}`);
+}
+if (rendered.includes('&nbsp;')) {
+  throw new Error(`paren preview fell back to half-width &nbsp;: ${rendered}`);
 }
 const similarlyNamed = transformExamZhParenForPreview(String.raw`\parent`);
 if (similarlyNamed !== String.raw`\parent`) {
@@ -149,7 +153,12 @@ if (similarlyNamed !== String.raw`\parent`) {
     assert protect_position < strip_position < transform_position
 
     assert ".exam-zh-paren-preview" in css_source
-    assert "float: right;" in css_source
+    # 作答括号必须**紧跟题干末尾**（导出侧 paren/type=none，见 paper_helper）。
+    # 曾经的 float:right 是照抄 exam-zh 默认 hfill，两边口径已统一为紧跟。
+    paren_rule = re.search(r"\.exam-zh-paren-preview\s*\{[^}]*\}", css_source, re.DOTALL)
+    assert paren_rule, "缺少 .exam-zh-paren-preview 规则"
+    assert "float:" not in paren_rule.group(0), "作答括号不应再浮动到行尾右侧"
+    assert re.search(r"display:\s*inline", paren_rule.group(0)), "作答括号应内联紧跟题干"
     assert re.search(r"\.choices-grid\s*\{[^}]*clear:\s*both;", css_source, re.DOTALL)
 
 
@@ -201,6 +210,74 @@ for (const source of [
 """
     result = _run_node_script(script)
     assert result.returncode == 0, result.stderr
+
+
+def test_editor_preview_indents_circled_subitems_one_level_deeper():
+    r"""圈号小小问（①②③…）在预览里必须比一级小问 (1)/(2) 再缩进一级。
+
+    回归来源：AI 的实际形态是**裸的** `①求证：…`（圈号后直接跟汉字），而旧正则把圈号
+    写在 `[(（]?(?:…)[)）\.]` 这一支里、要求后面还得跟 `)`/`）`/`.` —— 于是永远匹配不上，
+    预览既不换行也不缩进，①② 和 (1) 齐平、看不出层级。
+    """
+    editor_source = _read(STATIC_JS_DIR / "editor.js")
+    css_source = _read(CSS_PATH)
+
+    helper_start = editor_source.index("function transformFillinMacro(clean)")
+    helper_marker = "window.preprocessFormulaForKaTeX = preprocessFormulaForKaTeX;"
+    helper_end = editor_source.index(helper_marker, helper_start) + len(helper_marker)
+    helper_source = editor_source[helper_start:helper_end]
+
+    script = r"""
+global.window = {
+  MathBankSafe: {
+    safeImageUrl(value) { return value; },
+    escapeAttribute(value) { return value; },
+""" + _ESCAPE_TEXT_STUB + r"""  },
+};
+""" + _escape_html_helper_source() + helper_source + r"""
+const stem = String.raw`已知二次函数 $f(x)=ax^{2}+bx+c$。
+
+(1) 若 $a,b,c$ 满足 $a > b > c$，一次函数 $g(x)=-bx$。
+① 求证：两函数的图象交于不同两点 $A$，$B$。
+② 求线段 $AB$ 在 $x$ 轴上的射影 $A_{1}B_{1}$ 的长的取值范围。`;
+const rendered = window.preprocessFormulaForKaTeX(stem);
+
+const count = (rendered.match(/class="preview-subitem"/g) || []).length;
+if (count !== 2) {
+  throw new Error('圈号段落应各自缩进成块（期望 2），实际 ' + count + '：' + rendered);
+}
+for (const marker of ['①', '②']) {
+  const at = rendered.indexOf(marker);
+  if (at < 0) throw new Error('圈号 ' + marker + ' 丢失：' + rendered);
+  const head = rendered.slice(Math.max(0, at - 40), at);
+  if (head.indexOf('<div class="preview-subitem">') < 0) {
+    throw new Error('圈号 ' + marker + ' 没有套上缩进块：' + head);
+  }
+}
+const oneAt = rendered.indexOf('(1)');
+if (oneAt < 0) throw new Error('一级小问 (1) 丢失：' + rendered);
+const oneHead = rendered.slice(Math.max(0, oneAt - 40), oneAt);
+if (oneHead.indexOf('preview-subitem') >= 0) {
+  throw new Error('一级小问 (1) 被误缩进：' + oneHead);
+}
+
+// 圈号段前导不再带 <br> 或 <br><br>（修复第6题预览段间距过大：div 块级自带换行，
+// 再叠 <br> 会多出一行间距）。段间距完全交给 CSS 的 .preview-subitem margin-top 控制。
+if (rendered.indexOf('<br><div class="preview-subitem">') >= 0) {
+  throw new Error('圈号段前导仍残留单个 <br>：' + rendered);
+}
+if (rendered.indexOf('<br><br><div class="preview-subitem">') >= 0) {
+  throw new Error('圈号段前导仍残留 <br><br>：' + rendered);
+}
+"""
+    result = _run_node_script(script)
+    assert result.returncode == 0, result.stderr
+
+    assert 'class="preview-subitem"' in editor_source
+    assert ".preview-subitem" in css_source
+    assert re.search(r"\.preview-subitem\s*\{[^}]*margin-left\s*:", css_source, re.DOTALL)
+    # 间距改由 CSS 控制（2026-09-22 二次修复）：.preview-subitem 必须有 margin-top。
+    assert re.search(r"\.preview-subitem\s*\{[^}]*margin-top\s*:", css_source, re.DOTALL)
 
 
 def test_shared_question_preview_pipeline_renders_fillin_through_local_preprocessor():
@@ -541,11 +618,18 @@ def test_modal_manager_traps_focus_handles_escape_and_restores_focus():
     assert "dialog.querySelector('[autofocus], [data-modal-close]')" not in api_source
     assert "|| getFocusable(dialog)[0]" not in api_source
 
-    assert api_source.count("window.MathBankModal.open") >= 2
-    assert editor_source.count("window.MathBankModal.open") >= 3
-    assert import_source.count("window.MathBankModal.open") >= 3
-    assert "window.MathBankModal.open(lightbox" in ocr_source
-    assert "window.MathBankModal.open(modal" in paper_source
+    # 「+添加厂商」事故后入口已统一：api.js 里 MathBankModal.open 只允许出现在
+    # 公共助手内部一次，各文件必须经 openModalWithTransition/reveal 进栈。
+    # import.js 残留的直接进栈来自无 opacity-0 形态的运行时动态弹窗，
+    # 该计数只许降不许升——升了就说明有人又开始手写全屏遮罩开关。
+    assert api_source.count("window.MathBankModal.open") == 1
+    assert api_source.count("openModalWithTransition(") >= 4
+    assert editor_source.count("openModalWithTransition(") >= 3
+    assert import_source.count("openModalWithTransition(") >= 5
+    assert import_source.count("window.MathBankModal.open") <= 4
+    assert "window.openModalWithTransition(lightbox" in ocr_source
+    assert "window.closeModalWithTransition(lightbox)" in ocr_source
+    assert "window.revealModalWithTransition(modal)" in paper_source
 
 
 def test_loading_saved_paper_restores_modal_background_interactivity():
@@ -555,7 +639,8 @@ def test_loading_saved_paper_restores_modal_background_interactivity():
     close_end = paper_source.index("window.openSavedPapersModal = async function ()", close_start)
     close_source = paper_source[close_start:close_end]
     load_start = paper_source.index("window.loadSavedPaper = async function (paperId)")
-    load_end = paper_source.index("window.deleteSavedPaper = async function (paperId)", load_start)
+    # 删卷入口已改成「先预检再弹统一确认框」，签名不再是 async；锚点跟着实际形态走。
+    load_end = paper_source.index("window.deleteSavedPaper = function (paperId)", load_start)
     load_source = paper_source[load_start:load_end]
 
     assert close_source.index("window.MathBankModal.close(modal)") < close_source.index("modal.remove()")
@@ -1139,6 +1224,106 @@ console.log('OK');
     assert "OK" in result.stdout
 
 
+def test_replace_parsed_card_image_swaps_paths_text_and_edit_boxes():
+    r"""「图形替换」必须与软删除同口径：image_paths、正文引用、**编辑框**、TikZ 参考图一起改。
+
+    场景：原图被学科网水印压住，用户去小猿搜题重新截图后回来替换。
+    只改 image_paths 不改正文 → 「图换了但解析里还是旧图」；
+    不改编辑框更糟 → 保存时读的是编辑框 value，会把旧图原样写回去（软删除踩过同一个坑）。
+    """
+
+    import_source = _read(STATIC_JS_DIR / "import.js")
+    start = import_source.index("function stripParsedImageReference(")
+    end = import_source.index("function parsedCardAssetFor(", start)
+    helper = import_source[start:end]
+    assert "function replaceParsedCardImage(" in helper
+    assert "function replaceParsedImageReference(" in helper
+
+    script = (
+        "const OLD = '/static/uploads/tmp/pdf_crop_taskX_1_0.png';\n"
+        "const NEW = '/static/uploads/replaced_abc123.png';\n"
+        "globalThis.window = { MathBankSafe: { safeImageUrl: p => (p ? String(p) : '') } };\n"
+        "const textareaWrites = [];\n"
+        "globalThis.document = { getElementById: () => ({\n"
+        "  querySelector: sel => ({\n"
+        "    get value() { return 'see ' + OLD; },\n"
+        "    set value(v) { textareaWrites.push(sel + '|' + v); }\n"
+        "  })\n"
+        "}) };\n"
+        "let parsedQuestionsData = [];\n"
+        + helper
+        + r"""
+parsedQuestionsData = [{
+  content: '如图 ![图](' + OLD + ') 所示，求角。',
+  answer_markdown: '见 \includegraphics{pdf_crop_taskX_1_0.png}。',
+  image_paths: [OLD],
+  referenced_images: [OLD],
+  content_tikz_assets: [{ reference_image_path: OLD, image_path: '/static/uploads/tikz_a.png' }],
+  answer_tikz_assets: [{ reference_image_path: '/static/uploads/other.png', image_path: '/static/uploads/tikz_b.png' }]
+}];
+
+if (replaceParsedCardImage(0, OLD, NEW) !== true) throw new Error('替换应返回 true');
+const q = parsedQuestionsData[0];
+if (q.image_paths.length !== 1 || q.image_paths[0] !== NEW) {
+  throw new Error('image_paths 未替换: ' + JSON.stringify(q.image_paths));
+}
+if (q.content.indexOf('replaced_abc123.png') < 0 || q.content.indexOf('pdf_crop_taskX_1_0.png') >= 0) {
+  throw new Error('题干引用未替换: ' + q.content);
+}
+if (q.answer_markdown.indexOf('includegraphics{replaced_abc123.png}') < 0) {
+  throw new Error('解答里 basename 形态的引用未替换: ' + q.answer_markdown);
+}
+if (q.referenced_images[0] !== NEW) throw new Error('referenced_images 未替换');
+if (q.content_tikz_assets[0].reference_image_path !== NEW) {
+  throw new Error('TikZ 参考图未改指新图: ' + JSON.stringify(q.content_tikz_assets));
+}
+if (q.answer_tikz_assets[0].reference_image_path !== '/static/uploads/other.png') {
+  throw new Error('无关图的 TikZ 参考图被误改');
+}
+if (textareaWrites.length !== 2) {
+  throw new Error('两个编辑框都要同步改，实际写了 ' + textareaWrites.length + ' 个');
+}
+if (textareaWrites.some(entry => entry.indexOf('replaced_abc123.png') < 0)) {
+  throw new Error('编辑框没换成新图（保存时会把旧图写回去）: ' + JSON.stringify(textareaWrites));
+}
+if (replaceParsedCardImage(0, '/static/uploads/tmp/not-owned.png', NEW) !== false) {
+  throw new Error('不属于本题的图不应返回 true');
+}
+console.log('OK');
+"""
+    )
+    result = _run_node_script(script)
+    assert result.returncode == 0, result.stderr
+    assert "OK" in result.stdout
+
+
+def test_replace_parsed_image_reference_does_not_eat_longer_filenames():
+    r"""按 basename 替换必须加「后面不接文件名字符」的前瞻，否则会误伤前缀相同的长名。"""
+
+    import_source = _read(STATIC_JS_DIR / "import.js")
+    start = import_source.index("function parsedImageBasename(")
+    end = import_source.index("function parsedImageDocumentOrder(", start)
+    helper = import_source[start:end]
+
+    script = (
+        "globalThis.window = { MathBankSafe: { safeImageUrl: p => (p ? String(p) : '') } };\n"
+        + helper
+        + r"""
+const OLD = '/static/uploads/tmp/pic_1_0.png';
+const NEW = '/static/uploads/new_9_9.png';
+const text = 'a \includegraphics{pic_1_0.png} b pic_1_0.png.bak c pic_1_0.png?x=1 d';
+const out = replaceParsedImageReference(text, OLD, NEW);
+if (out.indexOf('includegraphics{new_9_9.png}') < 0) throw new Error('正常引用未替换: ' + out);
+if (out.indexOf('pic_1_0.png.bak') < 0) throw new Error('同名前缀的长文件被误伤: ' + out);
+if (out.indexOf('new_9_9.png?x=1') < 0) throw new Error('带 query 的引用未替换: ' + out);
+console.log('OK');
+"""
+    )
+    result = _run_node_script(script)
+    assert result.returncode == 0, result.stderr
+    assert "OK" in result.stdout
+
+
 def test_parsed_image_overview_is_wired_and_reuses_the_badge_helper():
     """整卷配图总览必须有入口按钮，且角标与批量转 TikZ 复用既有单一实现。"""
 
@@ -1279,6 +1464,48 @@ def test_parsed_card_does_not_inline_tikz_source_into_content():
     assert "不是「没存源码」" in viewer
 
 
+def test_parsed_card_textareas_use_auto_resize():
+    """编辑框走 autoResizeTextarea **真自适应**；参数全用默认（按行高自算）。
+
+    卡片曾固定 min-h-[80px]（裁切），后改 min-h-[300px] 死下限（内容少也 300px，
+    不是自适应）。现改为：调用只传 bindWindowResize:false（22×2 个卡片不挂全局
+    resize 监听），minHeight/maxHeight/bottomPadding 全交给 autoResizeTextarea
+    按实际行高自算（内容高度 + 2 行留白，封顶视口 70% 后滚动）。
+    """
+    import_source = _read(STATIC_JS_DIR / "import.js")
+
+    card_start = import_source.index("function renderParsedQuestionsList(")
+    card_end = import_source.index("function renderParsedCardPreview(", card_start)
+    card_source = import_source[card_start:card_end]
+
+    assert "window.autoResizeTextarea" in card_source
+    assert "bindWindowResize: false" in card_source
+    # 不再硬编码留白/上下限（否则就不是「按行高算 2 行」了）
+    assert "bottomPadding: 44" not in card_source
+    assert "minHeight: 300" not in card_source
+    assert "maxHeight: 3000" not in card_source
+    # 必须放在 .value 赋值之后（否则首次 resize 读不到初始内容高度）
+    value_idx = card_source.index("card-content-textarea').value = String(q.content")
+    resize_idx = card_source.index("window.autoResizeTextarea")
+    assert resize_idx > value_idx, "autoResizeTextarea 必须放在 .value 赋值之后"
+
+    # 单题编辑器：也只传 {}，让函数自算
+    editor_source = _read(STATIC_JS_DIR / "editor.js")
+    sp_start = editor_source.index("function setupRealtimePreviews(")
+    sp_end = editor_source.index("function ", sp_start + 1)
+    sp_source = editor_source[sp_start:sp_end]
+    assert "autoResizeTextarea(editContent, {})" in sp_source
+    assert "autoResizeTextarea(editAnswer, {})" in sp_source
+    assert "bottomPadding: 52" not in sp_source
+    # autoResizeTextarea 支持按 lineHeight 自算 + bindWindowResize 开关
+    ar_start = editor_source.index("function autoResizeTextarea(")
+    ar_end = editor_source.index("window.autoResizeTextarea = autoResizeTextarea", ar_start)
+    ar_source = editor_source[ar_start:ar_end]
+    assert "getComputedStyle" in ar_source
+    assert "lineHeight" in ar_source
+    assert "bindWindowResize" in ar_source
+
+
 def test_choice_images_have_their_own_slot():
     """选项图必须与题干图区分开（图墙标注「选项图」）。
 
@@ -1347,6 +1574,26 @@ def test_choices_env_item_images_are_classified_as_choice_slot():
         # ④ 旧形态仍然有效：A．![](url) 同行
         "const inline = '题干\\nA．![插图](tmp/e.png) B．2 C．3 D．4';\n"
         "if (parsedCardChoiceImagePaths(inline).length !== 1) throw new Error('A．同行形态失效');\n"
+        # ⑤ 入库后真实形态：choices 内 \\item 行上的 LaTeX \\includegraphics 必须归选项图
+        "const latexItem = '\\\\begin{choices}\\n"
+        "\\\\item \\\\includegraphics[max width=0.42\\\\linewidth]{x/a.jpg}\\n"
+        "\\\\item \\\\includegraphics{x/b.jpg}\\n"
+        "\\\\end{choices}';\n"
+        "if (parsedCardChoiceImagePaths(latexItem).length !== 2) throw new Error('choices 内 LaTeX \\\\includegraphics 应归为选项图: ' + JSON.stringify(parsedCardChoiceImagePaths(latexItem)));\n"
+        # ⑥ LaTeX \\includegraphics 在题干（choices 外）-> 不算选项图（归 content 槽）
+        "const latexStem = '题干 \\\\includegraphics{stem.jpg}\\n"
+        "\\\\begin{choices}\\n\\\\item 甲\\n\\\\item 乙\\n\\\\end{choices}';\n"
+        "if (parsedCardChoiceImagePaths(latexStem).length !== 0) throw new Error('choices 外 LaTeX 图被误判为选项图');\n"
+        # ⑦ Markdown + LaTeX 混合 -> 两种都认
+        "const mixed = '\\\\begin{choices}\\n"
+        "\\\\item ![插图](tmp/md.png)\\n"
+        "\\\\item \\\\includegraphics{x/lx.png}\\n"
+        "\\\\end{choices}';\n"
+        "const mixedGot = parsedCardChoiceImagePaths(mixed);\n"
+        "if (mixedGot.length !== 2) throw new Error('Markdown+LaTeX 混合应认出 2 张: ' + JSON.stringify(mixedGot));\n"
+        # ⑧ 裸标号一行 + 下一行只有 LaTeX 图 -> 归选项图
+        "const bareLatex = 'A\\n\\\\includegraphics{x/a.jpg}\\nB\\n\\\\includegraphics{x/b.jpg}';\n"
+        "if (parsedCardChoiceImagePaths(bareLatex).length !== 2) throw new Error('裸标号+LaTeX 图应归为选项图: ' + JSON.stringify(parsedCardChoiceImagePaths(bareLatex)));\n"
     )
 
     result = _run_node_script(script)
@@ -2574,3 +2821,877 @@ def test_formula_badge_absent_for_clean_question():
     payload = json.loads(result.stdout.strip().splitlines()[-1])
     assert payload["reasons"] == [], payload["reasons"]
     assert payload["badges"] == 0
+
+
+def test_parsed_card_option_columns_control_is_wired():
+    """拆卷卡片的「选项列数」下拉：控件 / 回填 / 脏检查 / 提交 四件事必须齐全。
+
+    背景：拆完 22 题后要改列数，只能逐个「导入 → 打开 → 改」。后端
+    ``create_question`` 早已接收 ``option_columns``，缺的只是卡片上的入口。
+    取值必须与单题编辑器 ``editOptionColumns`` 完全一致（0=自适应，1/2/4=强制列数），
+    否则同一道题在两条链上会得到不同排版。
+    """
+    import_source = _read(STATIC_JS_DIR / "import.js")
+    index_source = _read(INDEX_PATH)
+
+    # ① 控件存在，且四个取值齐全
+    marker = 'class="card-option-columns'
+    start = import_source.index(marker)
+    block = import_source[start:import_source.index("</select>", start)]
+    for value in ("0", "4", "2", "1"):
+        assert f'value="{value}"' in block, f"选项列数缺少取值 {value}"
+    assert "自适应" in block
+
+    # ② 回填：AI 可能给 undefined / null / "" / 3（旧语义），一律兜底 0
+    assert "const cardOptionColumns = card.querySelector('.card-option-columns');" in import_source
+    assert "validCols" in import_source
+    # ③ 脏检查 + ④ 保存时提交
+    assert "optionColsInput.addEventListener('change'" in import_source
+    assert "formData.append('option_columns'" in import_source
+    # 单题编辑器侧同名控件必须存在，两边语义不能漂移
+    assert 'id="editOptionColumns"' in index_source
+
+    # 真跑 node：回填逻辑从源码抽出执行，挡住「静态断言全绿但取值写反」
+    fill_start = import_source.index(
+        "const cardOptionColumns = card.querySelector('.card-option-columns');"
+    )
+    fill_end = import_source.index(
+        "}", import_source.index("cardOptionColumns.value =", fill_start)
+    ) + 1
+    fill_source = import_source[fill_start:fill_end]
+    script = "".join(
+        (
+            "const el = { value: 'SENTINEL' };\n",
+            "const card = { querySelector: function () { return el; } };\n",
+            "function resolve(q) {\n",
+            fill_source,
+            "\n  return el.value;\n}\n",
+            "var cases = [{}, {option_columns: null}, {option_columns: ''},",
+            " {option_columns: 0}, {option_columns: 4}, {option_columns: 2},",
+            " {option_columns: 1}, {option_columns: 3}, {option_columns: '4'}];\n",
+            "var got = cases.map(resolve);\n",
+            "var want = ['0','0','0','0','4','2','1','0','4'];\n",
+            "if (JSON.stringify(got) !== JSON.stringify(want)) {\n",
+            "  throw new Error('option_columns 回填漂移: ' + JSON.stringify(got));\n",
+            "}\n",
+        )
+    )
+    result = _run_node_script(script)
+    assert result.returncode == 0, result.stderr
+
+
+def test_panel_source_fields_propagate_to_parsed_card_source():
+    """左侧「来源」字段变化后，拆卷卡片的「来源」要自动变成标准格式。
+
+    回归：哈尔滨三中卷导入时面板填了 2023 / 哈三中 / 10月月考 / 黑龙江省 / 哈尔滨市 /
+    高一，卡片来源却仍是 AI 抄的原卷标题。根因是 syncInheritedCardSource 拿
+    「卡片值 === 旧面板标题」当继承判据——而卡片来源的初值是后端 q.source（AI 原始
+    标题，见 parsing_pipeline 的 `source or paper_title`），与面板标题不相等；面板
+    标题留空（placeholder 明说可留空）时还会因 !prevTitle 直接短路。这里把三个真实
+    函数抽到 node 里跑，锁住修复后的行为。
+    """
+
+    import_source = _read(STATIC_JS_DIR / "import.js")
+    start = import_source.index("function buildStandardPaperTitle(")
+    end = import_source.index("function initSourceSmartFields(", start)
+    fns = import_source[start:end]
+
+    ai_raw = "哈三中2023-2024学年度上学期高一学年第一次验收考试数学试卷"
+    std = "2023年哈三中高一10月月考"
+
+    script = "".join((
+        "const els = {\n",
+        "  importSrcYear: { value: '2023' },\n",
+        "  importSrcRegion: { value: '哈三中' },\n",
+        "  importSrcExamType: { value: '10月月考' },\n",
+        "  importSrcSemester: { value: '' },\n",
+        "  importApplicableGrade: { value: 'g1' },\n",
+        "  importPaperTitle: { value: '' },\n",
+        "};\n",
+        "const cardEl = { value: '" + ai_raw + "', dataset: {} };\n",
+        "const document = {\n",
+        "  getElementById: (id) => els[id] || null,\n",
+        "  querySelectorAll: (sel) => (sel.indexOf('card-source') >= 0 ? [cardEl] : []),\n",
+        "};\n",
+        "const parsedQuestionsData = [{ source: cardEl.value }];\n",
+        fns,
+        "\n",
+        # A：面板字段齐全、试卷标题留空 -> 卡片必须落到标准标题
+        "applyStandardPaperTitle();\n",
+        "if (cardEl.value !== '" + std + "') throw new Error('标题留空时卡片未更新: ' + cardEl.value);\n",
+        "if (parsedQuestionsData[0].source !== '" + std + "') throw new Error('q.source 未同步');\n",
+        # B：面板字段再变 -> 未手改的卡片继续跟随
+        "els.importSrcExamType.value = '期末';\n",
+        "applyStandardPaperTitle();\n",
+        "if (cardEl.value !== '2023年哈三中高一期末') throw new Error('二次变更未同步: ' + cardEl.value);\n",
+        # C：用户手改过这张卡 -> 不再被覆盖
+        "cardEl.value = '我自己改的来源';\n",
+        "cardEl.dataset.userEdited = '1';\n",
+        "parsedQuestionsData[0].source = '我自己改的来源';\n",
+        "parsedQuestionsData[0].__sourceUserEdited = true;\n",
+        "els.importSrcExamType.value = '一模';\n",
+        "applyStandardPaperTitle();\n",
+        "if (cardEl.value !== '我自己改的来源') throw new Error('手改过的卡片被覆盖: ' + cardEl.value);\n",
+        "if (parsedQuestionsData[0].source !== '我自己改的来源') throw new Error('手改过的 q.source 被覆盖');\n",
+    ))
+
+    result = _run_node_script(script)
+    assert result.returncode == 0, result.stderr
+
+
+def test_parsed_card_source_edit_flag_is_bound():
+    """卡片「来源」被用户手改后要留标记，后续面板字段变化不得覆盖。
+
+    标记双向落地：DOM 上的 data-user-edited 给同步即时判读，数据对象的
+    __sourceUserEdited 保证卡片重渲染后标记不丢；两条解析完成路径在渲染后
+    还要主动调用一次标准标题同步，让新卡片默认落到标准格式。
+    """
+
+    import_source = _read(STATIC_JS_DIR / "import.js")
+
+    card_start = import_source.index("function renderParsedQuestionsList(")
+    card_end = import_source.index("function renderParsedCardPreview(", card_start)
+    card_source = import_source[card_start:card_end]
+    assert "dataset.userEdited = '1'" in card_source
+    assert (
+        "if (q.__sourceUserEdited === true) cardSourceInput.dataset.userEdited = '1';"
+        in card_source
+    )
+    assert "__sourceUserEdited = true" in card_source
+    assert "sourceEditBound" in card_source
+
+    sync_start = import_source.index("function syncInheritedCardSource(")
+    sync_end = import_source.index("function initSourceSmartFields(", sync_start)
+    sync_source = import_source[sync_start:sync_end]
+    # 认手改标记，且不再拿「等于旧面板标题」当继承判据
+    assert "el.dataset && el.dataset.userEdited === '1'" in sync_source
+    assert "q.__sourceUserEdited !== true" in sync_source
+    assert "=== prevTitle" not in sync_source
+
+    # 两条解析完成路径渲染后都调用标准标题同步（新卡片默认标准格式）
+    assert import_source.count(
+        "if (typeof applyStandardPaperTitle === 'function') applyStandardPaperTitle();"
+    ) >= 5
+
+
+def test_textareas_have_no_css_height_lock():
+    """四个编辑 textarea 的 CSS **不得**带 min-h/max-h —— 否则会盖掉 JS 算出的高度。
+
+    真自适应要求框高由 JS 的 inline height 主导；CSS 里任何 min-height/max-height
+    都会把它按住（上一轮 min-h-[300px] 正是「内容少时框仍是 300px」的元凶）。
+    resize-y 保留，允许用户手动拖。
+    """
+    import_source = _read(STATIC_JS_DIR / "import.js")
+    card_start = import_source.index("function renderParsedQuestionsList(")
+    card_end = import_source.index("function renderParsedCardPreview(", card_start)
+    card_source = import_source[card_start:card_end]
+
+    for cls in ("card-content-textarea", "card-answer-textarea"):
+        i = card_source.index(cls)
+        snippet = card_source[i : card_source.index("></textarea>", i)]
+        assert "min-h-[" not in snippet, snippet
+        assert "max-h-[" not in snippet, snippet
+        assert "resize-y" in snippet, snippet
+
+    index_source = _read(INDEX_PATH)
+    for tid in ("editContent", "editAnswerMarkdown"):
+        i = index_source.index('id="' + tid + '"')
+        snippet = index_source[i : index_source.index("></textarea>", i)]
+        assert "min-h-[" not in snippet, tid
+        assert "max-h-[" not in snippet, tid
+        assert "resize-y" in snippet, tid
+
+
+def test_auto_resize_is_truly_adaptive_by_line_height():
+    """真自适应：框高 = 内容高度 + 2 行留白；超视口 70% 才封顶并滚动。
+
+    node 里跑真实的 autoResizeTextarea（模拟 lineHeight=21px、视口 800px）：
+      3 行   -> 3*21 + 2*21 = 105px          （不再是 300px 死下限）
+      20 行  -> 20*21 + 42   = 462px
+      100 行 -> 封顶 70%*800 = 560px，overflowY=auto
+    """
+    editor_source = _read(STATIC_JS_DIR / "editor.js")
+    fn_start = editor_source.index("function autoResizeTextarea(")
+    fn_end = editor_source.index("window.autoResizeTextarea = autoResizeTextarea", fn_start)
+    fn_source = editor_source[fn_start:fn_end]
+
+    script = (
+        "const LINE_H = 21;\n"
+        "const VIEWPORT = 800;\n"
+        "let __rafCb = null;\n"
+        "const window = { innerHeight: VIEWPORT, addEventListener: function () {} };\n"
+        "const requestAnimationFrame = function (cb) { __rafCb = cb; };\n"
+        "const getComputedStyle = function () { return { lineHeight: LINE_H + 'px', fontSize: '14px' }; };\n"
+        ""
+        "const ResizeObserver = undefined;\n"
+        + fn_source
+        + "\n"
+        "function run(lines) {\n"
+        "  __rafCb = null;\n"
+        "  const el = { offsetParent: {}, style: {}, scrollHeight: lines * LINE_H,\n"
+        "    parentElement: null, addEventListener: function () {} };\n"
+        "  autoResizeTextarea(el, {});\n"
+        "  if (__rafCb) __rafCb();\n"
+        "  return [parseInt(el.style.height, 10), el.style.overflowY];\n"
+        "}\n"
+        "const a = run(3), b = run(20), c = run(100);\n"
+        "if (a[0] !== 105) throw new Error('3 行应为 105px，实际 ' + a[0]);\n"
+        "if (b[0] !== 462) throw new Error('20 行应为 462px，实际 ' + b[0]);\n"
+        "if (c[0] !== 560) throw new Error('100 行应封顶 560px，实际 ' + c[0]);\n"
+        "if (a[1] !== 'hidden') throw new Error('3 行 overflowY 应为 hidden，实际 ' + a[1]);\n"
+        "if (c[1] !== 'auto') throw new Error('100 行 overflowY 应为 auto，实际 ' + c[1]);\n"
+    )
+    result = _run_node_script(script)
+    assert result.returncode == 0, result.stderr
+
+
+def test_auto_resize_retries_when_scroll_height_is_zero():
+    """首次布局未完成（scrollHeight=0）必须**定时重试**，不能放弃。
+
+    历史 bug：resize() 遇到 scrollHeight===0 或 offsetParent===null 就直接 return，
+    之后再没机会重算 → 卡片框停在浏览器默认高度（~130px），内容被截断。
+    这里让 node 跑真实函数：先量不到（且 offsetParent=null 模拟容器未显示），
+    布局完成后必须被重试补上正确高度。
+    """
+    editor_source = _read(STATIC_JS_DIR / "editor.js")
+    fn_start = editor_source.index("function autoResizeTextarea(")
+    fn_end = editor_source.index("window.autoResizeTextarea = autoResizeTextarea", fn_start)
+    fn_source = editor_source[fn_start:fn_end]
+
+    script = (
+        "const LINE_H = 21;\n"
+        "const VIEWPORT = 800;\n"
+        "const window = { innerHeight: VIEWPORT, addEventListener: function () {} };\n"
+        "let __raf = null;\n"
+        "const requestAnimationFrame = function (cb) { __raf = cb; };\n"
+        "const getComputedStyle = function () { return { lineHeight: LINE_H + 'px', fontSize: '14px' }; };\n"
+        ""
+        "const ResizeObserver = undefined;\n"
+        + fn_source
+        + "\n"
+        "const el = { offsetParent: null, style: {}, scrollHeight: 0,\n"
+        "  parentElement: null, addEventListener: function () {} };\n"
+        "autoResizeTextarea(el, {});\n"
+        "if (__raf) __raf();\n"
+        "// 布局完成前不应把框定死\n"
+        "if (el.style.height && el.style.height !== 'auto') {\n"
+        "  throw new Error('scrollHeight=0 时不应定高: ' + el.style.height);\n"
+        "}\n"
+        "setTimeout(function () { el.scrollHeight = 3 * LINE_H; }, 30);\n"
+        "setTimeout(function () {\n"
+        "  const got = parseInt(el.style.height, 10);\n"
+        "  if (got !== 105) throw new Error('重试后应为 105px，实际 ' + got);\n"
+        "}, 600);\n"
+    )
+    result = _run_node_script(script)
+    assert result.returncode == 0, result.stderr
+
+
+def test_auto_resize_uses_js_not_field_sizing():
+    """回归守卫：编辑框高度由 **JS 撑高** 主导，不再用 CSS `field-sizing`。
+
+    2026-09-24 回退：field-sizing: content 存在已知渲染 bug——撑高后点击坐标
+    映射错乱，编辑框内点击任意位置插入符都停在框顶、不跟随点击。故彻底移除该特性，
+    改回纯 JS 的 autoResizeTextarea（始终写 inline height）。此测试锁死"不再回归"。
+    """
+    css = _read(CSS_PATH)
+    # 精确匹配「真正的 CSS 声明」（带分号）；注释里"曾用 field-sizing: content"是说明、
+    # 不带分号，不应误伤。
+    assert "field-sizing: content;" not in css, "不得再启用 field-sizing（点击坐标 bug）"
+
+    editor_source = _read(STATIC_JS_DIR / "editor.js")
+    assert "_FIELD_SIZING_OK" not in editor_source, "field-sizing 逻辑应已彻底移除"
+    assert "CSS.supports('field-sizing'" not in editor_source
+
+    # node 里跑真实函数：必须走 JS 撑高（写 inline height），而非让位
+    fn_start = editor_source.index("function autoResizeTextarea(")
+    fn_end = editor_source.index("window.autoResizeTextarea = autoResizeTextarea", fn_start)
+    fn_source = editor_source[fn_start:fn_end]
+    script = (
+        "const window = { innerHeight: 800, addEventListener: function () {} };\n"
+        "const getComputedStyle = function () { return { lineHeight: '21px', fontSize: '14px' }; };\n"
+        "const requestAnimationFrame = function () {};\n"
+        "const ResizeObserver = undefined;\n"
+        + fn_source
+        + "\n"
+        "const el = { offsetParent: {}, style: {}, scrollHeight: 63,\n"
+        "  parentElement: null, addEventListener: function () {} };\n"
+        "autoResizeTextarea(el, {});\n"
+        "if (parseInt(el.style.height, 10) !== 105) throw new Error('应走 JS 撑高算成 105px，实际 ' + el.style.height);\n"
+    )
+    result = _run_node_script(script)
+    assert result.returncode == 0, result.stderr
+
+
+def test_legacy_browser_still_uses_js_auto_resize():
+    """回归：autoResizeTextarea 始终走 **JS 撑高**，并挂 window resize 监听（不能整体失效）。"""
+    editor_source = _read(STATIC_JS_DIR / "editor.js")
+    fn_start = editor_source.index("function autoResizeTextarea(")
+    fn_end = editor_source.index("window.autoResizeTextarea = autoResizeTextarea", fn_start)
+    fn_source = editor_source[fn_start:fn_end]
+
+    script = (
+        "const CSS = { supports: function () { return false; } };\n"
+        "let winEvents = [];\n"
+        "const window = { innerHeight: 800,\n"
+        "  addEventListener: function (n) { winEvents.push(n); } };\n"
+        "const requestAnimationFrame = function () {};\n"
+        "const getComputedStyle = function () { return { lineHeight: '21px', fontSize: '14px' }; };\n"
+        "const ResizeObserver = undefined;\n"
+        + fn_source
+        + "\n"
+        "const el = { offsetParent: {}, style: {}, scrollHeight: 63,\n"
+        "  parentElement: null, addEventListener: function () {} };\n"
+        "autoResizeTextarea(el, {});\n"
+        "if (parseInt(el.style.height, 10) !== 105) throw new Error('老浏览器应算成 105px，实际 ' + el.style.height);\n"
+        "if (winEvents.indexOf('resize') < 0) throw new Error('老浏览器应挂 window resize');\n"
+    )
+    result = _run_node_script(script)
+    assert result.returncode == 0, result.stderr
+
+
+def test_delete_paper_confirm_dialog_is_a_real_modal_with_no_markdown_leaks():
+    """删卷确认弹窗必须是 MathBankModal，且文案里不能出现渲染不出来的 Markdown 记号。
+
+    浏览器实测时抓到一个静默缺陷：弹窗用 createElement + textContent 构建（这是项目
+    规则，见第 6 节净化白名单），而当初的文案写了 `**不会影响题库中的题目**`——
+    Markdown 在 textContent 上完全不生效，用户看到的是字面星号，恰好把「题目不会被删」
+    这句最要紧的承诺印成了乱码。静态断言当时全绿，只有真开浏览器才发现。
+    """
+
+    paper_source = _read(STATIC_JS_DIR / "paper.js")
+    start = paper_source.index("window.openDeletePaperConfirm")
+    end = paper_source.index("async function runDeletePaper", start)
+    modal_source = paper_source[start:end]
+
+    assert "window.MathBankModal.open(" in modal_source
+    assert "delete-preview" in modal_source
+    assert "initialFocus" in modal_source
+
+    assert "不会影响题库中的题目" in modal_source
+    assert "createElement('strong')" in modal_source
+    assert "**" not in modal_source, (
+        "textContent 渲染不了 Markdown；强调请用 <strong>，别写 **…**"
+    )
+
+
+def test_delete_paper_confirm_dialog_reads_the_preview_numbers_in_node():
+    """真跑 node：喂进预检数据后，弹窗文本必须报出真实题数并带 <strong> 强调。"""
+
+    paper_source = _read(STATIC_JS_DIR / "paper.js")
+    start = paper_source.index("let deleteConfirmState")
+    end = paper_source.index("async function runDeletePaper", start)
+    helper = paper_source[start:end]
+
+    script = """
+const store = {};
+function El(tag) {
+  const n = {
+    tagName: tag.toUpperCase(),
+    children: [],
+    _text: '',
+    style: {},
+    classList: { toggle() {}, add() {}, remove() {}, contains() { return false; } },
+    appendChild(c) { this.children.push(c); return c; },
+    setAttribute(k, v) { this['@' + k] = v; },
+    getAttribute(k) { return this['@' + k] === undefined ? null : this['@' + k]; },
+    querySelector(sel) {
+      const want = sel.replace('#', '');
+      const walk = (node) => {
+        for (const c of node.children || []) {
+          if (c.id === want) return c;
+          const hit = walk(c);
+          if (hit) return hit;
+        }
+        return null;
+      };
+      return walk(this);
+    },
+    querySelectorAll() { return []; },
+    remove() {},
+    focus() {},
+    addEventListener() {},
+  };
+  Object.defineProperty(n, 'id', { get() { return this._id || ''; }, set(v) { this._id = v; } });
+  Object.defineProperty(n, 'className', { get() { return this._cls || ''; }, set(v) { this._cls = v; } });
+  Object.defineProperty(n, 'textContent', {
+    get() { return this._text; },
+    // 真实 DOM 语义：赋值 textContent 会替换掉全部子节点。桩必须照做，否则元素会同时
+    // 留着旧 children 和新 _text，遍历出来的文本和产品代码差着一整段。
+    set(v) { this._text = String(v); this.children.length = 0; },
+  });
+  Object.defineProperty(n, 'innerText', {
+    get() { return this.textContent; },
+    set(v) { this.textContent = v; },
+  });
+  return n;
+}
+global.document = {
+  // getElementById 必须遍历真实树：产品代码只把弹窗 appendChild 到 body，从不登记 id 表，
+  // 只查 store 的桩会让「弹窗根本没建起来」和「建好了但找不到」长得一模一样。
+  getElementById(id) {
+    if (store[id]) return store[id];
+    const walk = (node) => {
+      for (const c of node.children || []) {
+        if (c.id === id) return c;
+        const hit = walk(c);
+        if (hit) return hit;
+      }
+      return null;
+    };
+    return walk(global.document.body);
+  },
+  createElement(t) { return El(t); },
+  createTextNode(t) { return { nodeType: 3, textContent: String(t), tagName: '#text' }; },
+  body: El('body'),
+  activeElement: null,
+};
+// createElement 出来的节点默认没有 children 数组（只有 El() 造的有），文本遍历必须先补齐，
+// 否则 nameLine 那类「appendChild 之后再改 textContent」的结构会整个从 dump 里消失。
+global.document.body.appendChild(El('placeholder'));
+global.window = global;
+global.localStorage = { getItem() { return null; }, setItem() {}, removeItem() {} };
+global.fetch = async (url) => ({
+  ok: true,
+  json: async () => (String(url).includes('delete-preview')
+    ? { status: 'success', data: { id: 9, paper_name: '测试卷', question_count: 19 } }
+    : { status: 'success', data: [] }),
+});
+global.escapeHtml = (s) => String(s);
+global.showToast = () => {};
+global.MathBankModal = { open() {}, close() {} };
+global.confirm = () => { throw new Error('BARE_CONFIRM_USED'); };
+
+__HELPER__
+
+// paper.js 整体包在一个 IIFE 里，closeDeletePaperConfirm / runDeletePaper 是私有的，
+// 只能由抽出来的这段本体自己导出到 window 上（与本项目其余前端可执行回归同做法）。
+window.__deletePaperTestApi = { closeDeletePaperConfirm };
+
+(async () => {
+  await window.openDeletePaperConfirm(9);
+  await new Promise((r) => setTimeout(r, 30));
+  const modal = document.getElementById('deletePaperConfirmModal');
+  if (!modal) { console.log('MODAL_MISSING'); process.exit(1); }
+  const dump = [];
+  // 桩把文本存在 _text 上，而真实 DOM 是「有 children 就读不到 textContent」——两种形态都
+  // 要收：先收自己的 _text（叶子/被赋值过的节点），再递归 children（appendChild 组装的节点）。
+  const walk = (n) => {
+    if (n.nodeType === 3) { dump.push(n.textContent); return; }
+    dump.push('<' + (n.tagName || '?') + '>');
+    if (n._text) dump.push(n._text);
+    (n.children || []).forEach(walk);
+  };
+  walk(modal);
+  const text = dump.join('');
+  if (!text.includes('包含 19 道题')) { console.log('COUNT_NOT_SHOWN::' + text); process.exit(1); }
+  if (!text.includes('测试卷')) { console.log('NAME_NOT_SHOWN::' + text); process.exit(1); }
+  if (!dump.some((t) => t === '<STRONG>')) { console.log('NO_STRONG::' + text); process.exit(1); }
+  if (text.includes('**')) { console.log('MARKDOWN_LEAK::' + text); process.exit(1); }
+  console.log('DELETE_MODAL_OK');
+})();
+""".replace("__HELPER__", helper)
+
+    result = _run_node_script(script)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "DELETE_MODAL_OK" in result.stdout, result.stdout + result.stderr
+
+
+IMPORT_JS_FOR_SOURCE = STATIC_JS_DIR / "import.js"
+
+_SOURCE_STUB_PRELUDE = r"""
+class El {
+  constructor(tag, id) {
+    this.tagName = String(tag || 'DIV').toUpperCase();
+    this._id = ''; this.nodes = []; this._text = ''; this.attrs = {};
+    this.listeners = {}; this.hidden = false; this.parentNode = null;
+    this.className = ''; this.style = {}; this._value = '';
+    if (id) this.id = id;
+  }
+  get id() { return this._id; }
+  set id(v) { this._id = v; if (v) registry[v] = this; }
+  get children() { return this.nodes; }
+  get nextSibling() {
+    if (!this.parentNode) return null;
+    const i = this.parentNode.nodes.indexOf(this);
+    return i >= 0 ? (this.parentNode.nodes[i + 1] || null) : null;
+  }
+  get value() { return this._value; }
+  set value(v) { this._value = v === null || v === undefined ? '' : String(v); }
+  get textContent() {
+    return this.nodes.length ? this.nodes.map(function (n) { return n.textContent || ''; }).join('') : this._text;
+  }
+  set textContent(v) { this._text = String(v); this.nodes = []; }
+  set innerHTML(v) { throw new Error('来源提示节点不得使用 innerHTML'); }
+  appendChild(n) { this.nodes.push(n); n.parentNode = this; return n; }
+  insertBefore(n, ref) {
+    if (!n) return n;
+    const i = ref ? this.nodes.indexOf(ref) : -1;
+    if (i < 0) this.nodes.push(n); else this.nodes.splice(i, 0, n);
+    n.parentNode = this; return n;
+  }
+  setAttribute(k, v) { this.attrs[k] = String(v); }
+  getAttribute(k) { return k in this.attrs ? this.attrs[k] : null; }
+  addEventListener(t, fn) { (this.listeners[t] = this.listeners[t] || []).push(fn); }
+  dispatch(t) { (this.listeners[t] || []).forEach(function (fn) { fn(); }); }
+  focus() {}
+  querySelector() { return null; }
+  querySelectorAll() { return []; }
+}
+const registry = {};
+function el(tag, id) { const e = new El(tag, id); if (id) registry[id] = e; return e; }
+// 拆卷来源七字段的宿主：每个输入框单独一个 div，警告必须插在输入框同一个宿主里。
+const host = el('DIV');
+[
+  'importSrcYear', 'importSrcRegion', 'importSrcSemester',
+  'importSrcExamType', 'importApplicableGrade', 'importPaperTitle',
+].forEach(function (id) { const box = el('DIV'); box.appendChild(el('INPUT', id)); host.appendChild(box); });
+el('SELECT', 'importSrcProvince');
+el('SELECT', 'importSrcCity');
+globalThis.document = {
+  getElementById: function (id) { return registry[id] || null; },
+  createElement: function (tag) { return new El(tag); },
+  body: el('BODY'),
+};
+globalThis.window = globalThis;
+window._schoolsDict = [];
+window._regionsTree = [];
+window._displayConfig = null;
+window.showToast = function () {};
+function fillCitySelect() {}
+function refreshSchoolDatalist() {}
+function tryMatchSchoolToGeo() {}
+function applyStandardPaperTitle() {}
+function loadSchoolDict() {}
+"""
+
+
+def _extract_import_source(source: str, start_token: str, end_token: str) -> str:
+    start = source.index(start_token)
+    end = source.index(end_token, start)
+    return source[start:end]
+
+
+def test_filename_prefill_regexes_are_executable_and_widened():
+    """#10 文件名解析：三条正则放宽后必须真跑 node 命中样例，且不许瞎猜。
+
+    旧实现要求「2023-2024学年」带「学年」二字，`东北师大附中2023-2024高一上学期…`
+    这类写法学年度对恒为 null；考试类型只捞到裸「月考」，序数与月份全丢。
+    """
+
+    import_source = _read(IMPORT_JS_FOR_SOURCE)
+    helper = _extract_import_source(
+        import_source, "function prefillSourceFromFilename", "function buildStandardPaperTitle")
+
+    for token in ("(?:次|轮)?月考", "(?:半?学期|学期)?", "(?:学年)?"):
+        assert token in helper, token
+
+    script = _SOURCE_STUB_PRELUDE + "\n" + helper + r"""
+const CASES = [
+  ['东北师大附中2023-2024高一上学期9月月考试题.pdf',
+    { yearPair: '2023|2024', year: '2023', grade: 'g1', sem: '上', exam: '9月月考', school: '东北师大附中' }],
+  ['哈尔滨三中2024届高三上学期第一次月考试卷.pdf',
+    { yearPair: '', year: '2024', grade: 'g3', sem: '上', exam: '第一次月考' }],
+  ['某某中学10月月考.docx',
+    { yearPair: '', year: '', grade: '', sem: '', exam: '10月月考' }],
+  ['实验中学9月第一次月考物理试卷.pdf',
+    { exam: '9月月考' }],
+  ['第一中学2024-2025高二下学期期末检测.docx',
+    { yearPair: '2024|2025', year: '2025', grade: 'g2', sem: '下', exam: '期末' }],
+  ['哈六中高三第一轮复习资料.pdf', { exam: '' }],
+  ['普通题目.pdf', { yearPair: '', year: '', grade: '', sem: '', exam: '', school: '' }],
+];
+window._schoolsDict = [
+  { name: '东北师大附中', short_name: '东北师大附中', full_name: '东北师范大学附属中学', province: '吉林省', city: '长春市' },
+  { name: '哈六中', short_name: '哈六中', full_name: '哈尔滨市第六中学校', province: '黑龙江省', city: '哈尔滨市' },
+];
+const fails = [];
+for (const [file, want] of CASES) {
+  ['importSrcYear', 'importSrcRegion', 'importSrcSemester', 'importSrcExamType', 'importApplicableGrade']
+    .forEach((id) => { document.getElementById(id).value = ''; });
+  window._srcYearPair = null;
+  prefillSourceFromFilename(file);
+  const got = {
+    yearPair: window._srcYearPair ? window._srcYearPair.join('|') : '',
+    year: document.getElementById('importSrcYear').value,
+    grade: document.getElementById('importApplicableGrade').value,
+    sem: document.getElementById('importSrcSemester').value,
+    exam: document.getElementById('importSrcExamType').value,
+    school: document.getElementById('importSrcRegion').value,
+  };
+  for (const key of Object.keys(want)) {
+    if (String(got[key]) !== String(want[key])) {
+      fails.push(file + ' [' + key + '] 期望 ' + JSON.stringify(want[key]) + ' 实得 ' + JSON.stringify(got[key]));
+    }
+  }
+}
+if (fails.length) { console.log('FAILS::' + fails.join(' ;; ')); process.exit(1); }
+console.log('PREFILL_OK');
+"""
+
+    result = _run_node_script(script)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "PREFILL_OK" in result.stdout, result.stdout + result.stderr
+
+
+def test_school_soft_warning_is_non_blocking_and_dismisses_on_match():
+    """#13 学校软警告：词库外提示、命中或清空即消失，且绝不清空用户输入。"""
+
+    import_source = _read(IMPORT_JS_FOR_SOURCE)
+    helper = _extract_import_source(
+        import_source, "const SCHOOL_ALIAS_KEYS", "function initSourceSmartFields")
+    assert "innerHTML" not in helper, "警告节点必须 createElement + textContent"
+
+    script = _SOURCE_STUB_PRELUDE + "\n" + helper + r"""
+window._schoolsDict = [
+  { name: '哈三中', short_name: '哈三中', full_name: '哈尔滨市第三中学校' },
+  { name: '省实验', short_name: '省实验', full_name: '吉林省实验中学' },
+];
+const region = document.getElementById('importSrcRegion');
+const warn = document.getElementById('importSrcRegionWarn');
+const fails = [];
+function check(label, expectShown) {
+  updateSchoolSoftWarning();
+  const w = document.getElementById('importSrcRegionWarn');
+  if (!w) { fails.push(label + ': 警告节点没建出来'); return; }
+  if (w.hidden === expectShown) { fails.push(label + ': hidden=' + w.hidden + ' 期望相反'); }
+  if (expectShown && !w.textContent.includes('未找到该学校')) { fails.push(label + ': 文案缺失'); }
+  if (!expectShown && w.textContent !== '') { fails.push(label + ': 应清空却留着 ' + w.textContent); }
+}
+check('in-library', false);          // 空值不该提示
+region.value = '哈三中';            check('in-library', false);
+region.value = '哈尔滨市第三中学校'; check('full-name', false);
+region.value = '不存在学校X';        check('off-library', true);
+if (region.value !== '不存在学校X') { fails.push('软警告把用户输入改掉了: ' + region.value); }
+region.value = '';                   check('empty-dismiss', false);
+// 词库还没加载完时不得误报，否则首屏每个已填值都会闪一条假警告
+window._schoolsDict = [];
+region.value = '任意手输';           check('dict-not-ready', false);
+if (fails.length) { console.log('FAILS::' + fails.join(' ;; ')); process.exit(1); }
+console.log('SOFT_WARN_OK');
+"""
+
+    result = _run_node_script(script)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "SOFT_WARN_OK" in result.stdout, result.stdout + result.stderr
+
+
+def test_school_soft_warning_is_wired_to_input_events():
+    """接线检查：input/change 都必须调用软警告，漏一处就是「函数写了但没人调」。"""
+
+    import_source = _read(IMPORT_JS_FOR_SOURCE)
+    start = import_source.index("regionEl.addEventListener('input'")
+    end = import_source.index("const titleElForWarn", start)
+    wiring = import_source[start:end]
+
+    input_block = wiring[:wiring.index("});")]
+    assert "updateSchoolSoftWarning()" in input_block, "input 事件没触发软警告——首屏打字不提示"
+    change_line = [ln for ln in wiring.splitlines() if "addEventListener('change'" in ln]
+    assert change_line, "找不到学校输入框的 change 监听"
+    assert "updateSchoolSoftWarning()" in change_line[0], "change 事件没触发软警告——选完候选黄字不消失"
+
+
+def test_api_vendor_grid_top_aligns_and_never_collapses_to_zero_width():
+    """API 厂商配置行：三列控件必须顶对齐，且列宽不得有 0px 下限。
+
+    实测踩过的两个坑（都是静态文本断言测不出、只有量 getBoundingClientRect 才发现）：
+    1) 旧 class 用 items-end（底对齐）。厂商名列下面那行灰色提示只加高自己那一列，
+       于是同排的 API Key / 接口地址被整体推下去 25px；带提示的 4 行和不带提示的
+       2 行还不一致。改 items-start 后每行五列 top 完全相等。
+    2) 旧模板是 minmax(0, 2fr)，允许轨道压到 0px。窄容器里 label 文字竖排换行、
+       把列高撑成 45~60px（349px 视口实测 grid-template-columns = 96px 0px 0px 41px 44px）。
+       现在列宽下限必须是非零绝对值。
+    """
+
+    html = _read(INDEX_PATH)
+    css = _read(CSS_PATH)
+
+    # 渲染结构：12 处内联任意值全部换成语义类，且不得残留旧的塌陷模板
+    assert "minmax(6rem,1fr)_minmax(0,2fr)" not in html, (
+        "厂商行不得再用 minmax(0, Nfr)：0 下限会让列在窄容器里塌成 0px"
+    )
+    assert html.count('class="api-vendor-grid"') == 6, "6 个固定厂商控件行必须都用统一类"
+
+    rule_start = css.index(".api-vendor-grid {")
+    rule = css[rule_start:css.index("}", rule_start)]
+    assert "align-items: start" in rule, "厂商行必须顶对齐，否则灰字提示会把兄弟列推下去"
+    assert "items-end" not in rule
+    for token in ("minmax(8rem, 1fr)", "minmax(11rem, 2fr)"):
+        assert token in rule, f"列宽下限缺失: {token}"
+    assert "minmax(0," not in rule, "列宽下限不得为 0"
+
+    # 按钮与输入框等高 + 下移一个 label 占位：二者缺一都会露出「按钮比输入框矮/高一线」
+    btn_start = css.index(".api-vendor-grid > a,")
+    btn_block = css[btn_start:btn_start + 700]
+    assert "height: 2.75rem" in btn_block, "获取 Key(a)/测试连接(button) 必须与 select/input 等高"
+    assert "margin-top: 17px" in btn_block, (
+        "按钮列没有 label，必须补 label 占位才能与输入框本体齐平（实测值，非理论 16.3px）"
+    )
+    assert "padding-top" not in btn_block, (
+        "padding-top 会被按钮自带的 inline-flex + items-center 重新居中掉，实测无效"
+    )
+
+
+def test_api_vendor_buttons_keep_natural_width():
+    """按钮宽度必须由内容自身决定，不得为了对齐而拉伸成砖头。
+
+    上一版为了让控件行与结果行的第 4/5 列等宽，把它们写成定宽 4.5rem/5.5rem，
+    结果「获取 Key」「测试连接」被拉满整列（实测 72px/88px），右侧还留大片空白，
+    用户直接抗议。现在两行合进同一个网格容器，auto 列天然共享同一组宽度，
+    按钮回到内容自适应的紧凑宽度（实测窄屏 41/44px、宽屏 63/62px）。
+    """
+
+    css = _read(CSS_PATH)
+    rule_start = css.index(".api-vendor-grid {")
+    rule = css[rule_start:css.index("}", rule_start)]
+
+    assert "4.5rem" not in rule and "5.5rem" not in rule, (
+        "按钮两列不得写死宽度：那会把按钮拉成砖头"
+    )
+    cols_line = rule[rule.index("grid-template-columns"):]
+    tail = cols_line.split(";", 1)[0]
+    assert tail.count("auto") == 2, "最后两列必须是 auto（由内容取宽，并与同行其他单元共享轨道）"
+    assert "justify-self: end" in css, "按钮靠右贴列缘，不被拉伸填充"
+
+
+def test_api_vendor_result_shares_the_control_grid():
+    """测试结果必须与控件在同一个网格容器里，否则跨容器列宽必然错位。
+
+    分两个容器时（各写自己的 grid-template-columns），CSS Grid 没有任何跨容器轨道
+    对齐保证：控件行有按钮所以 auto 列算出 63/62px，结果行没按钮就算出 0px，
+    省下的空间被前面的 fr 吸收——实测宽屏下结果文案比「接口地址」右偏 75px。
+    中途还试过给结果行补空 <div> 占位格：空 div 撑不起 auto 轨道，同样失败。
+    唯一稳的做法是合成一个容器，再显式把结果钉在第 3 列。
+    """
+
+    html = _read(INDEX_PATH)
+    css = _read(CSS_PATH)
+
+    assert "api-vendor-result-row" not in html, (
+        "结果行不得再独立成一个网格容器"
+    )
+    assert html.count('data-result-slot="3"') == 6, "6 个测试结果都要带落位标记"
+
+    slot_start = css.index('.api-vendor-grid > [data-result-slot="3"]')
+    slot_rule = css[slot_start:css.index("}", slot_start)]
+    assert "grid-column: 3" in slot_rule, "结果文案必须显式落在第 3 列，自动落位会排到第 1 列"
+
+    # 每个厂商块内：控件网格闭合前必须已经包含该块的 <p data-result-slot>
+    blocks = re.findall(
+        r'<div class="api-vendor-grid">.*?</div>\s*(?=<!--|\r\n\s*<div class="api-key-row|$)',
+        html, re.S)
+    with_slot = sum(1 for b in blocks if 'data-result-slot="3"' in b)
+    assert with_slot == 6, f"仅 {with_slot}/6 个结果文案在控件网格内部"
+
+def test_custom_vendor_modal_clears_opacity_so_it_cannot_swallow_clicks():
+    """「点添加厂商卡死」的根因守卫：弹窗必须真的可见，否则透明全屏层会吃掉所有点击。
+ 
+    这里没有任何死循环。openCustomVendorModal() 原本只做两件事——remove('hidden')
+    和 MathBankModal.open()，而 #customVendorModal 的根节点 class 里带着
+    `opacity-0 transition-opacity`，谁都没把它清掉。于是弹窗以 opacity:0 的形态
+    铺满整屏（fixed inset-0 z-50），同时 MathBankModal 把 header/main 置 inert：
+    屏幕上什么都看不见，但每一次点击都落在这层透明遮罩上，背景又全被 inert 封住，
+    用户看到的就是「页面瞬间死锁」。现在开关都收敛到 api.js 的公共助手，守卫
+    同时钉住「调用点」与「助手本体」两头——历史上漏的正是只钉一头挡不住的形态。
+ 
+    揭示必须带 setTimeout 兜底：后台标签页/无头环境里 rAF 会被冻结（实测本环境
+    rafFired=false），只挂在 rAF 上的话弹窗永远显示不出来。
+    """
+ 
+    js = _read(STATIC_JS_DIR / "api.js")
+ 
+    start = js.index("function openCustomVendorModal()")
+    body = js[start:js.index("function submitCustomVendor()", start)]
+    assert "window.openModalWithTransition('customVendorModal'" in body, (
+        "openCustomVendorModal 必须走公共开关助手，否则又留下透明全屏拦截层吞整页点击"
+    )
+ 
+    close_start = js.index("function closeCustomVendorModal()")
+    close_body = js[close_start:js.index("function submitCustomVendor()", close_start)]
+    assert "window.closeModalWithTransition('customVendorModal')" in close_body, (
+        "closeCustomVendorModal 必须走公共开关助手，复位 opacity-0 与 hidden"
+    )
+ 
+    reveal_start = js.index("function revealModalWithTransition(modal)")
+    reveal_body = js[reveal_start:js.index("function openModalWithTransition", reveal_start)]
+    assert "classList.remove('opacity-0')" in reveal_body, (
+        "reveal 助手必须真的移除 opacity-0"
+    )
+    assert "setTimeout(show" in reveal_body, (
+        "揭示动作必须有 setTimeout 兜底：rAF 在后台标签页被冻结时不会执行"
+    )
+ 
+    close_helper_start = js.index("function closeModalWithTransition(")
+    close_helper_body = js[close_helper_start:js.index("window.revealModalWithTransition", close_helper_start)]
+    assert "classList.add('opacity-0')" in close_helper_body, (
+        "关闭时必须复位 opacity-0，否则下次打开没有淡入过渡、且状态不一致"
+    )
+    assert "classList.add('hidden')" in close_helper_body, (
+        "关闭时必须立刻补回 hidden，不留「看不见但吞点击」的淡出窗口期"
+    )
+ 
+    # 弹窗根节点确实带 opacity-0，这条前提不成立的话上面的守卫就是空转
+    html = _read(INDEX_PATH)
+    root = html[html.index('<div id="customVendorModal"'):html.index("\n", html.index('<div id="customVendorModal"'))]
+    assert "opacity-0" in root, "customVendorModal 根节点应带 opacity-0（守卫前提）"
+ 
+ 
+def test_all_static_opacity_overlays_open_through_the_transition_helpers():
+    """全站守卫：index.html 里每个「fixed inset-0 + opacity-0」弹窗都必须经公共助手开关。
+ 
+    「点添加厂商卡死」事故证明：只要存在"只清 hidden、不清 opacity-0"的弹窗，
+    就一定会出现吞掉整页点击、看起来像死机的页面。这个测试是登记表——新增
+    此类弹窗必须同步登记；绕过助手或漏登记，直接红。
+    """
+    html = _read(INDEX_PATH)
+    js_by_file = {name: _read(STATIC_JS_DIR / name)
+                  for name in ("api.js", "editor.js", "import.js", "ocr.js", "paper.js")}
+ 
+    expectations = {
+        "settingsModal": ("api.js", "openModalWithTransition(modal"),
+        "customVendorModal": ("api.js", "openModalWithTransition('customVendorModal'"),
+        "updateModal": ("api.js", "openModalWithTransition(modal"),
+        "statsModal": ("editor.js", "openModalWithTransition(modal"),
+        "scanDuplicatesModal": ("editor.js", "openModalWithTransition(modal"),
+        "aiClassifyModal": ("import.js", "openModalWithTransition('aiClassifyModal'"),
+        "pdfCropModal": ("import.js", "openModalWithTransition('pdfCropModal'"),
+        "parsedDuplicateReviewModal": ("import.js", "openModalWithTransition(modal"),
+        "answerTikzWorkbenchModal": ("import.js", "openModalWithTransition(modal"),
+        "displayOrderModal": ("import.js", "revealModalWithTransition(modal"),
+        "imageLightbox": ("ocr.js", "openModalWithTransition(lightbox"),
+        "pandocInstallModal": ("paper.js", "revealModalWithTransition(modal"),
+    }
+ 
+    for modal_id, (file_name, needle) in expectations.items():
+        marker = '<div id="%s"' % modal_id
+        assert marker in html, "弹窗 %s 不存在，登记表已过期" % modal_id
+        root = html[html.index(marker):html.index("\n", html.index(marker))]
+        assert "fixed inset-0" in root and "opacity-0" in root, (
+            "%s 根节点应为 fixed inset-0 + opacity-0（守卫前提）" % modal_id
+        )
+        assert needle in js_by_file[file_name], (
+            "%s 的打开链路没走公共开关助手（%s 应出现在 %s 中）" % (modal_id, needle, file_name)
+        )
+ 
+    # 运行时挂载的动态全屏层同样登记（mergeSource 并入层 / missingCompulsory 确认框）
+    assert "openModalWithTransition(modal, { onEscape: () => closeMergeSourceModal(modal) })" in js_by_file["import.js"]
+    assert "openModalWithTransition(modalDiv" in js_by_file["editor.js"]
+ 
+    # 级联加载的下游模块都依赖 window 导出，缺一个就 ReferenceError 雪崩
+    for export_name in ("revealModalWithTransition", "openModalWithTransition", "closeModalWithTransition"):
+        assert ("window." + export_name + " =") in js_by_file["api.js"]
+ 
+    # 自动发现守卫：markup 里每一个「fixed inset-0 + opacity-0」浮层都必须在登记表内。
+    # 将来新增透明全屏层却漏登记 = 整页假死事故重演，这里直接判失败，不给侥幸机会。
+    discovered = set()
+    for line in html.splitlines():
+        if "fixed inset-0" not in line or "opacity-0" not in line:
+            continue
+        found = re.search(r'id="([^"]+)"', line)
+        if found:
+            discovered.add(found.group(1))
+    registered = set(expectations)
+    assert discovered == registered, (
+        "透明全屏浮层与登记表不一致 漏登记 %s / 已下线 %s"
+        % (sorted(discovered - registered), sorted(registered - discovered))
+    )
