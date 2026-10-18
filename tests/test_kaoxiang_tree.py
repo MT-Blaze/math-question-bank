@@ -1,12 +1,18 @@
 # -*- coding: utf-8 -*-
-"""考向树 TXT 底层文件 ↔ Web 大纲双向同步的回归测试。
+"""考向树解析/渲染工具与「JSON 单一数据源」的回归测试。
 
-覆盖：解析三种历史版式、渲染回写、章节键匹配、id 稳定性、幂等性、
-题目引用保护，以及 normalize 不再吞掉 level/no/example。
+TXT ↔ Web 大纲双向同步链路已下线（考向树的唯一事实来源是 JSON），本文件守两件事：
+
+* 解析与渲染纯函数：三种历史版式、章节键匹配、id 稳定性、render→parse 不动点；
+* 同步链路确实死了：启动不再改写任何 JSON，接口与前端入口都不存在。
+
+历史 TXT 已归档到 `.qoder-scratch/kaoxiang_txt_archive_20261001/`，项目目录内不
+再有可读的 ``考向树/`` 源文件，因此依赖真实 TXT 的用例改为合成文本或 tmp_path。
 """
 
+import copy
 import json
-import shutil
+import re
 from pathlib import Path
 
 import pytest
@@ -16,106 +22,8 @@ from mathbank.metadata import normalize_metadata_curriculum
 from mathbank.topics_helper import topic_id_for
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-TREE_DIR = PROJECT_ROOT / "考向树"
 
 LEVELS = set(kt.LEVELS)
-
-
-def _source_files():
-    if not TREE_DIR.exists():
-        return []
-    return sorted(p for p in TREE_DIR.glob("*.txt") if not p.name.startswith("_"))
-
-
-SOURCE_FILES = _source_files()
-
-
-@pytest.mark.skipif(not SOURCE_FILES, reason="考向树 TXT 源文件缺失")
-class TestParseRealFiles:
-    def test_every_file_parses(self):
-        assert len(SOURCE_FILES) >= 4
-        for path in SOURCE_FILES:
-            tree = kt.parse_tree_file(str(path))
-            assert tree["compulsory"] == "必修一", path.name
-            assert tree["chapter_title"], path.name
-            assert tree["sections"], path.name
-
-    def test_sections_are_well_formed(self):
-        for path in SOURCE_FILES:
-            tree = kt.parse_tree_file(str(path))
-            for sec in tree["sections"]:
-                topics = sec["topics"]
-                assert topics, (path.name, sec["name"])
-                # 序号在每节内从 1 连续编号
-                assert [t["no"] for t in topics] == list(range(1, len(topics) + 1))
-                for topic in topics:
-                    assert topic["level"] in LEVELS, (path.name, topic)
-                    assert topic["name"].strip(), (path.name, topic)
-
-    def test_chapter_keys_match_active_metadata(self):
-        """TXT 的章标题必须能匹配到活跃大纲里的章，否则同步会静默失效。"""
-
-        metadata = json.loads(
-            (PROJECT_ROOT / "data_backup" / "custom_metadata.json").read_text(
-                encoding="utf-8"
-            )
-        )
-        curriculum = metadata.get("curriculum", {})
-        for path in SOURCE_FILES:
-            tree = kt.parse_tree_file(str(path))
-            key = kt.match_chapter_key(
-                curriculum, tree["compulsory"], tree["chapter_title"]
-            )
-            assert key, (path.name, tree["chapter_title"])
-
-    def test_three_level_sections_keep_group(self):
-        """3.1.1 这类三级小节要记住它所属的 3.1 分组。"""
-
-        grouped = []
-        for path in SOURCE_FILES:
-            for sec in kt.parse_tree_file(str(path))["sections"]:
-                if sec.get("group"):
-                    grouped.append((path.name, sec["group"], sec["name"]))
-        assert grouped, "三级小节未识别出分组"
-        assert any(name.count(".") == 2 for _, _, name in grouped)
-
-
-@pytest.mark.skipif(not SOURCE_FILES, reason="考向树 TXT 源文件缺失")
-@pytest.mark.parametrize("path", SOURCE_FILES, ids=lambda p: p.stem)
-def test_render_roundtrip_preserves_tree(path):
-    """解析 → 建树 → 渲染 → 再解析，内容必须完全一致（两种版式都要）。"""
-
-    tree = kt.parse_tree_file(str(path))
-    curriculum = {
-        "必修一": {"1. 集合与常用逻辑用语": [], "3. 函数的概念与性质": []}
-    }
-    # 用真实章键构造一遍，保证 id 生成路径与线上一致
-    chapter_key = kt.normalize_chapter_key(tree["chapter_title"])
-    sections, _ = kt.build_sections("必修一", chapter_key, tree, [])
-    expected = kt._signature_from_parsed(tree)
-    for style in ("tree", "indent"):
-        rendered = kt.render_tree_text(
-            {"title": tree["chapter_title"], "sections": sections}, style
-        )
-        reparsed = kt.parse_tree_text(rendered)
-        assert kt._signature_from_parsed(reparsed) == expected, (path.name, style)
-
-
-def test_normalize_chapter_key_bridges_both_styles():
-    assert kt.normalize_chapter_key("第一章 集合与常用逻辑用语") == kt.normalize_chapter_key(
-        "1. 集合与常用逻辑用语"
-    )
-    assert kt.normalize_chapter_key("第三章 函数的概念与性质") == kt.normalize_chapter_key(
-        "3. 函数的概念与性质"
-    )
-
-
-def test_match_chapter_key_handles_missing_book():
-    curriculum = {"必修一": {"1. 集合与常用逻辑用语": []}}
-    assert kt.match_chapter_key(curriculum, "必修一", "第一章 集合与常用逻辑用语") == (
-        "1. 集合与常用逻辑用语"
-    )
-    assert kt.match_chapter_key(curriculum, "必修二", "第一章 集合与常用逻辑用语") == ""
 
 
 SAMPLE_TXT = """第一章 测试章
@@ -137,132 +45,41 @@ SAMPLE_TXT = """第一章 测试章
 """
 
 
-@pytest.fixture()
-def tree_dir(tmp_path, monkeypatch):
-    target = tmp_path / "考向树"
-    target.mkdir()
-    (target / "必修一 第一章 测试章.txt").write_text(SAMPLE_TXT, encoding="utf-8")
-    monkeypatch.setattr(kt, "KAOXIANG_DIR", target)
-    monkeypatch.setattr(kt, "STATE_FILE", tmp_path / "state.json")
-    kt._MTIME_CACHE.clear()
-    yield target
-    kt._MTIME_CACHE.clear()
 
-
-def test_pull_rewrites_chapter_and_is_idempotent(tree_dir):
-    curriculum = {
-        "必修一": {
-            "1. 测试章": [
-                {"name": "1.1 第一节", "topics": [{"id": "k_old", "name": "过期考向"}]},
-                {"name": "9.9 无关节", "topics": [{"id": "k_x", "name": "别的章的节"}]},
-            ]
-        }
-    }
-    report = kt.sync_from_txt(curriculum, protected=set())
-    assert report["changed"] is True
-    entry = report["files"][0]
-    assert entry["action"] == "pulled"
-    assert entry["chapter"] == "1. 测试章"
-    assert entry["after"] == 4
-
-    sections = curriculum["必修一"]["1. 测试章"]
-    assert [s["name"] for s in sections] == ["1.1 第一节", "1.2 第二节"]
-    first = sections[0]["topics"]
-    assert [t["name"] for t in first] == ["甲考向", "乙考向", "丙考向"]
-    assert [t["level"] for t in first] == ["L1", "L1", "L3"]
-    assert [t["no"] for t in first] == [1, 2, 3]
-    assert first[0]["example"] == "例：示例甲。"
-    assert first[0]["id"] == topic_id_for("必修一", "1. 测试章", "1.1 第一节", "甲考向")
-
-    # 第二次必须判定为已同步，且 id 不变
-    ids_before = [t["id"] for s in sections for t in s["topics"]]
-    again = kt.sync_from_txt(curriculum, protected=set())
-    assert again["changed"] is False
-    assert [t["id"] for s in sections for t in s["topics"]] == ids_before
-
-
-def test_pull_keeps_topics_referenced_by_questions(tree_dir):
-    curriculum = {
-        "必修一": {
-            "1. 测试章": [
-                {"name": "1.1 第一节", "topics": [{"id": "k_used", "name": "被引用考向"}]}
-            ]
-        }
-    }
-    report = kt.sync_from_txt(curriculum, protected={"k_used"})
-    assert report["carried_over"] == 1
-    names = [t["name"] for t in curriculum["必修一"]["1. 测试章"][0]["topics"]]
-    assert "被引用考向" in names
-
-
-def test_push_writes_txt_and_txt_wins_after_edit(tree_dir):
-    curriculum = {"必修一": {"1. 测试章": []}}
-    kt.sync_from_txt(curriculum, protected=set())
-    original = (tree_dir / "必修一 第一章 测试章.txt").read_text(encoding="utf-8")
-
-    # 网页侧改名 + 新增考向
-    section = curriculum["必修一"]["1. 测试章"][0]
-    section["topics"][0]["name"] = "甲考向（已改名）"
-    section["topics"].append(
-        {
-            "id": topic_id_for("必修一", "1. 测试章", "1.1 第一节", "新增考向"),
-            "name": "新增考向",
-            "level": "L2",
-            "no": 4,
-            "example": "例：新示例。",
-        }
+def test_normalize_chapter_key_bridges_both_styles():
+    assert kt.normalize_chapter_key("第一章 集合与常用逻辑用语") == kt.normalize_chapter_key(
+        "1. 集合与常用逻辑用语"
     )
-    pushed = kt.sync_to_txt(curriculum)
-    assert pushed["changed"] is True
-    written = (tree_dir / "必修一 第一章 测试章.txt").read_text(encoding="utf-8")
-    assert "甲考向（已改名）" in written and "新增考向" in written
-    assert written != original
-
-    # 再推一次不应重复落盘
-    assert kt.sync_to_txt(curriculum)["changed"] is False
-
-    # TXT 现在已是新内容 → 拉取应判定一致
-    assert kt.sync_from_txt(curriculum, protected=set())["changed"] is False
-
-
-def test_sync_to_txt_follows_indent_style(tree_dir):
-    """纯缩进风格：顶层沿用 ├─/└─，更深层用两个空格递进。"""
-
-    path = tree_dir / "必修一 第一章 测试章.txt"
-    plain = (
-        "第一章 测试章\n│\n├─ 1.1 第一节\n  L1 概念理解\n    考向1：甲考向\n"
-        "  L2 基础运算\n└─ 1.2 第二节\n"
+    assert kt.normalize_chapter_key("第三章 函数的概念与性质") == kt.normalize_chapter_key(
+        "3. 函数的概念与性质"
     )
-    path.write_text(plain, encoding="utf-8")
-    curriculum = {"必修一": {"1. 测试章": []}}
-    kt.sync_from_txt(curriculum, protected=set())
-    # 内容没变时不应重写用户的文件
-    assert kt.sync_to_txt(curriculum)["changed"] is False
 
-    # 网页侧新增考向 → 回写，并保持纯缩进风格
-    curriculum["必修一"]["1. 测试章"][0]["topics"].append(
-        {"id": "k_new", "name": "新考向", "level": "L2", "no": 2}
+
+def test_match_chapter_key_handles_missing_book():
+    curriculum = {"必修一": {"1. 集合与常用逻辑用语": []}}
+    assert kt.match_chapter_key(curriculum, "必修一", "第一章 集合与常用逻辑用语") == (
+        "1. 集合与常用逻辑用语"
     )
-    assert kt.sync_to_txt(curriculum)["changed"] is True
-    rendered = path.read_text(encoding="utf-8")
-    lines = rendered.splitlines()
-    assert lines[2].startswith(("├─", "└─")) and "1.1 第一节" in lines[2]
-    assert "  L1 概念理解" in rendered
-    assert "    考向1：甲考向" in rendered
+    assert kt.match_chapter_key(curriculum, "必修二", "第一章 集合与常用逻辑用语") == ""
 
 
-def test_pull_orders_topics_by_level(tree_dir):
-    """无论 TXT 里怎么写，落到大纲里的考向都按 L1→L5 归组。"""
+    def test_three_level_sections_keep_group(self):
+        """3.1.1 这类三级小节要记住它所属的 3.1 分组。
 
-    path = tree_dir / "必修一 第一章 测试章.txt"
-    path.write_text(
-        "第一章 测试章\n│\n└─ 1.1 第一节\n   ├─ L3 性质应用\n   │  └─ 考向1：丙\n   └─ L1 概念理解\n      └─ 考向2：甲\n",
-        encoding="utf-8",
-    )
-    curriculum = {"必修一": {"1. 测试章": []}}
-    kt.sync_from_txt(curriculum, protected=set())
-    topics = curriculum["必修一"]["1. 测试章"][0]["topics"]
-    assert [(t["level"], t["name"]) for t in topics] == [("L1", "甲"), ("L3", "丙")]
+        v3 起真实考向树改用 3.2.1/3.2.2 平铺（无 3.2 父节），不再有三级分组样本，
+        故此断言改用合成文本验证解析器的分组能力，避免绑定某份具体数据。
+        """
+
+        tree = kt.parse_tree_text(
+            "第三章 函数的概念与性质\n"
+            "3.1 函数的概念与表示\n"
+            "  3.1.1 区间的表示\n"
+            "    L1 概念理解\n"
+            "      考向1：区间写法\n"
+        )
+        grouped = [s for s in tree["sections"] if s.get("group")]
+        assert grouped, tree["sections"]
+        assert any(s["name"].count(".") == 2 for s in grouped)
 
 
 def test_empty_level_markers_are_ignored():
@@ -305,28 +122,6 @@ def test_example_continuation_does_not_leak_to_next_level():
     assert topics[1]["example"] == ""
 
 
-def test_project_tree_is_read_only_under_pytest():
-    """跑测试时绝不能改写项目里真实的考向树 TXT。"""
-
-    assert kt.IS_TESTING is True
-    assert kt._txt_writes_allowed() is False
-    report = kt.sync_to_txt(
-        {"必修一": {"1. 集合与常用逻辑用语": [{"name": "x", "topics": []}]}}
-    )
-    assert report["changed"] is False
-    assert all(f["action"] in ("read-only", "unmatched") for f in report["files"])
-
-
-def test_status_reports_mismatch(tree_dir):
-    curriculum = {"必修一": {"1. 测试章": []}}
-    info = kt.status(curriculum)
-    assert info["count"] == 1
-    item = info["files"][0]
-    assert item["matched"] is True
-    assert item["in_sync"] is False
-    assert item["txt_topics"] == 4
-    assert item["web_topics"] == 0
-
 
 def test_normalize_keeps_kaoxiang_fields():
     curriculum = {
@@ -360,37 +155,352 @@ def test_normalize_keeps_kaoxiang_fields():
     assert topic["example"] == "例：示例。"
 
 
-def test_kaoxiang_status_endpoint(client):
-    response = client.get("/api/kaoxiang/status")
-    assert response.status_code == 200
-    payload = response.json()
-    assert "files" in payload and isinstance(payload["files"], list)
-    for item in payload["files"]:
-        assert "filename" in item and "in_sync" in item
+# ---------------------------------------------------------------------------
+# #20 第三步：新增考向不得被 TXT 往返吞掉（方案 C = 写侧兜底 + 读侧放宽）
+#
+# 全部用合成大纲或 tmp_path，绝不触碰真实考向树 TXT、A.json 与活跃大纲。
+# ---------------------------------------------------------------------------
+
+SYNTH_BASE = [
+    {
+        "name": "1.1 第一节",
+        "topics": [
+            {"id": "k_a1", "name": "甲考向", "level": "L1", "no": 1, "example": "例：示例甲。"},
+            {"id": "k_a2", "name": "乙考向", "level": "L1", "no": 2, "example": "例：示例乙。"},
+            {"id": "k_b1", "name": "丙考向", "level": "L2", "no": 3, "example": "例：示例丙。"},
+            {"id": "k_c1", "name": "丁考向", "level": "L3", "no": 4, "example": ""},
+        ],
+    }
+]
 
 
-def test_kaoxiang_sync_endpoint_rejects_bad_direction(client):
-    from mathbank.auth import LOCAL_TOKEN
+def _synth_base():
+    return copy.deepcopy(SYNTH_BASE)
 
-    response = client.post(
-        "/api/kaoxiang/sync",
-        json={"direction": "whatever"},
-        headers={"X-Local-Token": LOCAL_TOKEN},
+
+def _with_new_topic(sections, name="新增考向", topic_id="k_new"):
+    """模拟手动「新增考向」/ AI 自动建档往大纲里只写 id + name。"""
+
+    sections[0]["topics"].append({"id": topic_id, "name": name})
+    return sections
+
+
+def test_new_topic_without_no_or_level_survives_roundtrip():
+    """只有 id/name 的新考向必须活过一次 render→parse，且不得污染邻居。"""
+
+    sections = _with_new_topic(_synth_base())
+    rendered = kt.render_tree_text({"title": "第一章 测试章", "sections": sections})
+
+    line = [l.strip() for l in rendered.splitlines() if "新增考向" in l and "例：" not in l]
+    assert line and re.match(r"^.*└─ 考向\d+：新增考向$", line[0]), line
+    # 必须是「带序号 + 冒号」的可解析形态，绝不能是裸行 `考向新增考向`
+    assert kt._KAOXIANG_RE.match(line[0].lstrip("│├└─ ")), line
+
+    pulled, stats = kt.build_sections("必修一", "1. 测试章", kt.parse_tree_text(rendered), sections)
+    names = [t["name"] for s in pulled for t in s["topics"]]
+    assert "新增考向" in names, names
+    # 反向断言：绝不能被当续行拼进上一个考向的 example
+    for sec in pulled:
+        for topic in sec["topics"]:
+            assert "新增考向" not in (topic.get("example") or ""), (topic["name"], topic.get("example"))
+    # id 按名字复用，不造幽灵考点
+    assert stats["added"] == 0, stats
+
+
+def test_render_fallback_does_not_mutate_the_outline():
+    """兜底只作用于渲染副本；大纲里的真实条目必须保持只有 id/name 两个键。"""
+
+    sections = _with_new_topic(_synth_base())
+    kt.render_tree_text({"title": "第一章 测试章", "sections": sections})
+    fresh = [t for t in sections[0]["topics"] if t["name"] == "新增考向"][0]
+    assert set(fresh.keys()) == {"id", "name"}, fresh
+
+
+def test_fallback_assigns_section_scoped_number():
+    """补出来的 no 是节内序号，跨节互不串号。"""
+
+    sections = _synth_base()
+    sections.append(
+        {
+            "name": "1.2 第二节",
+            "topics": [
+                {"id": "k_x1", "name": "戊考向", "level": "L1", "no": 1, "example": ""},
+                {"id": "k_x2", "name": "己考向"},
+            ],
+        }
     )
-    assert response.status_code == 400
+    first = kt._topics_with_render_defaults(sections[0])
+    second = kt._topics_with_render_defaults(sections[1])
+    assert [t["no"] for t in first] == [1, 2, 3, 4], first
+    assert [t["no"] for t in second] == [1, 2], second
+    assert second[1]["level"] == "L1", second[1]
 
 
-def test_kaoxiang_sync_endpoint_pull_is_safe(client):
-    """带令牌的拉取请求可以正常返回，且不改动章节结构。"""
+def test_new_topic_between_levels_renumbers_following_topics():
+    """新考向归到 L1 桶后，其后条目的 no 连续后移 —— 既有的统一重编号语义。"""
 
-    from mathbank.auth import LOCAL_TOKEN
+    sections = _with_new_topic(_synth_base())
+    stable = kt.pull_stable_sections(sections)
+    topics = stable[0]["topics"]
+    assert [(t["no"], t["level"], t["name"]) for t in topics] == [
+        (1, "L1", "甲考向"),
+        (2, "L1", "乙考向"),
+        (3, "L1", "新增考向"),
+        (4, "L2", "丙考向"),
+        (5, "L3", "丁考向"),
+    ], topics
 
-    response = client.post(
-        "/api/kaoxiang/sync",
-        json={"direction": "pull"},
-        headers={"X-Local-Token": LOCAL_TOKEN},
+
+def test_pull_stable_sections_reaches_text_fixed_point():
+    """校正一次后 TXT 文本必须停在不动点，否则每次保存都多写一遍文件。"""
+
+    sections = _with_new_topic(_synth_base())
+    stable = kt.pull_stable_sections(sections)
+    first = kt.render_tree_text({"title": "第一章 测试章", "sections": stable})
+    repulled, _ = kt.build_sections("必修一", "1. 测试章", kt.parse_tree_text(first), stable)
+    second = kt.render_tree_text({"title": "第一章 测试章", "sections": repulled})
+    assert first == second, "TXT 文本未收敛到不动点"
+    # sync_to_txt 的真实判据：大纲与刚写下的 TXT 解析结果等价
+    assert kt._canonical_signature(stable) == kt._canonical_signature(
+        kt.parse_tree_text(first)["sections"]
     )
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["direction"] == "pull"
-    assert "status" in payload
+
+
+def test_pull_stable_sections_keeps_ids_and_content():
+    """校正只动编号口径，内容签名与 id 集合都必须原样保留。"""
+
+    sections = _with_new_topic(_synth_base())
+    stable = kt.pull_stable_sections(sections)
+    assert {t["id"] for s in stable for t in s["topics"]} == {
+        t["id"] for s in sections for t in s["topics"]
+    }
+    before = {(t["name"], t.get("example", "")) for s in sections for t in s["topics"]}
+    after = {(t["name"], t.get("example", "")) for s in stable for t in s["topics"]}
+    assert before == after, before ^ after
+
+
+def test_hand_written_bare_topic_line_is_recognized():
+    """用户在 TXT 里手打无冒号裸名行必须成为一条考向，而不是续行。"""
+
+    tree = kt.parse_tree_text(
+        "第一章 测试章\n"
+        "├─ 1.1 第一节\n"
+        "│  ├─ L1 概念理解\n"
+        "│  │  ├─ 考向1：甲考向\n"
+        "│  │  │  └─ 例：示例甲。\n"
+        "│  │  └─ 考向乙考向\n"
+    )
+    topics = tree["sections"][0]["topics"]
+    assert [t["name"] for t in topics] == ["甲考向", "乙考向"], topics
+    assert topics[0]["example"] == "例：示例甲。", topics[0]
+
+
+def test_bare_topic_line_inherits_its_level_bucket():
+    """裸名行写在 L2 下就归 L2，不会被硬塞进 L1 打乱既有层级。"""
+
+    tree = kt.parse_tree_text(
+        "第一章 测试章\n"
+        "├─ 1.1 第一节\n"
+        "│  ├─ L1 概念理解\n"
+        "│  │  └─ 考向1：甲考向\n"
+        "│  ├─ L2 基础运算\n"
+        "│  │  └─ 考向乙考向\n"
+    )
+    topics = tree["sections"][0]["topics"]
+    assert [(t["level"], t["name"]) for t in topics] == [("L1", "甲考向"), ("L2", "乙考向")]
+
+
+def test_digit_only_name_is_dropped_instead_of_becoming_a_topic():
+    """漏了冒号的残行不能变成名叫「3」的幽灵考点。"""
+
+    tree = kt.parse_tree_text(
+        "第一章 测试章\n"
+        "├─ 1.1 第一节\n"
+        "│  ├─ L1 概念理解\n"
+        "│  │  ├─ 考向1：甲考向\n"
+        "│  │  └─ 考向3\n"
+    )
+    topics = tree["sections"][0]["topics"]
+    assert [t["name"] for t in topics] == ["甲考向"], topics
+
+
+def test_leading_colon_is_stripped_from_the_name():
+    """光有冒号没有序号的行，名字里不该带着那个冒号。"""
+
+    tree = kt.parse_tree_text(
+        "第一章 测试章\n"
+        "├─ 1.1 第一节\n"
+        "│  ├─ L1 概念理解\n"
+        "│  │  └─ 考向：待定\n"
+    )
+    assert [t["name"] for t in tree["sections"][0]["topics"]] == ["待定"]
+
+
+# ---------------------------------------------------------------------------
+# 渲染 ↔ 解析的往返纯函数（方案 C 的成果，与 TXT 是否作为数据源无关）
+# ---------------------------------------------------------------------------
+
+def test_render_roundtrip_on_sample_txt_reaches_fixed_point():
+    """SAMPLE_TXT → 建树 → 渲染 → 再解析：内容签名必须一条不差。"""
+
+    tree = kt.parse_tree_text(SAMPLE_TXT)
+    sections, _ = kt.build_sections("必修一", "1. 测试章", tree, [])
+    for style in ("tree", "indent"):
+        rendered = kt.render_tree_text({"title": "第一章 测试章", "sections": sections}, style)
+        reparsed, _ = kt.build_sections(
+            "必修一", "1. 测试章", kt.parse_tree_text(rendered), []
+        )
+        assert kt._canonical_signature(reparsed) == kt._canonical_signature(sections), style
+
+
+def test_relaxed_regex_matches_old_parser_on_numbered_lines():
+    """放宽后的正则对「序号+冒号」的标准行判定必须与旧写法完全一致。
+
+    旧受管 TXT 已归档，这里改用覆盖全部历史形态的合成行来守同一个结论：
+    放宽只多认出裸行，绝不让原本能解析的行改变判定。
+    """
+
+    strict = re.compile(r"^考向\s*(\d+)?\s*[:：]\s*(.*)$")
+    samples = [
+        "考向1：甲考向",
+        "考向12：长名字考向",
+        "考向1:半角冒号",
+        "考向 3 ：空格包裹",
+        "├─ 考向4：树线形态",
+        "│  │  └─ 考向5：深层树线",
+        "考向无编号裸行",
+    ]
+    changed = []
+    for content in samples:
+        stripped = kt._split_prefix(content)[1].strip()
+        if bool(strict.match(stripped)) != bool(kt._KAOXIANG_RE.match(stripped)):
+            changed.append(content)
+    # 只有最后一行（裸行）允许出现差异：旧写法认不出、新写法认得出。
+    assert changed == ["考向无编号裸行"], changed
+
+
+# ---------------------------------------------------------------------------
+# JSON 单一数据源：TXT 同步链路必须彻底失效
+# ---------------------------------------------------------------------------
+
+def test_kaoxiang_sync_surface_is_gone():
+    """模块不再暴露任何 pull/push/sync 入口，防止有人悄悄把链路接回来。"""
+
+    for name in (
+        "sync_from_txt",
+        "sync_to_txt",
+        "pull_from_txt",
+        "push_to_txt",
+        "auto_pull_if_needed",
+        "_txt_writes_allowed",
+        "_sources_changed",
+        "_record_state",
+        "protected_topic_ids",
+    ):
+        assert not hasattr(kt, name), name
+
+
+def test_main_module_has_no_txt_pull_call():
+    """`main.py` 导入期绝不再出现 TXT 拉取 —— 「启动改写 A.json」隐患的根。
+
+    真跑一次 `import main` 需要独占 runtime lock（服务在跑时拿不到），所以这里守
+    源码事实：pull 入口既不在模块里、也不可能在调用点出现。服务停止后可用
+    `python -m scripts.check_kaoxiang_json_only` 再补一次真实导入验证。
+    """
+
+    for rel in ("main.py", "mathbank/routes_library.py", "mathbank/routes_settings.py"):
+        source = (PROJECT_ROOT / rel).read_text(encoding="utf-8")
+        assert "auto_pull_if_needed" not in source, "%s 又接回了 TXT 拉取" % rel
+        assert "push_to_txt" not in source, "%s 又接回了 TXT 回写" % rel
+    metadata_source = (PROJECT_ROOT / "mathbank" / "metadata.py").read_text(encoding="utf-8")
+    assert "kaoxiang_tree" not in metadata_source, "自动建档又把大纲推回 TXT"
+    assert "pull_from_txt" not in (PROJECT_ROOT / "main.py").read_text(encoding="utf-8")
+    assert "routes_kaoxiang" not in (PROJECT_ROOT / "main.py").read_text(encoding="utf-8")
+    assert not hasattr(kt, "auto_pull_if_needed")
+    assert not hasattr(kt, "pull_from_txt")
+def test_kaoxiang_routes_are_unmounted(client):
+    """两个 TXT 同步接口都不存在了（404），前端不可能再误触发同步。"""
+
+    for path in ("/api/kaoxiang/status", "/api/kaoxiang/sync"):
+        response = client.get(path)
+        assert response.status_code == 404, (path, response.status_code)
+
+
+def test_frontend_has_no_txt_sync_entry():
+    """设置页不再有「TXT → 网页 / 网页 → TXT」面板，也不再有对应 JS 助手。"""
+
+    html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+    api = (PROJECT_ROOT / "static" / "js" / "api.js").read_text(encoding="utf-8")
+    assert "kaoxiangStatus" not in html
+    assert "TXT → 网页" not in html and "网页 → TXT" not in html
+    for token in ("kaoxiangRefresh", "kaoxiangSync", "kaoxiangRenderStatus"):
+        assert token not in api, token
+
+
+def test_txt_sync_helpers_are_gone_from_the_frontend():
+    """`api.js` 里三个 TXT 面板助手与 `loadBothTrees` 的自动刷新都已移除。
+
+    `loadBothTrees` 本身还在用（预设树刷新），所以只守它后面那一行调用。
+    """
+
+    api = (PROJECT_ROOT / "static" / "js" / "api.js").read_text(encoding="utf-8")
+    assert "kaoxiangRenderStatus" not in api
+    assert "window.kaoxiangRefresh" not in api
+    assert "window.kaoxiangSync" not in api
+    assert "/api/kaoxiang/" not in api
+    # 大纲 Tab 切换时只剩一次 loadBothTrees，不再附带 TXT 状态刷新
+    assert api.count("if (typeof loadBothTrees === 'function') loadBothTrees();") == 1
+def test_txt_archive_is_intact():
+    """归档完整性：``考向树/`` 已从项目目录移走，唯一副本在 scratch 归档里。
+
+    守两件事：项目目录不得再出现 TXT（否则「JSON 单一来源」被悄悄打破），
+    归档里的 6 份文件必须与 MANIFEST 的字节数和 SHA-256 逐一对得上
+    （历史数据不能烂在归档里）。
+    """
+
+    import hashlib
+
+    project_txt = list((PROJECT_ROOT / "考向树").glob("*.txt")) if (PROJECT_ROOT / "考向树").exists() else []
+    assert project_txt == [], [p.name for p in project_txt]
+
+    archive = PROJECT_ROOT / ".qoder-scratch" / "kaoxiang_txt_archive_20261001"
+    if not archive.exists():
+        pytest.skip("归档目录不在本机（例如 CI），跳过归档完整性检查")
+    manifest = {}
+    for line in (archive / "MANIFEST.txt").read_text(encoding="utf-8").splitlines():
+        name, size, digest = line.split("	")
+        manifest[name] = (int(size), digest)
+    assert len(manifest) == 6, manifest
+    for name, (size, digest) in manifest.items():
+        data = (archive / name).read_bytes()
+        assert len(data) == size, name
+        assert hashlib.sha256(data).hexdigest() == digest, name
+
+
+def test_active_outline_topics_all_have_id_and_name():
+    """JSON 成为唯一来源后，考点 ID 只能由大纲自己保证：每条考向都得有 id/name。"""
+
+    metadata = json.loads(
+        (PROJECT_ROOT / "data_backup" / "custom_metadata.json").read_text(encoding="utf-8")
+    )
+    curriculum = metadata.get("curriculum", {})
+    total = 0
+    broken = []
+    seen_ids = set()
+    duplicated = []
+    for compulsory, chapters in curriculum.items():
+        for chapter, sections in (chapters or {}).items():
+            for sec in sections or []:
+                for topic in sec.get("topics", []) or []:
+                    total += 1
+                    tid = str(topic.get("id") or "")
+                    name = str(topic.get("name") or "").strip()
+                    if not tid or not name:
+                        broken.append((compulsory, chapter, sec.get("name"), topic))
+                    elif tid in seen_ids:
+                        duplicated.append(tid)
+                    else:
+                        seen_ids.add(tid)
+    assert total > 400, total
+    assert broken == [], broken[:3]
+    assert duplicated == [], duplicated[:3]

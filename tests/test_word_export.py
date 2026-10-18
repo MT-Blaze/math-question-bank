@@ -97,6 +97,46 @@ def test_word_fillin_uses_longer_native_underlined_blank(monkeypatch):
     assert word_export_helper.WORD_FILLIN_BLANK_SPACES == 18
 
 
+def test_choice_paren_renders_as_literal_fullwidth_paren(monkeypatch):
+    """题库源码里的 \\paren 必须在 Word 出口换成**字面**全角括号。
+
+    Word 不渲染 LaTeX 命令：漏出 ``\\paren`` 会变成可见的六个字符。
+    学生版 → （　　）；教师版 → （B）。
+    ⚠️ 教师版不加粗是**已知限制**（_clean_plain_text 会把 \\textbf 剥壳），不是 bug。
+    """
+    monkeypatch.setattr(
+        word_export_helper.PandocOmmlConverter,
+        "convert_many",
+        lambda self, formulas: {},
+    )
+
+    def payload():
+        return [
+            {
+                "question": {
+                    "id": 1,
+                    "question_type": "single_choice",
+                    "content": "则 $A\\cap B=$ \\paren",
+                    "answer_markdown": r"\textbf{【参考答案】}：B",
+                    "image_paths": [],
+                },
+                "score": 5,
+            }
+        ]
+
+    # 学生版：空括号，且绝不漏出字面命令
+    student, _ = build_word_document("括号渲染", "", "quiz", payload())
+    student_xml = _document_xml(student).decode("utf-8")
+    assert "\\paren" not in student_xml
+    assert "（\u3000\u3000）" in student_xml
+
+    # 教师版：从 answer_markdown 提取到 B，印进括号
+    teacher, _ = build_word_document("括号渲染", "", "quiz", payload(), include_answers=True)
+    teacher_xml = _document_xml(teacher).decode("utf-8")
+    assert "\\paren" not in teacher_xml
+    assert "（B）" in teacher_xml
+
+
 @pytest.mark.skipif(shutil.which("pandoc") is None, reason="Pandoc is not installed")
 def test_word_export_uses_native_omml_when_pandoc_is_available():
     data, diagnostics = build_word_document(

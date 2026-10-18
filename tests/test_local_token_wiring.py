@@ -59,7 +59,7 @@ def test_lesson_auth_headers_omits_empty_token():
 
 @pytest.mark.parametrize(
     "verb,path",
-    [("post", "/api/lesson-plans"), ("post", "/api/kaoxiang/sync")],
+    [("post", "/api/lesson-plans"), ("post", "/api/lecture/drafts")],
 )
 def test_write_endpoints_reject_empty_token(client, verb, path):
     """服务端拦得住空令牌，因此前端必须真的带上它。"""

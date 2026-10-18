@@ -789,6 +789,43 @@ def test_lecture_numbering_resets_per_topic_and_block_heads():
     )
 
 
+def test_pit_method_bare_lt_survives_rendering():
+    """修订稿 \(0<a<1\) 里的裸 < 曾把 KaTeX 段整段吃掉（浏览器当未知标签）：
+    渲染前数学段必须走正文同款管线转成 \lt/\gt；真标签保留，script 注入堵死。"""
+    st = ("{ sections: [], activeKey: '', compulsory: '', chapter: '', knowledge: '', section: null,"
+          " topics: [], extraIds: [], questions: [], knowledgeMind: null, qIndex: {}, previewData: null, coverBg: {} }")
+    body = "".join((
+        "var data = {\n",
+        "  settings: { cover_title: 'T' },\n",
+        "  section: { compulsory:'M', chapter:'C1', knowledge:'K1', name:'K1',\n",
+        "    topics:[{id:'k_a',name:'甲',no:1}] },\n",
+        "  notes: {\n",
+        "    'pit:M:C1:K1:k_a': '\\(0<a<1\\) 递减。',\n",
+        "    'method:M:C1:K1:k_a': '\\(2^{x}<8\\)。'\n",
+        "      + '<scr' + 'ipt>alert(2)<\\/scr' + 'ipt>'\n",
+        "  },\n",
+        "  topics: [{ topic_id:'k_a', name:'甲', items:[{question_id:1, role:'example'}] }],\n",
+        "  extra_ids: [], questions: [{ id:1, content:'Q', question_type:'detailed_answer', answer:'', sources: [] }]\n",
+        "};\n",
+        "var rr = api.renderRevisionHtml;\n",
+        # 数学段内 < > 换成 \lt \gt（KaTeX 认、HTML 不切标签）；已有 \lt 不二次转义
+        "eq(rr('\\\\(2^{x}<8\\\\)'), '\\\\(2^{x}\\\\lt 8\\\\)', 'method 数学段没走同款转义');\n",
+        "eq(rr('\\\\(0<a<1\\\\)'), '\\\\(0\\\\lt a\\\\lt 1\\\\)', 'pit 的 0<a<1 没有完整存活');\n",
+        "eq(rr('\\\\(a>0\\\\)'), '\\\\(a\\\\gt 0\\\\)', '裸 > 没转 \\\\gt');\n",
+        "eq(rr('\\\\(x\\\\lt y\\\\)'), '\\\\(x\\\\lt y\\\\)', '\\\\lt 被二次转义');\n",
+        # 真标签保留；`<b</p>` 这种畸形尾巴浏览器本就当文本（与宿主渲染一致）
+        "eq(rr('<p>a<b</p>'), '<p>a<b</p>', '合法标签开头的 < 不该动');\n",
+        "eq(rr('x<a1y'), 'x&lt;a1y', '段外裸 < 没转义');\n",
+        "if (rr('<scr'+'ipt>alert(2)<\\\\/scr'+'ipt>').indexOf('<script>') === 0)"
+        " throw new Error('script 注入未堵');\n",
+        "console.log('OK');\n",
+    ))
+    _run_extracted_lecture_js(
+        ("renderRevisionHtml",), st, body,
+        helpers="", prelude=_preview_render_prelude(), aliases=(),
+    )
+
+
 def test_autosave_guard_counts_questions_not_topic_slots():
     """小节一加载就有空考向槽，快照判空必须数题；多节时总数要跨节累加。"""
     src = _read(LECTURE_JS)

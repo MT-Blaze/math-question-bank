@@ -31,7 +31,13 @@ def test_ocr_prompt_compactly_preserves_tables_and_multi_figure_anchors():
     assert "表格内占位留在所属单元格" in prompt
     assert "仅当全图恰有一幅且位于表格外的独立几何/函数图时" in prompt
     assert "多图或无图时绝不输出该标记" in prompt
-    assert len(prompt) <= 720
+    # 选项逐项拆分 + 填空 \fillin（并入望悠转录纪律后新增的硬约束）
+    assert "每个选项独占一行" in prompt
+    assert "严禁把两个及以上选项写进同一个" in prompt
+    assert "\\fillin" in prompt
+    # 上限：整条 OCR 提示词保持「紧凑」（原先 720；并入望悠转录纪律 + 选项/填空
+    # 硬约束后放宽，仍远小于其它长提示词）。
+    assert len(prompt) <= 1100
 
 
 def test_ocr_request_uses_resolved_multimodal_provider(tmp_path):
@@ -455,3 +461,20 @@ def test_tikz_correction_uses_resolved_bailian_provider(tmp_path):
     assert kwargs["json"]["max_completion_tokens"] == 16384
     assert "reasoning_effort" not in kwargs["json"]
     assert len(kwargs["json"]["messages"][0]["content"]) == 2
+
+
+def test_split_prompt_keeps_enumeration_and_options_distinct():
+    """拆题提示词要写明：①②③④ 命题枚举属题干、A/B/C/D 才是选项，两者都要保留。
+
+    只加在**拆题提示词**里：OCR 提示词有「≤1100 字紧凑」守卫，不掺入。
+    """
+    import os
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    src = open(os.path.join(root, "mathbank", "prompts.py"), encoding="utf-8").read()
+    start = src.index("def build_pdf_parse_system_prompt(")
+    end = src.index("\ndef ", start + 1)
+    segment = src[start:end]
+    assert "命题枚举" in segment, "拆题提示词缺少『命题枚举 ≠ 选项』约束"
+    assert "①②③④" in segment
+    assert "A/B/C/D" in segment

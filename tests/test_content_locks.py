@@ -62,7 +62,7 @@ def test_docx_task_restores_formula_before_returning_questions():
         },
     }
 
-    def fake_parse(locked_text, _generate_answers):
+    def fake_parse(locked_text, _generate_answers, **_kwargs):
         assert '<mathbank-math id="' in locked_text
         assert r"$f(x)=x^2+1$" in locked_text
         lock_id = re.search(r'id="(MBM_[^"]+)"', locked_text).group(1)

@@ -84,14 +84,14 @@ def test_rename_keeps_id_after_normalize():
 def test_create_stores_known_topic_id(client):
     """已有考点走 slot 精确匹配，返回确定性 ID 且不触发自动创建。"""
 
-    created = _create(client, "设 $x^2$，已有考点题。", topic="集合的表示方法")
+    created = _create(client, "设 $x^2$，已有考点题。", topic="集合的表示方法（列举法/描述法选型）")
     assert created.status_code == 200
     question = created.json()["question"]
-    assert question["topic"] == "集合的表示方法"
+    assert question["topic"] == "集合的表示方法（列举法/描述法选型）"
     assert question["topic_id"].startswith("k_")
 
     # 重复创建同考点：ID 相同（确定性）
-    again = _create(client, "设 $y^2$，同考点第二题。", topic="集合的表示方法")
+    again = _create(client, "设 $y^2$，同考点第二题。", topic="集合的表示方法（列举法/描述法选型）")
     assert again.status_code == 200
     assert again.json()["question"]["topic_id"] == question["topic_id"]
 
@@ -130,7 +130,7 @@ def test_unknown_topic_never_pollutes_curriculum(client):
 def test_rename_topic_keeps_questions_reachable(client):
     import main as main_mod
 
-    created = _create(client, "设 $z$，重命名场景题。", topic="集合的表示方法")
+    created = _create(client, "设 $z$，重命名场景题。", topic="集合的表示方法（列举法/描述法选型）")
     qid = created.json()["question"]["id"]
     old_tid = created.json()["question"]["topic_id"]
     assert old_tid
@@ -142,7 +142,7 @@ def test_rename_topic_keeps_questions_reachable(client):
             section = s
             break
     assert section is not None
-    topic = next(t for t in section["topics"] if t["name"] == "集合的表示方法")
+    topic = next(t for t in section["topics"] if t["name"] == "集合的表示方法（列举法/描述法选型）")
     topic["name"] = "改名考点v2"
 
     # 按新名筛题必须命中（筛选走 ID，不受重命名影响）
@@ -157,20 +157,20 @@ def test_rename_topic_keeps_questions_reachable(client):
     assert detail.json()["topic_id"] == old_tid
 
     # 还原大纲
-    topic["name"] = "集合的表示方法"
+    topic["name"] = "集合的表示方法（列举法/描述法选型）"
 
 
 def test_extra_topic_filter_matches_exact_kaoxiang(client):
     extra = json.dumps([
         {"compulsory": "必修一", "chapter": "1. 集合与常用逻辑用语",
-         "knowledge": "1.1 集合的概念", "topic": "元素与集合的关系"},
+         "knowledge": "1.1 集合的概念", "topic": "元素与集合的关系（∈ / ∉ 填空）"},
     ], ensure_ascii=False)
     _create(client, "附加考向精确匹配题。", topic="主考点", extra_topics=extra)
     _create(client, "无附加考向题。", topic="主考点", extra_topics="[]")
 
     import main as main_mod
 
-    # 确保大纲里存在「元素与集合的关系」考点（作为附加考向候选）
+    # 确保大纲里存在「元素与集合的关系（∈ / ∉ 填空）」考点（作为附加考向候选）
     section = None
     for s in metadata_mod.METADATA_CACHE["curriculum"]["必修一"]["1. 集合与常用逻辑用语"]:
         if s["name"] == "1.1 集合的概念":
@@ -181,13 +181,13 @@ def test_extra_topic_filter_matches_exact_kaoxiang(client):
             {"name": "1.1 集合的概念", "topics": []}
         ]
         section = metadata_mod.METADATA_CACHE["curriculum"]["必修一"]["1. 集合与常用逻辑用语"][0]
-    if not any(t["name"] == "元素与集合的关系" for t in section["topics"]):
-        section["topics"].append({"name": "元素与集合的关系"})
+    if not any(t["name"] == "元素与集合的关系（∈ / ∉ 填空）" for t in section["topics"]):
+        section["topics"].append({"name": "元素与集合的关系（∈ / ∉ 填空）"})
 
     params = {
         "extra_topics": json.dumps([
             {"compulsory": "必修一", "chapter": "1. 集合与常用逻辑用语",
-             "knowledge": "1.1 集合的概念", "topic": "元素与集合的关系"},
+             "knowledge": "1.1 集合的概念", "topic": "元素与集合的关系（∈ / ∉ 填空）"},
         ], ensure_ascii=False),
         "topic_mode": "and",
     }

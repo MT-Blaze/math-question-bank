@@ -18,6 +18,8 @@ from mathbank.latex_normalize import (
     latexify_choices,
     latexify_bold,
     normalize_content_for_latex_storage,
+    _split_merged_choice_items,
+    _split_merged_option_content,
 )
 
 
@@ -122,6 +124,38 @@ def test_choices_not_wrapped_for_non_choice_question():
     # 未传 question_type 时保留旧行为（纯文本判据）
     out = latexify_choices("A．甲 B．乙 C．丙 D．丁", "")
     assert r"\begin{choices}" in out
+
+
+def test_ai_merged_options_in_existing_choices_get_split():
+    """AI 直出的 choices 里把一个 \\item 挤了多个选项 → 程序侧兜底拆开。
+
+    实测坏数据：``\\item 1 B. 1或3 C 3 D.-3``（还漏了首个 A. 标号），
+    应拆成 1 / 1或3 / 3 / -3 四个独立 \\item。
+    """
+    md = (
+        "已知集合 $A = \\{ 1,{a}^{2} - {4a},a - 4\\}$ ,且 $- 3 \\in A$ ,则 $a =$ (  )\n"
+        "\\begin{choices}\n"
+        "\\item 1 B. 1或3 C 3 D.-3\n"
+        "\\end{choices}"
+    )
+    out = latexify_choices(md, "single_choice")
+    assert out.count(r"\item ") == 4, out
+    assert r"\item 1" in out and r"\item 1或3" in out
+    assert r"\item 3" in out and r"\item -3" in out
+
+
+def test_geometry_options_are_not_mistaken_for_merged_labels():
+    """选项里含「点B/圆C」这类命名不得被当成选项标号拆开。"""
+    md = (
+        "如图所示，下列说法正确的是（  ）\n"
+        "\\begin{choices}\n"
+        "\\item 点 $B$ 在圆 $C$ 上\n"
+        "\\item 点 $A$ 在圆 $D$ 外\n"
+        "\\end{choices}"
+    )
+    out = latexify_choices(md, "single_choice")
+    assert out.count(r"\item ") == 2, out
+    assert "点 $B$ 在圆 $C$ 上" in out
 
 
 def test_choices_inserted_in_place_not_at_tail():
@@ -367,3 +401,372 @@ def test_restore_leaves_choice_images_in_choices_env():
     # choices 内的 includegraphics 保留，无对应 Markdown 图
     assert r"\begin{choices}" in restored
     assert "![](" not in restored
+
+
+def test_normalize_choice_paren_macro():
+    """选择题末尾作答空括号 -> \\paren；幂等；非选择题不动。"""
+    from mathbank.latex_normalize import normalize_choice_paren_macro as f
+
+    # 三种常见空括号形态都要归一
+    assert f("已知 $x>0$，下列正确的是（）", "single_choice").endswith(r" \paren")
+    assert f("下列正确的是(  )", "single_choice").endswith(r" \paren")
+    assert f(r"下列正确的是 $(\quad)$", "single_choice").endswith(r" \paren")
+
+    # 幂等：重复执行字节不变
+    a = f("下列正确的是（）", "single_choice")
+    assert f(a, "single_choice") == a
+
+    # 含 choices 时只在它之前补，且数量唯一
+    out = f("下列正确的是（）\n\\begin{choices}\n\\item 甲\n\\end{choices}", "single_choice")
+    assert out.count(r"\paren") == 1
+    assert r"\begin{choices}" in out
+    # ⚠️ 位置比数量更重要：补到 \begin{choices} 之后就会变成选项内容
+    assert out.index(r"\paren") < out.index(r"\begin{choices}")
+
+    # 非选择题（含填空题）不动
+    assert f("求解集。", "detailed_answer") == "求解集。"
+    assert f("最小值为____", "fill_in_blank") == "最小值为____"
+
+    # 空串安全
+    assert f("", "single_choice") == ""
+
+
+def test_two_clean_choice_stem_parentheses_implementations_do_not_drift():
+    """`paper_helper` 与 `latex_normalize` 各有一份同名实现（导出侧 / 入库侧）。
+
+    两份是逐字复制的，行为必须**逐字节一致**——否则同一道题在「入库」与「导出」
+    两条路上会得到不同源码（这正是当初把三处接入点排错顺序时被抓到的问题类型）。
+    这里用一批真实形态钉住它们不漂移。
+    """
+    from mathbank.latex_normalize import clean_choice_stem_parentheses as inner
+    from mathbank.paper_helper import clean_choice_stem_parentheses as outer
+
+    cases = [
+        "下列正确的是（）",                       # 全角空括号
+        "下列正确的是(  )",                       # 半角空括号
+        "下列正确的是（ ）",                      # 全角括号 + 半角空格
+        "下列正确的是（　　）",                   # 已是全角空格括号
+        r"下列正确的是 $(\quad)$",                # 行内数学里的 quad
+        r"下列正确的是 （$\qquad$）",             # 全角括号 + 数学内 quad
+        r"下列正确的是 $(\hspace{2em})$",         # hspace
+        r"下列正确的是 \paren",                   # 已含 \paren
+        "下列正确的是（）（）",                   # 多个空括号
+        "下列正确的是",                           # 无括号（不得凭空加）
+        "下列正确的是 $x>0$",                     # 结尾是公式，不得误伤
+        "",                                      # 空串
+    ]
+    assert len(cases) >= 6
+    for raw in cases:
+        assert inner(raw) == outer(raw), f"两份 clean_choice_stem_parentheses 漂移: {raw!r}"
+
+
+def test_choice_stem_cleanup_does_not_leave_double_parens():
+    """题干末尾「手写空括号 + ``\\paren``」必须收敛成一个 ``\\paren``。
+
+    2026-09-25 修。旧实现的病灶是**两步顺序反了**：先清末尾空括号（正则带 ``$``
+    锚定），后删已有的 ``\\paren``。输入像 ``…（　）\\paren`` 时末尾是 ``\\paren``，
+    末尾锚定落空、括号清不掉；等删掉 ``\\paren``，括号虽已成末尾却不再重清，
+    归一化随后又无条件补一个 ``\\paren`` —— 于是落库成双括号。
+
+    还有两档同样清不掉的常见形态：
+
+    * **括号后跟句末标点**（``（　）.``）—— 中文题面几乎总在作答括号后写句号，
+      而旧正则要求括号正好收在文本末尾；
+    * **数学模式内的作答括号**（``$A \\cup B = (\\quad)$``）—— 空括号不紧贴前导
+      ``$``，所以 ``math_wrapped_parens``（要求 ``$(``）与 ``plain_parens``（要求括号
+      收尾）双双匹配不到。现已在末尾锚定里放行「一个收尾的 ``$``」。
+
+    ⚠️ 刻意**不**放行「括号后接正文」（``（　）条件``）：那是嵌在句子中间的空括号，
+    不是作答括号，库里 id=277/97/264/430 属这一类，留人工处理。
+    """
+
+    from mathbank.latex_normalize import clean_choice_stem_parentheses as clean
+    from mathbank.latex_normalize import normalize_choice_paren_macro as f
+
+    # ① 双括号必须被清成一个（档 1：括号紧贴末尾）
+    assert clean("题干（ ）\\paren") == "题干"
+    assert clean("题干（）\\paren") == "题干"
+    assert clean("题干（　　）\\paren") == "题干"
+    assert clean(r"题干 $(\quad)$ \paren") == "题干"
+    assert clean("题干（ ）（）\\paren") == "题干"
+    assert f("题干（ ）\\paren", "single_choice") == "题干 \\paren"
+    assert f("题干（ ）\\paren", "single_choice").count(r"\paren") == 1
+
+    # 用户报的两个真实形态
+    assert f("设 $S=f(t)$，最近似的是（    ）\\paren", "single_choice") == (
+        "设 $S=f(t)$，最近似的是 \\paren")
+    assert f("则实数 $a$ 的取值范围是（    ）\\paren", "single_choice") == (
+        "则实数 $a$ 的取值范围是 \\paren")
+
+    # ② 数学模式内的作答括号：中文题面常见「$A \cup B = (\quad)$ \paren」，空括号
+    #    **不紧贴**前导 $，所以 math_wrapped_parens 匹配不到，得靠「末尾允许一个
+    #    收尾 $」兜住。括号前的空格会随括号一起被吃掉（与「题干 （ ）」同款行为），
+    #    源码成「$A \cup B =$ \paren」—— $ 仍成对，渲染出来仍是「A ∪ B = （　　）」。
+    assert clean(r"则 $A \cup B = (\quad)$ \paren") == r"则 $A \cup B =$"
+    assert f(r"则 $A \cup B = (\quad)$ \paren", "single_choice") == r"则 $A \cup B =$ \paren"
+    assert f(r"$S = (\quad)$ \paren", "single_choice") == r"$S =$ \paren"
+    assert f(r"$x^2=1$ ，则 $A \cup B = (\quad)$ \paren", "single_choice") == (
+        r"$x^2=1$ ，则 $A \cup B =$ \paren")
+    # 「$( )$ 纯包裹」必须由 math_wrapped_parens 整段删除，不能留一对孤立的 $$
+    assert clean(r"纯包裹 $(\quad)$ \paren") == "纯包裹"
+    # 括号后还跟着正文（不满足末尾锚定）→ 一律不动
+    assert clean(r"分母 $f(\quad)$ 不为零") == r"分母 $f(\quad)$ 不为零"
+
+    # ③ 括号后跟句末标点也要清（档 2）；标点本身原样保留
+    assert clean("题干（ ）.") == "题干."
+    assert clean("题干（ ）. \\paren") == "题干."
+    assert f("题干（ ）.", "single_choice") == "题干. \\paren"
+    assert f("题干（ ）. \\paren", "single_choice") == "题干. \\paren"
+
+    # ④ 零误伤：括号里有内容的一律不碰
+    assert clean(r"f(x) \paren") == "f(x)"
+    assert clean(r"(0,1) \paren") == "(0,1)"
+    assert clean(r"集合 $\{x \mid x>0\}$") == r"集合 $\{x \mid x>0\}$"
+    assert f(r"f(x) \paren", "single_choice") == r"f(x) \paren"
+    assert f(r"(0,1) \paren", "single_choice") == r"(0,1) \paren"
+    # 括号后接**正文**（嵌在句子中间）不匹配 —— 那是句中括号，不是作答括号。
+    # 库里 id=277「的（）条件.」就属这一类，刻意留给人工审，不在这里自动清。
+    assert clean("题干（ ）条件. \\paren") == "题干（ ）条件."
+
+    # ⑤ 只有 \paren 的题零改动（库里 194 道，不能被这次修复碰到）
+    assert f("题干 \\paren", "single_choice") == "题干 \\paren"
+    assert clean("题干 \\paren") == "题干"
+
+    # ⑥ 幂等 T(T(x)) == T(x)
+    for raw in (
+        "题干（ ）\\paren",
+        "题干（ ）.",
+        "题干（）\\paren",
+        "题干（ ）. \\paren",
+        "题干 \\paren",
+        r"f(x) \paren",
+        r"(0,1) \paren",
+        "设 $S=f(t)$，最近似的是（    ）\\paren",
+        r"则 $A \cup B = (\quad)$ \paren",
+        r"$S = (\quad)$ \paren",
+    ):
+        once = f(raw, "single_choice")
+        assert f(once, "single_choice") == once, f"归一化不幂等: {raw!r}"
+
+
+# ── 选项列数（option_columns）：0=自适应，1/2/4=强制列数 ────────────────────
+# 判据来自 exam-zh-choices.sty：\begin{choices}[columns=N] 的 N≥1 时跳过自动
+# 列数计算（:153-154），从而实现「文字自适应 + 图片按题强制列数」共存。
+
+_CHOICE_IMG = r"\includegraphics[max width=0.42\linewidth,max height=3.2cm,keepaspectratio]{opt.jpg}"
+_STEM_IMG = r"\includegraphics[max width=0.85\linewidth]{stem.jpg}"
+
+
+def _choice_src(items):
+    """题干带一张图 + 一个 choices 环境（items 为各选项的内容）。"""
+    body = "\n".join(r"\item " + it for it in items)
+    return "题干见图 " + _STEM_IMG + "\n\\begin{choices}\n" + body + "\n\\end{choices}"
+
+
+def test_option_columns_zero_keeps_choices_untouched():
+    """0=自适应：不加 [columns=]、选项图保持 0.42 限宽（改动前的行为）。"""
+    from mathbank.paper_helper import clean_content_for_latex
+
+    out = clean_content_for_latex(
+        _choice_src([_CHOICE_IMG] * 4), "single_choice", option_columns=0
+    )
+    assert r"\begin{choices}" in out
+    assert "[columns=" not in out, "自适应模式不得注入 columns 参数"
+    assert out.count(r"max width=0.42\linewidth") == 4
+
+
+def test_option_columns_four_adds_columns_param():
+    """4=强制 4 列：\begin{choices} 变成 \begin{choices}[columns=4]。"""
+    from mathbank.paper_helper import clean_content_for_latex
+
+    out = clean_content_for_latex(
+        _choice_src([_CHOICE_IMG] * 4), "single_choice", option_columns=4
+    )
+    assert r"\begin{choices}[columns=4]" in out
+    assert out.count("[columns=4]") == 1, "不得重复注入"
+
+
+def test_option_columns_four_widens_choice_images():
+    """强制列数时选项图从 max width=0.42 放宽成 width=0.8（否则被列宽压成几毫米）。"""
+    from mathbank.paper_helper import clean_content_for_latex
+
+    out = clean_content_for_latex(
+        _choice_src([_CHOICE_IMG] * 4), "single_choice", option_columns=4
+    )
+    assert out.count(r"width=0.8\linewidth") == 4
+    assert "0.42" not in out, "choices 内残留 0.42 会导致图过小"
+
+
+def test_option_columns_four_leaves_stem_image_untouched():
+    """题干里的图走的是 0.85 那条分支，强制列数绝不能波及。"""
+    from mathbank.paper_helper import clean_content_for_latex
+
+    out = clean_content_for_latex(
+        _choice_src([_CHOICE_IMG] * 4), "single_choice", option_columns=4
+    )
+    assert out.count(r"max width=0.85\linewidth") == 1
+    # 题干图不能变成 0.8（那是 choices 专属的改写）
+    assert out.count(r"width=0.8\linewidth") == 4
+
+
+def test_option_columns_four_text_only_choices_only_adds_param():
+    """纯文字选项：只加 [columns=4]，不凭空插入任何图片宽度改写。"""
+    from mathbank.paper_helper import clean_content_for_latex
+
+    out = clean_content_for_latex(
+        _choice_src(["甲", "乙", "丙", "丁"]), "single_choice", option_columns=4
+    )
+    assert r"\begin{choices}[columns=4]" in out
+    # 纯文字选项里没有任何图：不得凭空插入图片宽度改写，题干图也保持 0.85
+    assert r"width=0.8\linewidth" not in out
+    assert out.count(r"max width=0.85\linewidth") == 1
+    for label in ("甲", "乙", "丙", "丁"):
+        assert label in out
+
+
+# ---------------------------------------------------------------------------
+# 单个 \item 内多选项挤压：单标号形态（Q9）拆分 + 防误伤
+# ---------------------------------------------------------------------------
+# 背景：`_strip_item_choice_labels` 常把行首 A 剥掉，导致「隐含 A + 显式 D」的
+# 挤压行只剩一个标号，被旧的 `len(marks) < 2` 判据挡在门外（Q9 实测漏拆）。
+# 放宽到「≥1 标号即切」后必须防止正文里的数学变量被误判，故配下面 4 条防误伤闸门。
+
+
+def test_merged_option_single_label_splits_q9_form():
+    """Q9 形态 `<内容> D．<内容>`（只剩一个标号）→ 切成 2 段。"""
+    got = _split_merged_option_content(
+        "该地平均每年新增 10个湖泊 D．该地平均每年新增至少45个水质好湖泊"
+    )
+    assert got == [
+        "该地平均每年新增 10个湖泊",
+        "该地平均每年新增至少45个水质好湖泊",
+    ]
+
+
+def test_merged_option_single_label_splits_halfwidth_period():
+    """半角 `<内容> B. <内容>`（只剩一个标号）→ 切成 2 段。"""
+    assert _split_merged_option_content("内容 B. 内容") == ["内容", "内容"]
+
+
+def test_merged_option_single_label_does_not_split_math_variable():
+    """防误伤：正文里的数学变量 `点 B. 在圆上` 不得被当成选项标号切开。
+
+    标号前紧邻的「点」只有 1 个汉字，是句子前缀而非选项内容——闸门 4 拦下。
+    """
+    assert _split_merged_option_content("点 B. 在圆上") == ["点 B. 在圆上"]
+
+
+def test_merged_option_no_label_returns_single_segment():
+    """无任何标号 → 不切，原样返回一段。"""
+    assert _split_merged_option_content("内容") == ["内容"]
+
+
+def test_merged_option_multi_label_still_splits():
+    """回归：连续多标号 `甲 B．乙 C．丙 D．丁` 仍要切成 4 段（旧行为不退化）。"""
+    assert _split_merged_option_content("甲 B．乙 C．丙 D．丁") == [
+        "甲",
+        "乙",
+        "丙",
+        "丁",
+    ]
+
+
+def test_merged_option_single_label_splits_q9_exact_in_choices_env():
+    """Q9 精确复现：真实 choices 环境跑完应得 4 个 \\item（原为 3）。"""
+    env = (
+        "\\begin{choices}\n"
+        "    \\item 该地水质差湖泊总量逐年递减\n"
+        "    \\item 该地水质好湖泊总量逐年递增\n"
+        "    \\item 该地平均每年新增 10个湖泊 D．该地平均每年新增至少45个水质好湖泊\n"
+        "  \\end{choices}"
+    )
+    out = _split_merged_choice_items(env)
+    assert out.count(r"\item ") == 4, out
+    assert r"\item 该地平均每年新增 10个湖泊" in out
+    assert r"\item 该地平均每年新增至少45个水质好湖泊" in out
+
+
+# ---------------------------------------------------------------------------
+# 行内选项（不在行首）：题干行中后部的 4 个 ABCD 选项 -> choices 环境
+# ---------------------------------------------------------------------------
+# 高中数学选择题恒为 4 个选项。AI 常把选项写在题干行中后部（「... 的最小值为
+# A. 8 B. 9 C. 11 D. 13」），行首判据（_CHOICE_LABEL_LINE_RE 的 ^）认不出来，
+# 选项就原样留在题干里。判据：恰好 A/B/C/D 四个标号，且每个标号后都紧跟内容
+# （不能紧跟下一个标号），否则视为正文，不包装。
+
+
+def test_inline_options_q8_form_wrapped_into_choices():
+    """Q8 真实形态：题干行中后部的 A. 8 B. 9 C. 11 D. 13 -> 4 个 \\item。"""
+    out = latexify_choices(
+        "已知 $a>1$，则 $2a+b$ 的最小值为 A. 8 B. 9 C. 11 D. 13 \\paren",
+        "single_choice",
+    )
+    assert out.count(r"\item ") == 4, out
+    for label in ("8", "9", "11", "13"):
+        assert r"\item " + label in out, out
+    assert r"\begin{choices}" in out
+    # 作答括号属于题干：落在 choices 之前，不落进任何选项
+    assert r"\paren" in out
+    assert out.index(r"\paren") < out.index(r"\begin{choices}"), out
+
+
+def test_inline_options_q3_form_wrapped_into_choices():
+    """Q3 真实形态：带单位的行内选项 -> 4 个 \\item。"""
+    out = latexify_choices(
+        "若小李同学年用水量为 $200 \\mathrm{~m}^{3}$ , 则应交水费为 "
+        "A. 720 元 B. 540 元 C. 480 元 D. 560 元 \\paren",
+        "single_choice",
+    )
+    assert out.count(r"\item ") == 4, out
+    for label in ("720 元", "540 元", "480 元", "560 元"):
+        assert r"\item " + label in out, out
+
+
+def test_inline_options_dun_hao_wrapped_into_choices():
+    """顿号标号 A、8 B、9 C、11 D、13 也要包装成 4 个 \\item。"""
+    out = latexify_choices("A、8 B、9 C、11 D、13", "single_choice")
+    assert out.count(r"\item ") == 4, out
+    assert r"\item 8" in out and r"\item 13" in out
+
+
+def test_inline_abcd_without_content_not_wrapped():
+    """防误伤：4 个标号后紧跟另一个标号（无内容）-> 正文，不包装。"""
+    out = latexify_choices("已知 A、B、C、D 是四个点", "single_choice")
+    assert r"\begin{choices}" not in out, out
+    assert out.count(r"\item ") == 0
+
+
+def test_inline_only_two_labels_not_wrapped():
+    """防误伤：只有 2 个标号 -> 不满足『恰好 4 个』，不包装。"""
+    out = latexify_choices("点 A、点 B 在圆上", "single_choice")
+    assert r"\begin{choices}" not in out, out
+    assert out.count(r"\item ") == 0
+
+
+def test_line_start_options_still_wrapped_regression():
+    """回归：原有『行首 A．』形态仍正常包装（不受行内新判据影响）。"""
+    out = latexify_choices("A．106 B．105 C．104 D．103", "single_choice")
+    assert out.count(r"\item ") == 4, out
+    for label in ("106", "105", "104", "103"):
+        assert r"\item " + label in out, out
+    # 两选项判断题（行首）仍拆两个
+    two = latexify_choices("A．对 B．错", "single_choice")
+    assert two.count(r"\item ") == 2, two
+
+
+def test_split_merged_choice_items_unifies_item_indent():
+    """choices 内所有 \\item 的前导缩进必须一致（拆出的项也要与同块对齐）。"""
+    env = (
+        "\\begin{choices}\n"
+        "    \\item 甲\n"
+        "  \\item 乙\n"                                  # 故意 2 空格
+        "    \\item $\\forall x$ C. 命题“丙”\n"          # 合并项，拆成两条
+        "  \\end{choices}"
+    )
+    out = _split_merged_choice_items(env)
+    item_lines = [ln for ln in out.split("\n") if ln.strip().startswith("\\item")]
+    indents = {len(ln) - len(ln.lstrip()) for ln in item_lines}
+    assert indents == {4}, out
+    assert out.count(r"\item ") == 4, out
+    # 幂等：已统一的再跑一遍不变
+    assert _split_merged_choice_items(out) == out

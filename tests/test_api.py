@@ -116,7 +116,8 @@ def test_api_questions_crud(client):
     assert res_data["status"] == "success"
     created_q = res_data["question"]
     assert created_q["id"] is not None
-    assert created_q["content"] == payload["content"]
+    # 选择题入库时末尾会补 exam-zh 的作答括号 \paren（见 normalize_choice_paren_macro）
+    assert created_q["content"] == payload["content"] + r" \paren"
     assert created_q["question_type"] == "single_choice"
     assert created_q["category_compulsory"] == "必修一"
     
@@ -154,7 +155,8 @@ def test_api_questions_crud(client):
     assert res_data_update["status"] == "success"
     updated_q = res_data_update["question"]
     assert updated_q["id"] == question_id
-    assert updated_q["content"] == "更新后的API题目干"
+    # 同上：选择题更新入库同样补 \paren
+    assert updated_q["content"] == "更新后的API题目干" + r" \paren"
     assert updated_q["difficulty"] == "challenge"
 
     # 6. Delete the question

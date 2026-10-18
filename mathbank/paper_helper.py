@@ -47,27 +47,93 @@ def build_restricted_tex_environment(output_dir: str) -> dict[str, str]:
 
 TYPE_ORDER = ["single_choice", "multi_choice", "fill_in_blank", "detailed_answer"]
 
+
+def _render_choice_paren(answer_letter: str) -> str:
+    """选择题作答括号渲染为字面全角括号。
+
+    学生版 / 无答案 → ``（　　）``（两个全角空格 U+3000）；
+    教师版有答案 → ``（\\textbf{A}）``。
+
+    ⚠️ 刻意不用 ``\\quad`` / ``\\hspace``：Word 出口不解析这些命令，会漏出字面文本。
+    """
+    if answer_letter:
+        return "（\\textbf{" + answer_letter + "}）"
+    return "（\u3000\u3000）"
+
+
+# 答案字母提取：按提示词契约（prompts.build_ai_solve_prompts 的
+# 「第一个字符必须是 \textbf{【答案】}」）写的形态，取**首个**匹配即停，
+# 避免命中解析正文里的选项引用（如「故选 A」）。
+# ⚠️ 冒号在【答案】后可省略（`【答案】D` 与 `【答案】：D` 都命中），因为
+# 提示词要求的板块形态是 `【答案】` 后紧跟答案内容，模型不保证补冒号。
+_ANSWER_LETTER_PATTERNS = (
+    re.compile(r'【参考答案】\s*[：:]\s*([A-Za-z]{1,6})'),
+    re.compile(r'【答案】\s*[：:]?\s*([A-Za-z]{1,6})'),
+    re.compile(r'答案为\s*([A-Za-z]{1,6})'),
+)
+
+
+def extract_choice_answer_letter(answer_markdown: str) -> str:
+    """从 answer_markdown 提取选择题答案字母（如 A / ACD），提取不到返回空串。
+
+    提取失败（格式不标准、答案是汉字等）一律返回空串——调用方退回空括号，
+    绝不报错：库里存量答案形态不可控（PDF 拆题路线存的是原卷答案原文）。
+    """
+    if not answer_markdown:
+        return ""
+    text = re.sub(r'\\(?:textbf|mathbf|mathrm)\{([^{}]*)\}', r'\1', str(answer_markdown))
+    for pattern in _ANSWER_LETTER_PATTERNS:
+        m = pattern.search(text)
+        if m:
+            letters = m.group(1).upper()
+            if re.fullmatch(r'[A-Z]{1,6}', letters):
+                return letters
+    return ""
+
+
 def clean_choice_stem_parentheses(text: str) -> str:
     """清洗选择题末尾的空括号，并保持数学定界符平衡。
 
     OCR 可能会把空括号识别为 ``$(\\quad)$`` 或 ``（$\\quad$）``。
     这些定界符必须和括号一起移除，否则会遗留孤立的 ``$$``
     并让 XeLaTeX 后续一直处于数学模式。
+
+    2026-09-25 修「题干末尾双括号」：
+      ① 摘 ``\\paren`` 必须**走在清括号之前**。旧实现反着来 —— 末尾空括号的
+         正则带 ``$`` 锚定，而输入形如 ``…（　）\\paren`` 时末尾是 ``\\paren``，
+         锚定落空、括号清不掉；等随后删掉 ``\\paren``，括号虽已成末尾却不再重清，
+         归一化又无条件补一个 ``\\paren``，于是落库成 ``（　）\\paren`` 双括号。
+      ② 末尾空括号后允许跟**句末标点**（``（　）.`` 这类）。旧正则要求括号正好
+         收在文本末尾，而中文题面几乎总在作答括号后写句号，同样导致清不掉。
+         只放行标点、不放行正文：``（　）条件`` 这种括号后接正文的形态不匹配，
+         免得把嵌在句子中间的空括号误当成作答括号清掉。
     """
     if not text:
         return ""
     text = text.strip()
 
+    # ① 先摘掉 ``\paren``：它若留在末尾，会顶掉下面 ``$`` 锚定的末尾匹配。
+    text = re.sub(r'\\paren\b', '', text).strip()
+
     blank = r'(?:\\quad|\\qquad|\\hspace\{[^{}]*\}|[\s\xa0\u3000_])*'
     plain_parens = rf'[\(（]\s*{blank}\s*[\)）]'
     math_wrapped_parens = rf'\$\s*{plain_parens}\s*\$'
     math_inside_parens = rf'[\(（]\s*\$\s*{blank}\s*\$\s*[\)）]'
+    # ② 末尾空括号，其后只允许再有**句末标点 / 空白 / 一个收尾的 ``$``**。
+    #    用前瞻而非把这些字符一起吃掉，标点与 ``$`` 才会原样留在题面上。
+    #    那个可选 ``$`` 是为了「数学模式内的作答括号」：中文题面常见
+    #    ``$A \cup B = (\quad)$ \paren``，空括号**不紧贴**前导 ``$``，所以
+    #    math_wrapped_parens 匹配不到，只能靠这条兜住（清完得 ``$A \cup B = $``，
+    #    美元符号仍成对）。
+    #    前置 ``(?<![\\$])`` 把「``$( )$`` 纯包裹」挡在 plain 分支外：那种形态交给
+    #    math_wrapped_parens 整段删除，免得删剩一对孤立的 ``$$``。
+    tail = r'[。．.，,；;！!？?\s\xa0\u3000]'
     pattern = (
         rf'(?:[\s\xa0\u3000]*(?:{math_wrapped_parens}|'
-        rf'{math_inside_parens}|{plain_parens}))+[\s\xa0\u3000]*$'
+        rf'{math_inside_parens}|(?<![\\$]){plain_parens}))+[\s\xa0\u3000]*'
+        rf'(?={tail}*\$?{tail}*$)'
     )
     cleaned = re.sub(pattern, '', text).strip()
-    cleaned = re.sub(r'\\paren\b', '', cleaned).strip()
 
     # 仅在未闭合的数学内容后补 "$"。若末尾本身就是孤立 "$"，
     # 直接移除；追加另一个 "$" 会把它变成未闭合的行间数学定界符 "$$"。
@@ -81,6 +147,44 @@ def clean_choice_stem_parentheses(text: str) -> str:
 
     return cleaned
 
+# 小问标记：一级是 (1)/（1）/1./a./一、，二级是圈号 ①②③……
+# 圈号只认「独占行首」的形态——正文里夹一个 ① 当强调符号不该被拆段。
+_CIRCLED_SUBITEM_RE = re.compile(r'^[①②③④⑤⑥⑦⑧⑨⑩]')
+_SUB_START_RE = re.compile(
+    r'^([（(]?[0-9a-zA-Z一二三四五六七八九十]+[）\.\)]'
+    r'|[①②③④⑤⑥⑦⑧⑨⑩]|【|注[:：]|提示[:：])'
+)
+# 块级 TeX 环境自成段落，不参与小问缩进（否则整段代码会被包进 \leftskip 组）。
+_BLOCK_ENV_RE = re.compile(r'^(\$\||\\begin\{|\\end\{)')
+
+
+def indent_circled_paragraphs(text: str) -> str:
+    r"""把以圈号（①②③…）开头、以空行分段的段落整体再缩进一级。
+
+    圈号是 ``(1)/(2)`` 内部的小小问。一级小问拿到的是 ``\parindent``（只作用于
+    **首行**），圈号若也用 ``\parindent`` 就和一级**视觉同级**——成品卷面上看不出
+    层级（用户反馈过「这不和常理」）。这里改用 ``\leftskip``：它对段落**每一行**
+    生效，折行不会退回左边界，正好是一层「块缩进」。
+
+    缩进量取 ``2\parindent``（实测 ``\parindent``=21.08pt≈2em，故为 4em），
+    即比一级小问深一个字身宽度的一倍，随文档类字号自适应。
+    """
+    if not text:
+        return text
+    # 快速短路：整段没有任何圈号就不必逐段判断（②③… 也要算，别只查 ①）
+    if not any(ch in text for ch in '①②③④⑤⑥⑦⑧⑨⑩'):
+        return text
+    parts = re.split(r'\n{2,}', text)
+    out = []
+    for part in parts:
+        stripped = part.strip()
+        if stripped and _CIRCLED_SUBITEM_RE.match(stripped) and not _BLOCK_ENV_RE.match(stripped):
+            out.append(r"{\leftskip=2\parindent\noindent " + stripped + r"\par}")
+        else:
+            out.append(part)
+    return "\n\n".join(out)
+
+
 def format_stem_paragraphs(stem_text: str) -> str:
     r"""
     Safely assemble question stem lines into coherent LaTeX paragraphs.
@@ -89,6 +193,7 @@ def format_stem_paragraphs(stem_text: str) -> str:
        placing each into a separate LaTeX paragraph with standard 2em indentation.
     3. Keeps block LaTeX environments (e.g. \begin{...}, \end{...}, $$) intact without inline space merging.
     4. Recombines single line breaks inside the same paragraph into a space for continuous TeX wrapping.
+    5. 二级小问（圈号 ①②③…）再缩进一级（见 ``indent_circled_paragraphs``）。
     """
     if not stem_text:
         return ""
@@ -108,9 +213,9 @@ def format_stem_paragraphs(stem_text: str) -> str:
             continue
             
         # 判定是否为小问或独立提示/注记开头
-        is_sub_start = bool(re.match(r'^([（(]?[0-9a-zA-Z一二三四五六七八九十]+[）\.\)]|①|②|③|④|⑤|【|注[:：]|提示[:：])', line_str))
+        is_sub_start = bool(_SUB_START_RE.match(line_str))
         # 判定是否为独立块级 TeX 环境
-        is_block_env = bool(re.match(r'^(\$\||\\begin\{|\\end\{)', line_str))
+        is_block_env = bool(_BLOCK_ENV_RE.match(line_str))
         
         if (is_sub_start or is_block_env) and current_para:
             paragraphs.append(" ".join(current_para))
@@ -121,7 +226,7 @@ def format_stem_paragraphs(stem_text: str) -> str:
     if current_para:
         paragraphs.append(" ".join(current_para))
 
-    return "\n\n".join(paragraphs)
+    return indent_circled_paragraphs("\n\n".join(paragraphs))
 
 _MARKDOWN_IMAGE_RE = re.compile(
     r'!\[.*?\]\((?:/static/uploads/|static/uploads/|/uploads/|uploads/)?([^)]+)\)'
@@ -345,15 +450,64 @@ def restore_storage_images_to_markdown(content: str) -> str:
     return "".join(pieces)
 
 
+# 选项图在 choices 环境内的默认限宽（自适应列数下的取值，见 replace_img）。
+_CHOICE_IMG_DEFAULT_WIDTH = r"max width=0.42\linewidth"
+# 强制列数下改用固定列宽的百分比：渲染期 exam-zh 已把 \linewidth 重设为列内容宽，
+# 再套 0.42 会把图压到几毫米，0.8 才填得满列宽（实测 4 列时约 27mm）。
+_CHOICE_IMG_FIXED_WIDTH = r"width=0.8\linewidth"
+
+
+def _apply_option_columns(text: str, option_columns) -> str:
+    r"""按 ``option_columns`` 给 choices 环境强制列数（只作用于选择题选项）。
+
+    ``option_columns <= 0``（缺省/自适应）：原样返回，交给 exam-zh 按实测宽度
+    自动算列数——这是改动前所有题目的行为，必须保持不变。
+
+    ``1/2/4``（强制列数）做两件事：
+      ① ``\begin{choices}`` → ``\begin{choices}[columns=N]``。exam-zh 见 N≥1
+         即跳过自动列数计算（exam-zh-choices.sty:153-154），实现按题控制。
+      ② 环境内的选项图从 ``max width=0.42\linewidth`` 放宽到 ``width=0.8\linewidth``。
+
+    ⚠️ 两件事都**只改 choices 环境内部**：题干里的图走的是 0.85/9cm 那套分支，
+    与本函数无关，绝不能被波及。
+    """
+    if not text or r"\begin{choices}" not in text:
+        return text
+    try:
+        columns = int(option_columns or 0)
+    except (TypeError, ValueError):
+        return text
+    if columns <= 0:
+        return text
+
+    def _repl(match: re.Match) -> str:
+        block = match.group(0)
+        if _CHOICE_IMG_DEFAULT_WIDTH in block:
+            block = block.replace(_CHOICE_IMG_DEFAULT_WIDTH, _CHOICE_IMG_FIXED_WIDTH)
+        # 只替换本段开头的 \begin{choices}（段内若再出现同名标记不动）
+        return block.replace(
+            r"\begin{choices}",
+            r"\begin{choices}[columns=%d]" % columns,
+            1,
+        )
+
+    return _CHOICES_ENV_RE.sub(_repl, text)
+
+
 def clean_content_for_latex(
     content: str,
     q_type: str = "",
     is_answer: bool = False,
     preserve_image_positions: bool = False,
+    answer_letter: str = "",
+    option_columns: int = 0,
 ) -> str:
     r"""
     Clean markdown/LaTeX question content for exam-zh LaTeX document export based on 试卷类模板.tex.
     Preserves math delimiters $...$ and $$...$$, tikz code, and handles choices & \paren environments.
+
+    option_columns: 0=自适应（exam-zh 自动列数，默认）；1/2/4=强制该列数。
+    仅作用于 ``\begin{choices}`` 环境，见 ``_apply_option_columns``。
     """
     if not content:
         return ""
@@ -440,27 +594,40 @@ def clean_content_for_latex(
             choices_block = "  \\begin{choices}\n" + "\n".join(choices_items) + "\n  \\end{choices}"
             text = "\n".join(stem_lines).strip() + "\n" + choices_block
 
-    # For choice questions (single_choice, multi_choice), ensure \paren is present before \begin{choices} if not already present
+    # 选择题：末尾作答括号展开成**字面**全角括号（题库源码里存的是 \paren）。
+    #   学生版 → （　　）；教师版有答案字母 → （\textbf{A}）。
+    # 为什么在导出侧展开、而不是直接让 exam-zh 渲染 \paren：
+    #   ① exam-zh 的 \paren[A] 只上色不加粗，不满足「教师版加粗印答案」；
+    #   ② Word 出口完全不认 \paren，只能拿到字面括号，三出口口径无法统一。
     if q_type in ["single_choice", "multi_choice"]:
+        rendered = _render_choice_paren(answer_letter)
         if r"\begin{choices}" in text:
             parts = text.split(r"\begin{choices}", 1)
             stem = clean_choice_stem_parentheses(parts[0])
             rest = r"\begin{choices}" + parts[1]
-            stem += r" \paren"
+            stem += r" " + rendered
             text = stem + "\n  " + rest
         else:
             stem = clean_choice_stem_parentheses(text)
-            text = stem + r" \paren"
+            text = stem + r" " + rendered
 
     if is_answer:
-        # 解答/解析步骤（is_answer=True）：在带小问/解答步骤前自动补全空行
-        text = re.sub(r'([^\n])\n(?=[（(]?[0-9一二三四五六七八九十]+[）\.\)]|解[:：]|证明[:：]|因为|所以|故|又因为|由|综上|因此|得|【)', r'\1\n\n', text)
+        # 解答/解析步骤（is_answer=True）：在带小问/解答步骤前自动补全空行。
+        # ⚠️ 圈号（①②③…）必须和一级小问一样升段：漏了它，`(2)…\n① 证明：…` 在
+        # LaTeX 里只是一个空格，①② 会被并进上一句——讲义答案册里连行都不断。
+        text = re.sub(r'([^\n])\n(?=[（(]?[0-9一二三四五六七八九十]+[）\.\)]|解[:：]|证明[:：]|因为|所以|故|又因为|由|综上|因此|得|【|[①②③④⑤⑥⑦⑧⑨⑩])', r'\1\n\n', text)
+        # 解答侧不走 format_stem_paragraphs，缩进要单独补（否则题干缩、解答不缩）。
+        text = indent_circled_paragraphs(text)
     else:
-        # 题干文本处理：安全地按行首拆分与段落重组
+        # 题干文本处理：安全地按行首拆分与段落重组（内部已含圈号缩进）
         text = format_stem_paragraphs(text)
 
     for token, rendered in tikz_blocks.items():
         text = text.replace(token, rendered)
+
+    # 放在最后：前面的 choices 转换/括号展开/段落重组都可能改写 \begin{choices}，
+    # 早于此会丢参数或被后续正则吃掉。
+    text = _apply_option_columns(text, option_columns)
 
     return text
 
@@ -501,6 +668,12 @@ def build_exam_preamble(include_answers: bool = False, title: str = "") -> list:
     lines.append(r"\examsetup{")
     lines.append(r"  page/size=a4paper,")
     lines.append(r"  paren/show-paren=true,")
+    # 作答括号**紧跟题干末尾**，不要被 \hfill 推到行尾右侧。
+    # exam-zh 的 paren/type 三选一：hfill(默认，右对齐) / dotfill(右对齐带点线) /
+    # none(不加 \hfill，括号就停在 \paren 出现的位置)。这里取 none。
+    # ⚠️ 正常路径导出的是字面全角括号（见 _render_choice_paren），本行对它们无效；
+    # 它兜的是「题干里仍残留 \paren 命令」的存量/错分类题目，保证那部分也是紧跟。
+    lines.append(r"  paren/type=none,")
     if include_answers:
         lines.append(r"  paren/show-answer=true,")
         lines.append(r"  fillin/show-answer=true,")
@@ -696,10 +869,19 @@ def build_latex_document(
             if fig_elements:
                 fig_body = "\n\\vspace{2pt}\n".join(fig_elements)
 
+            # 教师版选择题：从答案解析里取答案字母，交给导出侧印进括号；学生版留空。
+            # 提取不到（存量答案形态不可控）就退回空括号，不报错。
+            choice_answer_letter = (
+                extract_choice_answer_letter(q.get("answer_markdown", ""))
+                if include_answers and q_type in ("single_choice", "multi_choice")
+                else ""
+            )
             cleaned_content = clean_content_for_latex(
                 cleaned_raw,
                 q_type=q_type,
                 preserve_image_positions=preserve_inline_images,
+                answer_letter=choice_answer_letter,
+                option_columns=int(q.get("option_columns") or 0),
             )
             env_name = "problem" if q_type == "detailed_answer" else "question"
             points_arg = f"[points = {q_score}]" if q_type == "detailed_answer" else ""
@@ -793,6 +975,70 @@ def build_latex_document(
     lines.append(r"\end{document}")
     return "\n".join(lines)
 
+# 真正会送进 XeLaTeX 的图片引用有两种形态，收集清单必须两种都认：
+#   · Markdown ``![](文件名)``
+#   · 入库 LaTeX 形态 ``\includegraphics[选项]{文件名}`` —— ``\begin{choices}`` 里的
+#     选项图就是这一种，且刻意不会被 restore_storage_images_to_markdown 还原成
+#     Markdown（还原后会被按正文图重排，见该函数注释），所以只扫 Markdown 必然漏。
+_TEX_IMAGE_REFERENCE_RE = re.compile(
+    r"!\[[^\]]*\]\((?:/static/uploads/|static/uploads/|/uploads/|uploads/)?([^)]+)\)"
+    r"|\\includegraphics(?:\[[^\]]*\])?\{([^}]*)\}"
+)
+_INCLUDEGRAPHICS_NAME_RE = re.compile(r"\\includegraphics(?:\[[^\]]*\])?\{([^}]*)\}")
+
+
+def _safe_image_name_for_tex(name: str) -> str:
+    r"""占位文字里的文件名净化：只留排版安全字符，其余折成 ``?``。
+
+    不复用 ``lecture_export.escape_text`` 那套转义：``\textbackslash``/
+    ``\textasciicircum`` 依赖 ``textcomp``，一句占位文字不值得再引宏包；而文件名
+    是物理事实（上传时资产层已限定为安全字符），净化比重写更稳。
+
+    ``_`` 是唯一的漏网字符：它既是合法文件名字符（事故现场就是
+    ``mineru_1790251898_1.jpg``），又是 LaTeX 的数学切换符，原样排进正文会
+    ``Missing $ inserted``，让降级占位反过来把整卷编译再炸一次，所以必须转义。
+    """
+    value = str(name or "")
+    allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
+    folded = "".join(ch if ch in allowed else "?" for ch in value) or "?"
+    return folded.replace("_", r"\_")
+
+
+def patch_missing_latex_images(tex_content: str, image_paths: list) -> tuple:
+    r"""把「资源清单里没有」的 ``\includegraphics`` 降级成卷面可见的红字占位。
+
+    组卷编译只拷贝 ``collect_referenced_images`` 交来的文件。XeLaTeX 一撞上不存在的
+    图片就报 ``Unable to load picture or PDF file``，叠加 ``-halt-on-error`` 直接终止
+    整卷，用户只看到一条编译器日志（2026-10-18 事故：题库 id=15 的四个选项图被
+    display 口径从清单里藏掉）。宁缺勿炸：在**准备阶段**就地改写成红字提示，
+    试卷照样出得了 PDF，并且卷面上明确写出是哪张图没了。
+
+    可用判据取「即将拷进编译目录的清单」而非上传目录 —— 那才是 XeLaTeX 实际看得见
+    的文件集合；万一将来又有谁把清单改窄，这里照样兜得住。讲义侧的
+    ``lecture_export.sanitize_dead_image_references`` 是同语义实现（判据为上传目录），
+    两者互补，本函数幂等：改写后不再残留死链。
+
+    返回 ``(patched_tex, missing_names)``。
+    """
+    available = {
+        os.path.basename(str(path))
+        for path in (image_paths or [])
+        if path and os.path.exists(str(path))
+    }
+    missing: list = []
+
+    def _repl(match: re.Match) -> str:
+        name = (match.group(1) or "").strip()
+        if os.path.basename(name) in available:
+            return match.group(0)
+        if name and name not in missing:
+            missing.append(name)
+        return r"\textcolor{red}{【图片缺失：%s】}" % _safe_image_name_for_tex(name)
+
+    patched = _INCLUDEGRAPHICS_NAME_RE.sub(_repl, str(tex_content or ""))
+    return patched, missing
+
+
 def collect_referenced_images(
     questions_data: list,
     uploads_dir: str,
@@ -819,16 +1065,37 @@ def collect_referenced_images(
 
     for item in questions_data:
         q = item.get("question", {})
-        imgs = q.get("image_paths", [])
-        if isinstance(imgs, list):
-            for img_rel in imgs:
+        # 清单优先用导出全量口径（Question.export_image_paths）。老快照或调用方没带
+        # 这份字段时，就地用 image_paths + TikZ 资产字段拼出等价清单：被 display
+        # 藏掉的原图必然同时以 reference_image_path 的形式留在资产记录里，能完整还原。
+        manifests = q.get("export_image_paths")
+        if isinstance(manifests, list):
+            for img_rel in manifests:
                 add_reference(img_rel)
-        
-        # Also parse content for Markdown image paths
-        content = q.get("content", "") + " " + q.get("answer_markdown", "")
-        found = re.findall(r'!\[.*?\]\((?:/static/uploads/|static/uploads/|/uploads/|uploads/)?([^)]+)\)', content)
-        for fname in found:
-            add_reference(fname)
+        else:
+            imgs = q.get("image_paths", [])
+            if isinstance(imgs, list):
+                for img_rel in imgs:
+                    add_reference(img_rel)
+            add_reference(q.get("tikz_reference_image_path"))
+            for key in ("content_tikz_assets", "answer_tikz_assets"):
+                assets = q.get(key, [])
+                if not isinstance(assets, list):
+                    continue
+                for asset in assets:
+                    if not isinstance(asset, dict):
+                        continue
+                    add_reference(asset.get("image_path"))
+                    add_reference(asset.get("reference_image_path"))
+
+        # 正文里的图片引用两种形态都要收进清单：Markdown ![](x) 与入库 LaTeX 形态
+        # \includegraphics{ x }。只认 Markdown 会漏掉 choices 里的选项图（它们刻意
+        # 不被还原成 Markdown），清单漏一张，XeLaTeX 就崩一次整卷。
+        content = str(q.get("content", "") or "") + " " + str(q.get("answer_markdown", "") or "")
+        for match in _TEX_IMAGE_REFERENCE_RE.finditer(content):
+            for group in match.groups():
+                if group:
+                    add_reference(group)
 
     return image_paths
 
@@ -893,6 +1160,23 @@ def compile_tex_to_pdf(tex_content: str, image_paths: list = None) -> tuple:
     if image_paths is None:
         image_paths = []
 
+    # 缺图降级（准备阶段就把问题消化掉）：清单里没有的图片引用一律先改写成卷面红字
+    # 占位，绝不把死链交给 XeLaTeX —— 它遇到不存在的图片会 Unable to load picture，
+    # 再叠加 -halt-on-error 就是整卷出不了 PDF（2026-10-18 事故）。这道网放在编译器
+    # 入口，任何调用方（组卷正文/答案册/答题卡/讲义）漏了外层 patch 也炸不了；对已经
+    # 改写过的正文是幂等空操作。缓存键必须按改写后的内容算，所以放在算 key 之前。
+    tex_content, missing_images = patch_missing_latex_images(tex_content, image_paths)
+    audit_notes: list = []
+    if missing_images:
+        audit_notes.append(
+            "卷面引用的图片不在导出资源清单里，已降级为红字占位：%s" % "、".join(missing_images)
+        )
+        print(
+            "[PDF_RESOURCE_AUDIT] 缺图 %d 张，红字占位：%s"
+            % (len(missing_images), ", ".join(missing_images)),
+            flush=True,
+        )
+
     # 1. Compute MD5 Cache Key from TeX content & image modification times
     img_signatures = []
     for img_p in image_paths:
@@ -915,13 +1199,39 @@ def compile_tex_to_pdf(tex_content: str, image_paths: list = None) -> tuple:
     print(f"[PDF_CACHE_MISS] Compiling TeX via xelatex. Key: {cache_key[:10]}...", flush=True)
     with tempfile.TemporaryDirectory() as temp_dir:
         tex_path = os.path.join(temp_dir, "paper.tex")
-        # Copy images into temp_dir
+        # Copy images into temp_dir（逐项记账）：清单里却已消失的文件、拷贝失败的写操作，
+        # 都不再静默吞掉 —— 「静默」正是上次事故把锅甩给 XeLaTeX 的原因。
+        copied_count = 0
+        vanished_names: list = []
+        copy_failed_names: list = []
         for img_p in image_paths:
-            if os.path.exists(img_p):
-                try:
-                    shutil.copy(img_p, temp_dir)
-                except Exception:
-                    pass
+            image_name = os.path.basename(str(img_p))
+            if not os.path.exists(img_p):
+                vanished_names.append(image_name)
+                continue
+            try:
+                shutil.copy(img_p, temp_dir)
+                copied_count += 1
+            except OSError as copy_error:
+                copy_failed_names.append("%s(%s)" % (image_name, type(copy_error).__name__))
+        if vanished_names:
+            audit_notes.append(
+                "资源清单内有 %d 个文件已不在上传目录：%s"
+                % (len(vanished_names), "、".join(sorted(vanished_names)[:10]))
+            )
+        if copy_failed_names:
+            audit_notes.append(
+                "有 %d 个文件拷不进编译目录：%s" % (len(copy_failed_names), "、".join(copy_failed_names[:10]))
+            )
+        if vanished_names or copy_failed_names:
+            print(
+                "[PDF_RESOURCE_AUDIT] 已拷贝 %d 个；清单缺失 %d 个；拷贝失败 %d 个"
+                % (copied_count, len(vanished_names), len(copy_failed_names)),
+                flush=True,
+            )
+        # 记账汇总：编译失败时把资源侧事实顶在最前面，用户先看到「哪张图没了」，
+        # 而不是自己去读一条 XeLaTeX 原始报错。
+        audit_prefix = "".join("[MathBank 资源核对] %s。\n" % note for note in audit_notes)
 
         # Try compiling with xelatex (requires 2 passes to resolve \pageref{LastPage} and .aux references)
         try:
@@ -958,6 +1268,8 @@ def compile_tex_to_pdf(tex_content: str, image_paths: list = None) -> tuple:
                 )
                 if first_proc.returncode != 0:
                     failure_message = _latex_failure_message([first_proc], temp_dir)
+                    if audit_prefix:
+                        failure_message = audit_prefix + failure_message
                     local = build_local_latex_diagnostic(failure_message, current_tex)
                     package = str(local.get("package") or "")
                     repaired_tex = _inject_latex_package(current_tex, package)
@@ -999,6 +1311,8 @@ def compile_tex_to_pdf(tex_content: str, image_paths: list = None) -> tuple:
                     return (pdf_bytes, proc.stdout)
 
                 failure_message = _latex_failure_message([first_proc, proc], temp_dir)
+                if audit_prefix:
+                    failure_message = audit_prefix + failure_message
                 local = build_local_latex_diagnostic(failure_message, current_tex)
                 package = str(local.get("package") or "")
                 repaired_tex = _inject_latex_package(current_tex, package)

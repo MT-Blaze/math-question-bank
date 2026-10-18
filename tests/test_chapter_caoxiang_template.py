@@ -49,7 +49,9 @@ def test_every_caoxiang_has_level_example_and_id(chapter):
             assert str(t.get("example") or "").strip(), t.get("name")
             assert str(t.get("id") or "").startswith("k_"), t.get("name")
             seen_levels.add(t["level"])
-    assert seen_levels == LEVELS
+    # v3 起部分章节不再铺满 L1~L5（如第一章三套同步材料均无 L5 创新题），
+    # 故只断言"出现的层级合法且至少有一层"，不再强制五层齐全。
+    assert seen_levels and seen_levels <= LEVELS
 
 
 def test_levels_are_grouped_in_order(chapter):

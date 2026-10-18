@@ -19,6 +19,7 @@ from main import LOCAL_TOKEN
 from mathbank.latex_normalize import normalize_for_storage
 from mathbank.math_markdown import (
     compact_solution_markdown,
+    normalize_fillin_macro,
     normalize_question_math_markdown,
 )
 
@@ -376,3 +377,175 @@ def test_normalized_source_compiles_without_double_numbering(client):
     for leaked in ("\\begin", "\\item", "\\includegraphics", "\\fillin"):
         assert leaked not in compact, f"原始 LaTeX 命令泄漏进 PDF: {leaked}"
     assert "下列各曲线中" in compact and "如图，长方体" in compact
+
+
+# ---------------------------------------------------------------------------
+# \underline{...} 只在「组内纯占位」时才转 \fillin（待办 #9 收尾）
+# ---------------------------------------------------------------------------
+
+BLANK_UNDERLINE_FORMS = [
+    r"\underline{\hspace{1.5cm}}",
+    r"\underline{\hspace{2em}}",
+    r"\underline{\hspace*{2em}}",
+    r"\underline{\hspace{1cm}\hspace{1cm}}",
+    r"\underline{\quad}",
+    r"\underline{\qquad}",
+    r"\underline{   }",
+    r"\underline{___}",
+    r"\underline{}",
+    r"\underline{  \hspace{1.5cm}  }",
+]
+
+CONTENT_UNDERLINE_FORMS = [
+    r"\underline{x}",              # 单变量下标式记号
+    r"\underline{a+b}",            # 表达式
+    r"\underline{M}",              # 重复数位 / 共轭
+    r"\underline{3}",
+]
+
+# 组内含**任何非 ASCII 字符**（哪怕包在 \text{} 里）的写法：_strip_underline_group
+# 会原样保留，但完整链后面的字符层给裸 LaTeX 补 $ 时会在第一个非 ASCII 字符处截断 ——
+# `\underline{重点内容}` 变 `$\underline{$重点内容}`、`\underline{\text{甲}}` 变
+# `$\underline{\text{$甲}}`。那是字符层的既有缺陷、与本次收紧判据无关（旧实现根本不
+# 产出这个形态，因为它把整组吃成 \fillin），所以这两个样本单独测 step-1，不去碰那条链。
+CJK_CONTENT_UNDERLINE_FORMS = [
+    r"\underline{重点内容}",
+    r"\underline{\text{甲}}",
+    r"\underline{\hspace{1cm} 且仅当 a}",
+]
+
+
+@pytest.mark.parametrize("form", BLANK_UNDERLINE_FORMS)
+def test_blank_underline_group_still_becomes_fillin(form):
+    """纯占位横线照旧收敛到 \fillin —— 收紧判据不许把正常填空漏掉。"""
+    out = normalize_for_storage("解集为 " + form + " 。", "fill_in_blank")
+    assert "\\fillin" in out, out
+    assert r"\underline" not in out, out
+
+
+@pytest.mark.parametrize("form", CONTENT_UNDERLINE_FORMS)
+def test_content_underline_group_is_preserved_verbatim(form):
+    r"""\underline{实际内容} 必须原样保留（隐患：旧实现无条件整组换成 \fillin）。
+
+    \underline{M} 表重复数位、\underline{a+b} 是被强调的表达式，吃掉就是丢题干内容。
+    """
+    out = normalize_for_storage("求 " + form + " 的值", "fill_in_blank")
+    assert form in out, out
+    assert "\\fillin" not in out, out
+
+
+@pytest.mark.parametrize("form", CJK_CONTENT_UNDERLINE_FORMS)
+def test_cjk_content_underline_survives_the_step(form):
+    r"""含裸中文的 \underline{...} 在填空规范化这一步必须原样留下。
+
+    完整链上字符层会把它拦腰补 $（既有缺陷，见 CJK_CONTENT_UNDERLINE_FORMS 注释），
+    所以这里只测 _strip_underline_group 本身：判据收紧后它不得再吃内容。
+    """
+    out = normalize_fillin_macro("求 " + form + " 的值")
+    assert form in out, out
+    assert "\\fillin" not in out, out
+
+
+def test_dollar_wrapped_blank_underline_converts():
+    r"""带 $ 包裹的 $\underline{\hspace{1.5cm}}$ 是原生提取路径的真实形态。"""
+    out = normalize_for_storage(r"则 $f(x) =$ $\underline{\hspace{1.5cm}}$", "fill_in_blank")
+    assert "\\fillin" in out, out
+    assert r"\underline" not in out, out
+
+
+def test_choices_environment_keeps_its_own_item_structure():
+    r"""选项行内的占位横线原位转 \fillin，不得破坏 choices 结构与选项数。"""
+    src = (
+        "\\begin{choices}\n"
+        "    \\item 甲\\underline{\\hspace{1cm}}乙\n"
+        "    \\item 丙\n"
+        "\\end{choices}"
+    )
+    out = normalize_for_storage(src, "single_choice")
+    assert "\\item 甲\\fillin乙" in out, out
+    assert out.count("\\item") == 2, out
+    assert "\\begin{choices}" in out and "\\end{choices}" in out, out
+
+
+@pytest.mark.parametrize(
+    "form", BLANK_UNDERLINE_FORMS + CONTENT_UNDERLINE_FORMS
+)
+def test_underline_conversion_is_idempotent(form):
+    """两类形态都必须幂等：T(T(x)) == T(x)。"""
+    once = normalize_for_storage("已知 " + form + " ，求 x", "fill_in_blank")
+    assert normalize_for_storage(once, "fill_in_blank") == once, form
+
+
+def test_five_fillin_writings_still_converge():
+    r"""\underline{\fillin} 是历史入库形态，五种填空写法仍须落成同一源码。
+
+    收紧判据时差点把它当成「有内容」漏掉 —— \fillin 本身就在占位白名单里。
+    """
+    forms = [
+        "解集为 ____ 。",
+        r"解集为 \fillin 。",
+        r"解集为 \fillin[2cm] 。",
+        r"解集为 \underline{\hspace{2em}} 。",
+        r"解集为 \underline{\fillin} 。",
+    ]
+    outs = [normalize_for_storage(s, "fill_in_blank") for s in forms]
+    assert len(set(outs)) == 1, list(zip(forms, outs))
+
+
+# ---------------------------------------------------------------------------
+# 待办 #25：字符层补 $ 不得在中文（非 ASCII）处把 LaTeX 命令拦腰截断
+# ---------------------------------------------------------------------------
+
+def _no_truncated_command(text: str) -> list[str]:
+    r"""返回「$ 紧跟在 \command{ 之后」的坏形态列表（截断的直接证据）。"""
+    return re.findall(r"\\w+\{\$", text)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        r"求 \underline{重点内容} 的值",
+        r"求 \underline{\text{甲}} 的值",
+        r"已知\text{甲乙丙}成立",
+        r"\mathrm{甲}",
+        r"解 \sqrt{甲}+1",
+    ],
+)
+def test_non_ascii_command_argument_is_never_split_by_a_dollar(source):
+    r"""``$\underline{$``、``$\text{$`` 这类形态必须彻底消失。
+
+    ``_MATH_RUN_RE`` 的字符类只含 ASCII，中文天然是 run 断点；旧实现照样把
+    半截命令包成 $，定界符落单、反斜杠命令被从参数中间切断。
+    """
+    out = normalize_for_storage(source, "fill_in_blank")
+    assert not _no_truncated_command(out), out
+    assert "$" not in out or out.count("$") % 2 == 0, out
+    assert source in out, out          # 一字不改地留在题干里
+    assert normalize_for_storage(out, "fill_in_blank") == out, out
+
+
+@pytest.mark.parametrize(
+    "source, expected",
+    [
+        (r"x=\frac{1}{2}", r"$x=\frac{1}{2}$"),
+        (r"\sqrt{x}+1", r"$\sqrt{x}+1$"),
+        (r"集合 \complement_{U}A", r"集合 $\complement_{U}A$"),
+        (r"点 \overrightarrow{AB}=3", r"点 $\overrightarrow{AB}=3$"),
+        ("x+y=1", "$x+y=1$"),
+        ("已知 f(x)=x^2 求最小值", "已知 $f(x)=x^2$ 求最小值"),
+    ],
+)
+def test_ascii_math_runs_keep_their_existing_wrapping(source, expected):
+    r"""纯 ASCII 与中英混排的正常补 $ 行为一字不变（回归护栏）。"""
+    assert normalize_for_storage(source, "fill_in_blank") == expected
+
+
+def test_trim_keeps_every_original_character():
+    r"""裁剪只决定 $ 落在哪，绝不允许吞掉任何原字符。"""
+    for source in (
+        r"求 \underline{重点内容} 的值",
+        r"a^{2}+b^{2}=c^{2} 且 x>0",
+        r"则 \frac{a}{b} 为最大值",
+    ):
+        out = normalize_for_storage(source, "fill_in_blank")
+        assert out.replace("$", "") == source.replace("$", ""), (source, out)

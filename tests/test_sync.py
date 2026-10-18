@@ -173,17 +173,32 @@ def test_clean_orphaned_images(db_session):
         # - Old and Referenced: MUST BE KEPT!
         assert os.path.exists(ref_full_path)
 
-        # - Old and Orphaned: MUST BE DELETED!
+        # - Old and Orphaned: MUST BE SOFT-DELETED (moved to .trash/, recoverable)!
         assert not os.path.exists(old_orphan_path)
+        trash_dir = os.path.join(upload_dir, ".trash")
+        assert os.path.isdir(trash_dir), "回收站目录应已创建"
+        trashed = [n for n in os.listdir(trash_dir) if n.startswith("test_orphan_old_image.png.")]
+        assert trashed, "孤儿图应被移入回收站而非物理删除"
 
         # - New and Orphaned: MUST BE KEPT (due to 1-hour safety grace period)!
         assert os.path.exists(new_orphan_path)
 
     finally:
-        # Clean up remaining created files
+        # Clean up remaining created files + 回收站
         for p in [ref_full_path, old_orphan_path, new_orphan_path]:
             if os.path.exists(p):
                 os.remove(p)
+        trash_dir = os.path.join(upload_dir, ".trash")
+        if os.path.isdir(trash_dir):
+            for n in os.listdir(trash_dir):
+                try:
+                    os.remove(os.path.join(trash_dir, n))
+                except OSError:
+                    pass
+            try:
+                os.rmdir(trash_dir)
+            except OSError:
+                pass
 
 
 def test_clean_orphaned_images_keeps_assets_owned_by_a_live_task(db_session):
@@ -229,10 +244,62 @@ def test_clean_orphaned_images_keeps_assets_owned_by_a_live_task(db_session):
 
         # 任务仍持有 -> 必须保留
         assert os.path.exists(owned_path)
-        # 无人认领 -> 必须删除
+        # 无人认领 -> 必须软删除（移入回收站，不在 tmp 原处）
         assert not os.path.exists(orphan_path)
+        trash_dir = os.path.join(main.UPLOAD_DIR, ".trash")
+        assert os.path.isdir(trash_dir), "回收站目录应已创建"
+        trashed = [n for n in os.listdir(trash_dir) if n.startswith(orphan_name + ".")]
+        assert trashed, "未认领的 tmp 图应被移入回收站"
     finally:
         main.DOCUMENT_TASKS = original
         for path in (owned_path, orphan_path):
             if os.path.exists(path):
                 os.remove(path)
+        trash_dir = os.path.join(main.UPLOAD_DIR, ".trash")
+        if os.path.isdir(trash_dir):
+            for n in os.listdir(trash_dir):
+                try:
+                    os.remove(os.path.join(trash_dir, n))
+                except OSError:
+                    pass
+            try:
+                os.rmdir(trash_dir)
+            except OSError:
+                pass
+
+
+def test_clean_orphaned_images_purges_trash_older_than_30_days(db_session):
+    """回收站里超过 30 天的文件才物理删除；未超期保留。"""
+    import main
+
+    upload_dir = main.UPLOAD_DIR
+    trash_dir = os.path.join(upload_dir, ".trash")
+    os.makedirs(trash_dir, exist_ok=True)
+
+    old_name = "old_trash_item.png"
+    new_name = "new_trash_item.png"
+    old_path = os.path.join(trash_dir, old_name)
+    new_path = os.path.join(trash_dir, new_name)
+    for p in (old_path, new_path):
+        with open(p, "w") as f:
+            f.write("x")
+
+    # 旧文件 mtime 设到 31 天前；新文件保持当前时间
+    old_mtime = time.time() - 31 * 24 * 3600
+    os.utime(old_path, (old_mtime, old_mtime))
+
+    try:
+        main.clean_orphaned_images()
+        # 超过 30 天 -> 真删
+        assert not os.path.exists(old_path), "超过 30 天的回收站文件应被物理删除"
+        # 未超期 -> 保留
+        assert os.path.exists(new_path), "未超 30 天的回收站文件应保留"
+    finally:
+        for p in (old_path, new_path):
+            if os.path.exists(p):
+                os.remove(p)
+        if os.path.isdir(trash_dir):
+            try:
+                os.rmdir(trash_dir)
+            except OSError:
+                pass

@@ -1,6 +1,8 @@
 import io
 import json
 import os
+import threading
+import time
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
@@ -37,6 +39,143 @@ def test_private_atomic_write_works_without_unix_fchmod(tmp_path, monkeypatch):
 
     assert target.read_text(encoding="utf-8") == "persistent-value"
     assert not list(tmp_path.glob(".private-token.*"))
+
+
+class _WinPermissionError(PermissionError):
+    """带 winerror 的 PermissionError，模拟 Windows 共享违规。"""
+
+    def __init__(self, winerror: int, message: str = "拒绝访问。"):
+        super().__init__(message)
+        self.winerror = winerror
+
+
+def test_replace_retry_survives_transient_winerror5(tmp_path, monkeypatch):
+    """读者短暂占用目标文件（瞬时 WinError 5）时，写盘必须靠重试自愈而不是抛错。"""
+
+    from mathbank import asset_security as sec
+
+    target = tmp_path / "custom_metadata.json"
+    write_private_text_atomic(target, "old")
+
+    calls = {"n": 0}
+    real_replace = os.replace
+
+    def flaky_replace(src, dst):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise _WinPermissionError(5)
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(sec.os, "replace", flaky_replace)
+    sleeps = []
+    monkeypatch.setattr(sec.time, "sleep", lambda s: sleeps.append(s))
+
+    write_private_text_atomic(target, "new")
+
+    assert target.read_text(encoding="utf-8") == "new"
+    assert calls["n"] == 3, "应该前两次失败、第三次成功"
+    assert len(sleeps) == 2 and all(s > 0 for s in sleeps), sleeps
+    # 临时文件不得残留
+    assert not list(tmp_path.glob(".custom_metadata.json.*"))
+
+
+def test_replace_retry_gives_up_and_preserves_original(tmp_path, monkeypatch):
+    """持续被占用时按预算放弃：抛出原始错误，旧内容一字不变、无半写、无临时残留。"""
+
+    from mathbank import asset_security as sec
+
+    target = tmp_path / "custom_metadata.json"
+    write_private_text_atomic(target, "old")
+
+    attempts = {"n": 0}
+
+    def always_blocked(src, dst):
+        attempts["n"] += 1
+        raise _WinPermissionError(5)
+
+    monkeypatch.setattr(sec.os, "replace", always_blocked)
+    monkeypatch.setattr(sec.time, "sleep", lambda s: None)
+
+    with pytest.raises(_WinPermissionError):
+        write_private_text_atomic(target, "new")
+
+    assert attempts["n"] == sec._REPLACE_ATTEMPTS, attempts["n"]
+    assert target.read_text(encoding="utf-8") == "old"
+    assert not list(tmp_path.glob(".custom_metadata.json.*"))
+
+
+def test_replace_retry_does_not_mask_other_errors(tmp_path, monkeypatch):
+    """非共享冲突类 OSError（winerror 不在白名单）必须立刻原样上抛，不做重试。"""
+
+    from mathbank import asset_security as sec
+
+    target = tmp_path / "custom_metadata.json"
+    write_private_text_atomic(target, "old")
+
+    calls = {"n": 0}
+
+    def wrong_disk(src, dst):
+        calls["n"] += 1
+        raise _WinPermissionError(17, "不同盘符")
+
+    monkeypatch.setattr(sec.os, "replace", wrong_disk)
+    monkeypatch.setattr(sec.time, "sleep", lambda s: None)
+
+    with pytest.raises(_WinPermissionError):
+        write_private_text_atomic(target, "new")
+    assert calls["n"] == 1, "不可重试的错误绝不能进入退避循环"
+    assert target.read_text(encoding="utf-8") == "old"
+
+
+def test_concurrent_readers_never_break_metadata_style_writes(tmp_path):
+    """真并发压力：读者线程复刻热重载/后台导出的读取形态（open→read→close，
+    每次之间留出让句柄彻底关闭的小间隔），写线程连续原子写 20 次——
+    每一次都必须成功，且最终内容是某一次完整写入。
+
+    这是竞态本身的回归：修复前在 Windows 上这条链路会随机 WinError 5。
+    刻意用「纯 Python 读」而不是 msvcrt 文件锁来模拟读者——实测纯紧循环读者
+    会让任何重试预算都耗尽（GIL 饿死写线程，属人造场景而非生产形态），
+    真实读者的持窗是微秒级、按请求节奏出现。
+    msvcrt 只在 Windows 存在；非 Windows 平台此用例如实跳过。
+    """
+
+    pytest.importorskip("msvcrt")
+
+    target = tmp_path / "custom_metadata.json"
+    target.write_text("seed", encoding="utf-8")
+
+    stop_reader = threading.Event()
+
+    def reader():
+        # 与 reload_metadata_if_changed / export 同款：open→read→close；
+        # 每轮 sleep(0.005) 对应真实世界「按请求/任务出现」的占空比。
+        while not stop_reader.is_set():
+            try:
+                with open(target, "rb") as h:
+                    h.read()
+            except OSError:
+                pass
+            time.sleep(0.005)
+
+    t = threading.Thread(target=reader, daemon=True)
+    t.start()
+
+    failures = []
+    contents = []
+    for i in range(20):
+        payload = json.dumps({"payload": i}, ensure_ascii=False)
+        try:
+            write_private_text_atomic(target, payload)
+            contents.append(payload)
+        except OSError as exc:
+            failures.append((i, type(exc).__name__, str(exc)[:80]))
+    stop_reader.set()
+    t.join(timeout=2)
+
+    assert failures == [], failures[:3]
+    final = target.read_text(encoding="utf-8")
+    assert final in contents, "最终内容必须是某一次完整写入，不允许半写"
+    assert not list(tmp_path.glob(".custom_metadata.json.*")), "临时文件必须被清干净"
 
 
 def test_upload_asset_resolver_accepts_only_contained_regular_files(tmp_path):

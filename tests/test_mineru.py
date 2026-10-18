@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """MinerU 云端解析集成测试：客户端纯函数、设置读写、pdf 任务分支。"""
 
+import json
 import os
 from unittest.mock import patch
 
@@ -127,6 +128,117 @@ def test_settings_save_roundtrip_mineru_token(client, tmp_path, monkeypatch):
     # .env 中应落盘真实 Token
     assert "MINERU_API_TOKEN=mineru_real_token_123" in env_file.read_text(encoding="utf-8")
     assert "MINERU_API_BASE=https://mineru.net/api/v4" in env_file.read_text(encoding="utf-8")
+
+
+def test_settings_save_roundtrip_vendor_base_urls(client, tmp_path, monkeypatch):
+    """三家内置厂商的自定义接口地址（Base URL）可落盘并回填。"""
+    from mathbank import routes_settings
+    from main import LOCAL_TOKEN
+
+    env_file = tmp_path / ".env"
+    monkeypatch.setattr(routes_settings, "ENV_FILE", env_file)
+
+    payload = {
+        "deepseek_base_url": "https://api.deepseek.com",
+        "siliconflow_base_url": "https://api.siliconflow.cn/v1",
+        "ali_bailian_base_url": "https://token-plan.maas.qianwenai.com/compatible-mode/v1",
+    }
+    resp = client.post(
+        "/api/settings/save",
+        data=payload,
+        headers={"X-Local-Token": LOCAL_TOKEN},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "success"
+
+    settings = client.get("/api/settings").json()
+    assert settings["deepseek_base_url"] == "https://api.deepseek.com"
+    assert settings["siliconflow_base_url"] == "https://api.siliconflow.cn/v1"
+    assert settings["ali_bailian_base_url"] == "https://token-plan.maas.qianwenai.com/compatible-mode/v1"
+
+    env_text = env_file.read_text(encoding="utf-8")
+    assert "DEEPSEEK_API_BASE=https://api.deepseek.com" in env_text
+    assert "SILICONFLOW_API_BASE=https://api.siliconflow.cn/v1" in env_text
+    assert "ALI_BAILIAN_API_BASE=https://token-plan.maas.qianwenai.com/compatible-mode/v1" in env_text
+
+
+def test_settings_get_exposes_vendor_base_urls(client):
+    response = client.get("/api/settings")
+    assert response.status_code == 200
+    data = response.json()
+    assert "deepseek_base_url" in data
+    assert "siliconflow_base_url" in data
+    assert "ali_bailian_base_url" in data
+
+
+def test_settings_save_roundtrip_custom_providers(client, tmp_path, monkeypatch):
+    """自定义厂商（瘦版）可随设置保存、回填，并落盘 CUSTOM_PROVIDERS_JSON。"""
+    from mathbank import routes_settings
+    from main import LOCAL_TOKEN
+
+    env_file = tmp_path / ".env"
+    monkeypatch.setattr(routes_settings, "ENV_FILE", env_file)
+
+    custom = [
+        {
+            "name": "TokenPlan",
+            "base_url": "https://tp.example/v1",
+            "api_key": "tp-secret",
+            "model": "gpt-4o",
+        }
+    ]
+    resp = client.post(
+        "/api/settings/save",
+        data={"custom_providers": json.dumps(custom)},
+        headers={"X-Local-Token": LOCAL_TOKEN},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "success"
+
+    settings = client.get("/api/settings").json()
+    assert settings["custom_providers"] == custom
+
+    env_text = env_file.read_text(encoding="utf-8")
+    assert "CUSTOM_PROVIDERS_JSON=" in env_text
+    assert "TokenPlan" in env_text
+    assert "tp-secret" in env_text
+
+
+def test_settings_save_rejects_invalid_custom_providers_json(client, tmp_path, monkeypatch):
+    """非法自定义厂商 JSON 应被拒绝。"""
+    from mathbank import routes_settings
+    from main import LOCAL_TOKEN
+
+    env_file = tmp_path / ".env"
+    monkeypatch.setattr(routes_settings, "ENV_FILE", env_file)
+
+    resp = client.post(
+        "/api/settings/save",
+        data={"custom_providers": "not-a-json"},
+        headers={"X-Local-Token": LOCAL_TOKEN},
+    )
+    assert resp.status_code == 500
+    assert resp.json()["status"] == "error"
+
+
+def test_settings_save_rejects_newline_in_vendor_base_url(client, tmp_path, monkeypatch):
+    """接口地址含换行符应被拒绝（与既有换行保护一致）。"""
+    from mathbank import routes_settings
+    from main import LOCAL_TOKEN
+
+    env_file = tmp_path / ".env"
+    monkeypatch.setattr(routes_settings, "ENV_FILE", env_file)
+
+    resp = client.post(
+        "/api/settings/save",
+        data={"deepseek_base_url": "https://evil.com\nSECRET=1"},
+        headers={"X-Local-Token": LOCAL_TOKEN},
+    )
+    # 含换行符 → 被拒绝（status=error，HTTP 500）
+    assert resp.status_code == 500
+    assert resp.json()["status"] == "error"
+    content = env_file.read_text(encoding="utf-8") if env_file.exists() else ""
+    assert "SECRET=1" not in content
 
 
 def test_mineru_test_endpoint_unconfigured(client):
@@ -514,6 +626,57 @@ def test_classify_is_safe_for_balance_like_low_edge_figure(tmp_path):
     path = _balance_like_image(tmp_path)
     reason = classify_mineru_decoration_image(str(path))
     assert reason == "", reason
+
+
+def _big_gray_watermark_image(tmp_path, with_black_axis=False):
+    """复现「学科网 / 学校校徽那种浅灰大字水印」。
+
+    真实样本（大庆实验中学卷）的像素特征：纯水印图 ``black=0.000``、``edge=0.0059``、
+    ``white=0.609``；而现有水印判据要求 ``white>=0.80`` 且 ``area>=120000``，
+    所以它必然漏网。灰块故意**超出画面**——真实水印就是这样被裁到一角的，
+    内部边界极少正是它 ``edge`` 极低的原因。高斯模糊复现 JPEG 软化：
+    单步灰度差被压到 30 以下，边缘计数才不会虚高。
+    """
+
+    from PIL import Image, ImageDraw, ImageFilter
+
+    width, height = 240, 232
+    image = Image.new("L", (width, height), 255)
+    draw = ImageDraw.Draw(image)
+    for box in ((-30, 10, 120, 220), (140, 10, 270, 220), (20, 180, 220, 260)):
+        draw.rectangle(box, fill=207)
+    if with_black_axis:
+        # 真图形必有黑色描边（坐标轴 / 曲线）
+        draw.rectangle((0, 112, width, 128), fill=0)
+    image = image.filter(ImageFilter.GaussianBlur(2))
+    path = tmp_path / ("wm_axis.jpg" if with_black_axis else "wm_gray.jpg")
+    image.convert("RGB").save(path, quality=80)
+    return path
+
+
+def test_classify_rejects_big_gray_watermark_without_ink(tmp_path):
+    """铺满画面的浅灰大字水印必须被拦下。
+
+    回归来源：第 18 题（天平称黄金，题干本无图）被挂了一张纯水印图 —— MinerU 把
+    校徽当 figure 抽出，装饰过滤放过它，拆题模型又把它挂给了位置最近的那道题。
+    """
+
+    from mathbank.mineru_client import classify_mineru_decoration_image
+
+    path = _big_gray_watermark_image(tmp_path)
+    assert classify_mineru_decoration_image(str(path)) == "水印"
+
+
+def test_classify_keeps_figure_when_watermark_overlaps_it(tmp_path):
+    """水印叠在真图形上时**不得丢图**：有黑色描边就留（污染 ≠ 整图作废）。
+
+    误杀真图比漏放一张水印更糟 —— 丢了图用户只能手动截图补，而水印至少还能看见。
+    """
+
+    from mathbank.mineru_client import classify_mineru_decoration_image
+
+    path = _big_gray_watermark_image(tmp_path, with_black_axis=True)
+    assert classify_mineru_decoration_image(str(path)) == ""
 
 
 def test_filter_mineru_decoration_images_cleans_markdown_and_keeps_real(tmp_path):

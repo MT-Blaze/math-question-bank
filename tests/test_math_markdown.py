@@ -16,6 +16,7 @@ import pytest
 from mathbank import parsing_pipeline
 from mathbank.math_markdown import (
     compact_solution_markdown,
+    normalize_fillin_macro,
     normalize_question_math_markdown,
 )
 from mathbank.paper_helper import clean_content_for_latex
@@ -149,10 +150,96 @@ def test_converts_underscore_blank_to_fillin():
     """OCR/Word 导出的连续下划线填空占位符应规范化为 \\fillin。"""
     assert normalize_question_math_markdown("这样的函数有 ___ 个") == "这样的函数有 \\fillin 个"
     assert normalize_question_math_markdown("最小值为_____") == "最小值为\\fillin"
+
+
+def test_converts_escaped_underscore_blank_to_fillin():
+    """AI 偶尔把空位写成转义形态 ``\\_\\_\\_``，也应归一为 \\fillin（原先漏掉）。"""
+    from mathbank.math_markdown import normalize_fillin_macro
+
+    assert normalize_fillin_macro(r"则 $x=$ \_\_\_\_\_\_.") == r"则 $x=$ \fillin."
+    assert normalize_question_math_markdown(r"最小值为\_\_\_\_\_\_") == "最小值为\\fillin"
     # 数学环境内的下划线是下标，不应转换
     assert normalize_question_math_markdown("$a_1 + a_{23} = ___$") == "$a_1 + a_{23} = ___$"
     # 已是 LaTeX 转义的下划线也不应转换
     assert normalize_question_math_markdown(r"路径 \\_\\_\\_foo") == r"路径 \\_\\_\\_foo"
+
+
+# --------------------------------------------------------------------------
+# 1b. \fillin 规范化（待办 #3 空花括号 + #16 句号统一）
+# --------------------------------------------------------------------------
+
+# (输入, 期望输出) —— 每一条都对应一个真实语料形态或一条边界防线。
+_FILLIN_NORMALIZATION_CASES = [
+    # --- #3 空花括号清理 -------------------------------------------------
+    (r"\fillin{}", r"\fillin"),
+    (r"\fillin{ }", r"\fillin"),
+    (r"\fillin{  }", r"\fillin"),
+    # 真实语料：题干里的空填空后面紧跟英文句点，花括号要整个去掉、句号留在外面
+    (r"\fillin{}.", r"\fillin."),
+    (r"\fillin{ }.", r"\fillin."),
+    # 有内容的花括号完整保留（最底线：绝不能把 \fillin{内容} 削成 \fillin）
+    (r"\fillin{内容}", r"\fillin{内容}"),
+    (r"\fillin { 答案 }", r"\fillin { 答案 }"),
+    # 空花括号后直接粘连汉字时不碰（属待办 #15 盘子，这里不许顺手改）
+    (r"\fillin{}个", r"\fillin{}个"),
+    # --- #16① \fillin 后紧贴的中文句末标点统一转 ASCII --------------------
+    (r"\fillin。", r"\fillin."),
+    (r"\fillin，", r"\fillin,"),
+    (r"\fillin；", r"\fillin;"),
+    (r"\fillin！", r"\fillin!"),
+    (r"\fillin？", r"\fillin?"),
+    (r"\fillin．", r"\fillin."),  # 全角句点 U+FF0E
+    # 数学态内的 $\fillin$ 后面紧跟的中文句末标点
+    (r"$\fillin$。", r"$\fillin$."),
+    (r"$\fillin$？", r"$\fillin$?"),
+    # --- #16② 空格 + 英文句点归一为紧贴 ----------------------------------
+    (r"\fillin .", r"\fillin."),
+    (r"\fillin   .", r"\fillin."),
+    # --- 必须原样保留的形态 ----------------------------------------------
+    (r"\fillin$(a,b)", r"\fillin$(a,b)"),
+    (r"\fillin (填数字)", r"\fillin (填数字)"),
+    (r"\fillin 条件", r"\fillin 条件"),
+    (r"\fillin条件。", r"\fillin条件。"),  # #15 粘连，句号不在紧贴位
+    (r"有\fillin个元素.", r"有\fillin个元素."),
+    (r"\fillin", r"\fillin"),
+]
+
+
+@pytest.mark.parametrize("source,expected", _FILLIN_NORMALIZATION_CASES)
+def test_fillin_normalization(source, expected):
+    """待办 #3 + #16 的规范化矩阵。"""
+    assert normalize_fillin_macro(source) == expected
+
+
+@pytest.mark.parametrize("source,_expected", _FILLIN_NORMALIZATION_CASES)
+def test_fillin_normalization_is_idempotent(source, _expected):
+    """规范化必须幂等：T(T(x)) == T(x)，存量反复跑不会越改越歪。"""
+    once = normalize_fillin_macro(source)
+    assert normalize_fillin_macro(once) == once
+
+
+def test_fillin_keeps_chinese_prose_punctuation_untouched():
+    """关键回归：中文正文里的 。，；！？ 一个都不许动。
+
+    规范化只把「紧跟 \\fillin 的那个标点」翻面，锚点必须落在 \\fillin 上。
+    """
+    prose = "这个。那里，真的；不是！谁在问？"
+    assert normalize_fillin_macro(prose) == prose
+
+    # 数学态之后紧跟的正文逗号是并列分隔符，不是填空的附属标点 —— 碰它会改坏
+    # 「值域是 $\\fillin$，定义域是 R。」这类句子。
+    assert normalize_fillin_macro(r"值域是 $\fillin$，定义域是 R。") == r"值域是 $\fillin$，定义域是 R。"
+    # 同理，普通态里隔了正文才出现的句点也不属于 \\fillin
+    assert normalize_fillin_macro(r"求解得 \fillin 结论。") == r"求解得 \fillin 结论。"
+    assert normalize_fillin_macro(r"$a+b=c$，所以 \fillin 成立。") == r"$a+b=c$，所以 \fillin 成立。"
+
+
+def test_fillin_normalization_matches_real_corpus_shapes():
+    """拿 luru 库里实际存着的几条语料当快照，防止日后改正则改歪。"""
+    assert normalize_fillin_macro(r"则实数 $a$ 的取值范围是 \fillin{}.") == r"则实数 $a$ 的取值范围是 \fillin."
+    assert normalize_fillin_macro(r"其面积为 \fillin{} .") == r"其面积为 \fillin."
+    assert normalize_fillin_macro(r"使得 \fillin ？（注：如果选择多个，请全部选出）") == r"使得 \fillin?（注：如果选择多个，请全部选出）"
+    assert normalize_fillin_macro(r"个数为 \fillin .") == r"个数为 \fillin."
 
 
 # --------------------------------------------------------------------------

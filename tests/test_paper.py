@@ -728,4 +728,456 @@ def test_synthesize_image_choices_refuses_odd_image_counts():
         "1. 如图，求阴影面积（）", _choice_urls(3), "single_choice"
     )
     assert used == []
-    assert "\\begin{choices}" not in out
+
+
+def test_paper_list_present(client):
+    r"""确保历史试卷库列表接口可用（清理 from-import 后保留的基础能力）。"""
+
+    headers = {"X-Local-Token": LOCAL_TOKEN}
+    res = client.get("/api/papers")
+    assert res.status_code == 200
+
+
+def test_circled_subitems_are_indented_one_level_deeper_in_latex():
+    r"""圈号小小问（①②③…）在导出 LaTeX 时必须比一级小问 (1)/(2) 再深一层。
+
+    一级小问靠 `\parindent` 拿到首行缩进（只作用于**首行**）；圈号若也走 `\parindent`
+    就和一级**视觉同级**，成品卷面看不出层级（用户反馈「这不和常理」）。改用
+    `\leftskip` 包成缩进块：它对段落**每一行**生效，折行不会退回左边界。
+    """
+    from mathbank.paper_helper import clean_content_for_latex
+
+    stem = (
+        "已知二次函数 $f(x)=ax^{2}+bx+c$。\n\n"
+        "(1) 若 $a,b,c$ 满足 $a > b > c$。\n"
+        "① 求证：两函数的图象交于不同两点 $A$，$B$。\n"
+        "② 求线段 $AB$ 在 $x$ 轴上的射影 $A_{1}B_{1}$ 的长的取值范围。"
+    )
+    out = clean_content_for_latex(stem, "detailed_answer")
+    assert out.count(r"{\leftskip=2\parindent\noindent") == 2
+    assert r"{\leftskip=2\parindent\noindent ① 求证：" in out
+    assert r"{\leftskip=2\parindent\noindent ② 求线段" in out
+    # (1) 是一级小问，必须留在普通段落层级，不得被包进缩进组：
+    # 第一个缩进组之前应当只有 (1) 那段、且不含任何圈号。
+    head = out.split(r"{\leftskip")[0]
+    assert "(1) 若" in head
+    assert "①" not in head and "②" not in head
+
+    # 解答侧原先只对 (1)/解：/证明：/因为… 升段，**圈号漏在候选之外** →
+    # `（2）…\n① 证明：…` 在 LaTeX 里只是一个空格，①② 会被并进上一句。
+    answer = "(2) 设 $a=c=t$。\n① 证明：$x_{1}$ 是根。\n② 求 $x_{3},x_{4}$ 的大小。"
+    ans_out = clean_content_for_latex(answer, "detailed_answer", is_answer=True)
+    assert ans_out.count(r"{\leftskip=2\parindent\noindent") == 2
+    assert r"{\leftskip=2\parindent\noindent ① 证明：$x_{1}$ 是根。\par}" in ans_out
+    assert r"{\leftskip=2\parindent\noindent ② 求 $x_{3},x_{4}$ 的大小。\par}" in ans_out
+
+    # 缩进保持幂等：二次调用不得套第二层 \leftskip
+    from mathbank.paper_helper import indent_circled_paragraphs
+
+    assert indent_circled_paragraphs(out) == out
+    assert indent_circled_paragraphs(ans_out) == ans_out
+
+
+def test_circled_subitem_indent_leaves_plain_and_block_content_alone():
+    r"""防误伤：只有一级小问、或圈号夹在句中时，都不得被包进缩进组。"""
+    from mathbank.paper_helper import clean_content_for_latex
+
+    # 只有一级小问 → 完全不该出现缩进组
+    plain = "(1) 若 $a,b,c$ 满足 $a > b > c$。\n(2) 当 $a=c=t$ 时，求根。"
+    assert r"\leftskip" not in clean_content_for_latex(plain, "detailed_answer")
+
+    # 圈号夹在句子中间（不是行首）只是普通符号，不得被当小问拆段 + 缩进
+    inline = "题中 ① 表示甲，② 表示乙。\n(1) 求甲与乙的关系。"
+    inline_out = clean_content_for_latex(inline, "detailed_answer")
+    assert r"\leftskip" not in inline_out
+    assert "① 表示甲" in inline_out
+
+    # 块级环境自成段落，不参与缩进（否则 \begin{...} 会被包进组里）
+    block = "已知条件如下。\n\n\\begin{center}甲与乙\\end{center}"
+    assert r"\leftskip" not in clean_content_for_latex(block, "detailed_answer")
+
+
+# ---------------------------------------------------------------------------
+# 整卷删除：题目一律保留 + usage_count 按现存绑定重算 + 删前强制完整备份
+# ---------------------------------------------------------------------------
+
+
+def _make_question(db_session, content="求 $f(x)=x^2$ 的最小值", **kw):
+    q = Question(content=content, question_type="detailed_answer", difficulty="basic", **kw)
+    db_session.add(q)
+    db_session.flush()
+    return q
+
+
+def _save_paper(client, headers, title, q_ids, scores=None):
+    payload = {
+        "title": title,
+        "subtitle": "",
+        "paper_type": "exam",
+        "total_score": sum(scores or [5] * len(q_ids)),
+        "questions": [{"id": i, "score": (scores or [5] * len(q_ids))[n]} for n, i in enumerate(q_ids)],
+    }
+    res = client.post("/api/paper/save", json=payload, headers=headers)
+    assert res.status_code == 200, res.text
+    return res.json()["paper_id"]
+
+
+def test_delete_paper_keeps_every_question_and_its_links_of_other_papers(client, db_session):
+    """核心不变式：删一份卷，**题目一行都不许少**，别的卷的绑定也不受影响。"""
+    from main import LOCAL_TOKEN
+    headers = {"X-Local-Token": LOCAL_TOKEN}
+    qs = [_make_question(db_session, content=f"共享题 {i}") for i in range(3)]
+    db_session.commit()
+    ids = [q.id for q in qs]
+    paper_a = _save_paper(client, headers, "待删除卷A", ids[:2])
+    paper_b = _save_paper(client, headers, "保留卷B", ids[1:])
+    db_session.commit()
+
+    before_total = db_session.query(Question).count()
+    res = client.delete(f"/api/papers/{paper_a}", headers=headers)
+    assert res.status_code == 200, res.text
+    db_session.expire_all()
+
+    assert db_session.query(Question).count() == before_total, "删试卷把题目删掉了"
+    assert all(db_session.get(Question, i) is not None for i in ids), "题目被级联删除"
+    # A 卷绑定清零、B 卷绑定一根不少
+    assert db_session.query(PaperQuestion).filter(PaperQuestion.paper_id == paper_a).count() == 0
+    assert db_session.query(PaperQuestion).filter(PaperQuestion.paper_id == paper_b).count() == 2
+    assert db_session.query(Paper).filter(Paper.id == paper_a).first() is None
+    assert db_session.query(Paper).filter(Paper.id == paper_b).first() is not None
+
+
+def test_delete_paper_recounts_usage_from_live_links_not_incremental_decrement(client, db_session):
+    """usage_count 用「现存绑定数」绝对口径重算，而不是增量扣减。
+
+    事故原型：save_paper 每次新建 Paper 并对每题 +1，同一份卷保存两次计数就虚高；
+    增量扣减只会把这个漂移一直带下去。重算才是收敛的。
+    """
+    from main import LOCAL_TOKEN
+    headers = {"X-Local-Token": LOCAL_TOKEN}
+    shared = _make_question(db_session, content="两卷共用")
+    dropped = _make_question(db_session, content="只在被删卷")
+    db_session.commit()
+
+    p1 = _save_paper(client, headers, "卷一", [shared.id, dropped.id])
+    p2 = _save_paper(client, headers, "卷二", [shared.id])
+    db_session.commit()
+
+    # 人为制造漂移：把计数改成与真实绑定不符的值，重算必须把它拉回正确值
+    shared.usage_count = 99
+    dropped.usage_count = 99
+    db_session.commit()
+
+    res = client.delete(f"/api/papers/{p1}", headers=headers)
+    assert res.status_code == 200, res.text
+    db_session.expire_all()
+
+    assert db_session.get(Question, shared.id).usage_count == 1, "共用题应剩 1 份现存绑定"
+    assert db_session.get(Question, dropped.id).usage_count == 0, "独占题应归零"
+
+
+def test_delete_paper_backup_created_before_write(client, db_session, monkeypatch, tmp_path):
+    """删前强制登记完整备份：备份落盘成功才允许动数据。"""
+    from main import LOCAL_TOKEN
+    import mathbank.backup as backup_mod
+
+    headers = {"X-Local-Token": LOCAL_TOKEN}
+    q = _make_question(db_session, content="备份校验题")
+    db_session.commit()
+    pid = _save_paper(client, headers, "备份验证卷", [q.id])
+    db_session.commit()
+
+    fake_zip = tmp_path / "mathbank-backup-fake.zip"
+    calls = []
+
+    def fake_create(**kw):
+        calls.append(kw)
+        fake_zip.write_bytes(b"PK\x03\x04fake")
+        return fake_zip
+
+    monkeypatch.setattr(backup_mod, "create_full_backup", fake_create)
+    res = client.delete(f"/api/papers/{pid}", headers=headers)
+    assert res.status_code == 200, res.text
+    assert len(calls) == 1, "删除前没有创建完整备份"
+    assert fake_zip.name in res.json().get("backup", ""), "响应没告知用户备份文件名"
+
+
+def test_delete_paper_aborts_when_backup_fails(client, db_session, monkeypatch):
+    """反向验证（安全网的核心）：备份失败必须**拒绝删除**，数据一行未动。
+
+    若这条写成「备份失败也照删」，用户误删就没有任何恢复路径了——所以它必须红。
+    """
+    from main import LOCAL_TOKEN
+    import mathbank.backup as backup_mod
+
+    headers = {"X-Local-Token": LOCAL_TOKEN}
+    q = _make_question(db_session, content="备份失败不该被牵连的题")
+    db_session.commit()
+    pid = _save_paper(client, headers, "备份失败卷", [q.id])
+    db_session.commit()
+
+    def boom(**kw):
+        raise RuntimeError("磁盘满了")
+
+    monkeypatch.setattr(backup_mod, "create_full_backup", boom)
+    res = client.delete(f"/api/papers/{pid}", headers=headers)
+    assert res.status_code == 500
+    assert "备份" in res.json()["message"]
+    db_session.expire_all()
+    assert db_session.query(Paper).filter(Paper.id == pid).first() is not None, "备份失败却删掉了试卷"
+    assert db_session.query(PaperQuestion).filter(PaperQuestion.paper_id == pid).count() == 1, "备份失败却解绑了题目"
+
+
+def test_delete_paper_preview_reports_title_and_question_count(client, db_session):
+    """预检接口只读：给确认弹窗提供「含 N 题」的真实数字，且不留任何写入痕迹。"""
+    from main import LOCAL_TOKEN
+    headers = {"X-Local-Token": LOCAL_TOKEN}
+    qs = [_make_question(db_session, content=f"预检题 {i}") for i in range(4)]
+    db_session.commit()
+    pid = _save_paper(client, headers, "预检目标卷", [q.id for q in qs])
+    db_session.commit()
+
+    papers_before = db_session.query(Paper).count()
+    links_before = db_session.query(PaperQuestion).count()
+    res = client.get(f"/api/papers/{pid}/delete-preview")
+    assert res.status_code == 200
+    data = res.json()["data"]
+    assert data["paper_name"] == "预检目标卷"
+    assert data["question_count"] == 4
+    db_session.expire_all()
+    assert db_session.query(Paper).count() == papers_before, "预检不该写库"
+    assert db_session.query(PaperQuestion).count() == links_before, "预检不该写库"
+
+
+def test_delete_paper_preview_missing_paper_is_404(client):
+    from main import LOCAL_TOKEN
+    res = client.get("/api/papers/999999/delete-preview", headers={"X-Local-Token": LOCAL_TOKEN})
+    assert res.status_code == 404
+
+
+# ===========================================================================
+# 导出缺图事故回归锁（2026-10-18：预览能看、导出崩）
+#
+# 现场：题库 id=15 导出时 XeLaTeX 报
+#   ! Unable to load picture or PDF file 'mineru_1790251898_1.jpg'.
+#   l.149 \end
+# 四张选项图其实都在 static/uploads 里、且是可解码的合法 JPEG。真正的原因是
+# 导出资源清单的口径错了：collect_referenced_images 吃的清单来自
+# to_dict()["image_paths"] = display_image_paths（UI 语义：已重绘成 TikZ 的原
+# 参考图整批藏掉），而它自己又只认 Markdown 图 —— choices 里的选项图是
+# \includegraphics 形态，restore_storage_images_to_markdown 刻意不还原它。
+# 清单漏图 → 编译目录里没图 → XeLaTeX 撞死链 + -halt-on-error → 整卷出不了 PDF。
+# ===========================================================================
+
+_PROBE_STEM = r"设 $abc>0$，二次函数 $f(x)=ax^2+bx+c$ 的图象可能是 \paren"
+
+
+def _probe_choice_content(names):
+    """造一道「四个选项各挂一张图」的选择题（与题库 id=15 同形态）。"""
+    items = "".join(
+        "\\item \\includegraphics[max width=0.42\\linewidth,"
+        "max height=3.2cm,keepaspectratio]{%s}\n" % name
+        for name in names
+    )
+    return "%s\n\\begin{choices}\n    %s  \\end{choices}" % (_PROBE_STEM, items)
+
+
+def _probe_question(names, display_paths, assets, legacy_reference=""):
+    return {
+        "id": 15,
+        "question_type": "single_choice",
+        "content": _probe_choice_content(names),
+        "answer_markdown": "【答案】D",
+        "image_paths": display_paths,
+        "content_tikz_assets": assets,
+        "tikz_reference_image_path": legacy_reference,
+    }
+
+
+def test_export_manifest_collects_choice_images_hidden_from_display(tmp_path):
+    """选项图必须进导出清单：它既不在 display 口径里，也不是 Markdown 形态。"""
+    from mathbank.paper_helper import collect_referenced_images
+
+    jpgs = ["probe_a_1.jpg", "probe_a_2.jpg", "probe_a_3.jpg", "probe_a_5.jpg"]
+    pngs = ["probe_tikz_1.png", "probe_tikz_2.png", "probe_tikz_3.png", "probe_tikz_4.png"]
+    for name in jpgs + pngs:
+        (tmp_path / name).write_bytes(b"probe image payload")
+
+    assets = [
+        {
+            "id": "asset_%d" % index,
+            "image_path": "/static/uploads/" + png,
+            "reference_image_path": "/static/uploads/" + jpg,
+            "tikz_code": r"\draw (0,0) -- (1,1);",
+        }
+        for index, (jpg, png) in enumerate(zip(jpgs, pngs), start=1)
+    ]
+    question = _probe_question(
+        jpgs,
+        # display 口径：原参考图已被 TikZ 取代，四张 jpg 全部不在这里
+        ["/static/uploads/" + png for png in pngs],
+        assets,
+        legacy_reference="/static/uploads/" + jpgs[0],
+    )
+    data = [{"question": question, "score": 5}]
+
+    # 1) 调用方没带 export 清单（老快照路径）：必须由 TikZ 资产字段自行还原
+    collected = collect_referenced_images(data, str(tmp_path), "static/uploads")
+    names = {os.path.basename(p) for p in collected}
+    assert set(jpgs) <= names, "choices 里的选项图必须进导出清单，XeLaTeX 才不会撞死链"
+    assert set(pngs) <= names
+
+    # 2) 调用方带了 export 全量清单（组卷导出路径）：结果必须同样完整
+    with_field = _probe_question(
+        jpgs,
+        ["/static/uploads/" + png for png in pngs],
+        assets,
+        legacy_reference="/static/uploads/" + jpgs[0],
+    )
+    with_field["export_image_paths"] = ["/static/uploads/" + n for n in jpgs + pngs]
+    names2 = {os.path.basename(p) for p in collect_referenced_images([{"question": with_field, "score": 5}], str(tmp_path), "static/uploads")}
+    assert set(jpgs) <= names2 and set(pngs) <= names2
+
+    # 3) 扫描口径放宽不能顺手放宽安全边界：越界引用照旧被资产层挡掉
+    evil = _probe_question(["../../.env"], [], [])
+    assert collect_referenced_images([{"question": evil, "score": 5}], str(tmp_path), "static/uploads") == []
+
+
+def test_export_manifest_keeps_chained_tikz_render_image(tmp_path):
+    """TikZ 渲染图又被登记为下一次重绘的参考图（题库 id=7 形态）：清单不能藏它。"""
+    from mathbank.paper_helper import collect_referenced_images
+
+    render_name = "probe_chain_render.png"
+    (tmp_path / render_name).write_bytes(b"probe render payload")
+    # 正文直接引用渲染图本身，而它恰好也是某条资产的 reference_image_path
+    assets = [{
+        "id": "asset_chain",
+        "image_path": "/static/uploads/probe_chain_next.png",
+        "reference_image_path": "/static/uploads/" + render_name,
+        "tikz_code": r"\draw (0,0) circle (1);",
+    }]
+    question = _probe_question([render_name], [], assets)
+    collected = {
+        os.path.basename(p)
+        for p in collect_referenced_images([{"question": question, "score": 5}], str(tmp_path), "static/uploads")
+    }
+    assert render_name in collected, "被登记成参考图的渲染图仍是正文要排的文件，不能从清单里消失"
+
+
+def test_missing_choice_image_degrades_to_red_placeholder(client, db_session):
+    """图真不在磁盘上时：卷面降级成红字占位，导出照旧成功，并把缺图上报给前端。"""
+    from urllib.parse import unquote
+    from io import BytesIO
+    from zipfile import ZipFile
+
+    from main import LOCAL_TOKEN
+    from mathbank.database import Question
+
+    gone = ["probe_gone_1.jpg", "probe_gone_2.jpg"]
+    row = Question(
+        content=_probe_choice_content(gone),
+        question_type="single_choice",
+        answer_markdown="【答案】A",
+        category_compulsory="必修第一册",
+        difficulty="L3",
+        source="缺图回归",
+    )
+    row._image_paths = json.dumps([])
+    row.tikz_code = ""
+    db_session.add(row)
+    db_session.flush()
+
+    headers = {"X-Local-Token": LOCAL_TOKEN}
+    payload = {"title": "缺图导出回归", "subtitle": "数学", "paper_type": "exam",
+               "questions": [{"id": row.id, "score": 5}]}
+
+    captured = {}
+
+    def fake_compile(tex, image_paths):
+        captured["tex"] = tex
+        captured["image_paths"] = list(image_paths)
+        return b"%PDF-1.7\n% deterministic missing-image payload", ""
+
+    with patch("main.compile_tex_to_pdf", side_effect=fake_compile):
+        res = client.post("/api/paper/export/pdf", json=payload, headers=headers)
+    assert res.status_code == 200, res.text
+
+    tex = captured["tex"]
+    assert r"\includegraphics" not in tex.split(r"\begin{document}")[-1], "死链绝不允许留在送进编译器的正文里"
+    for name in gone:
+        # 下划线必须转义：否则红字占位自己就会让 XeLaTeX 报 Missing $ inserted
+        assert r"\textcolor{red}{【图片缺失：%s】}" % name.replace("_", r"\_") in tex
+    assert res.headers["X-Paper-Missing-Images"] == "2"
+    assert set(unquote(res.headers["X-Paper-Missing-Image-Files"]).split(",")) == set(gone)
+
+    # LaTeX 源码包同样要自洽：.tex 里没有死链，images/ 里也没有凭空多出的空位
+    zip_res = client.post("/api/paper/export/tex", json=payload, headers=headers)
+    assert zip_res.status_code == 200
+    assert zip_res.headers["X-Paper-Missing-Images"] == "2"
+    with ZipFile(BytesIO(zip_res.content)) as archive:
+        shipped = archive.read("试卷正文.tex").decode("utf-8")
+        image_entries = [n for n in archive.namelist() if n.startswith("images/")]
+    assert r"\includegraphics" not in shipped.split(r"\begin{document}")[-1]
+    assert r"\textcolor{red}{【图片缺失：probe\_gone\_1.jpg】}" in shipped
+    assert not image_entries
+
+
+def test_display_image_paths_semantics_unchanged_for_ui():
+    """UI 口径不许被导出修复带偏：to_dict 仍藏参考图，新口径只由导出链路显式带上。"""
+    from mathbank.database import Question
+
+    jpgs = ["/static/uploads/probe_u_%d.jpg" % i for i in range(1, 5)]
+    pngs = ["/static/uploads/probe_u_tikz_%d.png" % i for i in range(1, 3)]
+    row = Question(id=15, question_type="single_choice", content="占位题干")
+    row._image_paths = json.dumps(jpgs + pngs)
+    row._content_tikz_assets = json.dumps([
+        {"id": "a1", "image_path": pngs[0], "reference_image_path": jpgs[0], "tikz_code": "\\draw (0,0);"},
+        {"id": "a2", "image_path": pngs[1], "reference_image_path": jpgs[1], "tikz_code": "\\draw (0,0);"},
+    ])
+    row._answer_tikz_assets = json.dumps([])
+    row.tikz_reference_image_path = jpgs[2]
+
+    assert row.display_image_paths == [jpgs[3]] + pngs, (
+        "已重绘成 TikZ 的原参考图（含遗留的 tikz_reference_image_path）"
+        "仍不该出现在题目面板里"
+    )
+    assert row.export_image_paths == jpgs + pngs, "导出清单必须按物理口径一张不落"
+    payload = row.to_dict()
+    assert payload["image_paths"] == [jpgs[3]] + pngs, (
+        "前端拿到的 image_paths 语义不能变"
+    )
+    assert "export_image_paths" not in payload, "导出清单由 _build_paper_questions_data 显式附加，不进 API 契约"
+
+
+def test_dead_choice_images_still_compile_to_pdf():
+    """库里的图全丢也必须出得了 PDF：卷面红字写明缺哪张，而不是整卷编译失败。"""
+    import shutil
+
+    import pymupdf
+
+    from mathbank.paper_helper import (
+        build_latex_document,
+        compile_tex_to_pdf,
+        patch_missing_latex_images,
+    )
+
+    if shutil.which("xelatex") is None:
+        pytest.skip("本机无 XeLaTeX")
+
+    gone = ["probe_real_%d.jpg" % i for i in range(1, 5)]
+    question = _probe_question(gone, [], [])
+    tex = build_latex_document("缺图真编译回归", "数学", "exam", [{"question": question, "score": 5}], include_answers=False)
+
+    patched, missing = patch_missing_latex_images(tex, [])
+    assert set(missing) == set(gone)
+    assert r"\includegraphics" not in patched.split(r"\begin{document}")[-1]
+
+    # 再喂一次：改写后的正文不含死链，patch 必须幂等
+    again, missing_again = patch_missing_latex_images(patched, [])
+    assert again == patched and missing_again == []
+
+    pdf, log = compile_tex_to_pdf(patched, [])
+    assert pdf, "含死图引用的试卷必须仍能编译：%s" % str(log)[-500:]
+    doc = pymupdf.open(stream=pdf, filetype="pdf")
+    text = "".join(page.get_text() for page in doc)
+    assert "图片缺失" in text

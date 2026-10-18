@@ -102,6 +102,7 @@ def build_local_latex_diagnostic(log_text: str, tex_content: str) -> dict[str, A
         location = f"生成的 LaTeX 第 {line_number} 行附近"
 
     lower_log = str(log_text or "").lower()
+    missing_image = ""
     if "fontspec error" in lower_log and "cannot be found" in lower_log:
         font_match = re.search(r'The font "([^"]+)" cannot be found', str(log_text), re.IGNORECASE)
         font_name = font_match.group(1) if font_match else "指定字体"
@@ -126,6 +127,27 @@ def build_local_latex_diagnostic(log_text: str, tex_content: str) -> dict[str, A
                 "检查命令拼写及左右花括号是否完整。",
                 "确认提供该命令的宏包已经随项目离线内置并在模板中加载。",
             ]
+    elif "unable to load picture" in lower_log or "unable to load pdf file" in lower_log:
+        # XeLaTeX 打不开图片：!Unable to load picture or PDF file 'xxx.jpg'.
+        # 项目内导出已把缺图降级成卷面红字占位，走到这里通常说明是离线编译或
+        # 正文被手工改过 —— 直接把「哪张图没了」讲清楚，别让用户猜宏包。
+        image_match = re.search(
+            r"Unable to load(?: picture or PDF)? file\s*'([^']+)'", str(log_text), re.IGNORECASE
+        )
+        missing_image = image_match.group(1) if image_match else ""
+        summary = "卷面引用的图片文件打不开" + ("：%s" % missing_image if missing_image else "")
+        cause = (
+            "\\includegraphics 指向的图片在编译目录里不存在：文件可能已从上传目录清理，"
+            "或导出资源清单没有收到它（例如该图被登记成 TikZ 参考图后按显示口径过滤掉了）。"
+        )
+        fixes = [
+            "回到对应题目重新上传这张插图，或改用 TikZ 矢量图后再次导出。",
+            "若在本地编译导出的 LaTeX 源码，请确认该图已随包放进 images/ 目录。",
+            "项目内导出会把缺图降级为卷面红字提示；仍报此错说明正文被手工改过。",
+        ]
+        # 这不是宏包缺失：graphicx 早已加载，保留 package 只会把人带偏。
+        package = ""
+        command = ""
     elif "file" in lower_log and "not found" in lower_log:
         summary = "PDF 编译时缺少所需的文件或宏包"
         cause = "公式、图片或模板引用了当前编译环境中不存在的资源。"
@@ -151,6 +173,7 @@ def build_local_latex_diagnostic(log_text: str, tex_content: str) -> dict[str, A
         "question_id": question_id,
         "source_context": context,
         "technical_error": technical[:1600],
+        "missing_image": missing_image,
         "ai_used": False,
     }
 

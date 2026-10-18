@@ -17,13 +17,15 @@ from mathbank.content_locks import ContentLockIntegrityError, lock_visible_math,
 from mathbank.database import Paper, PaperQuestion, Question, get_db
 from mathbank.latex_diagnostics import build_local_latex_diagnostic, merge_ai_latex_diagnostic
 from mathbank.metadata import _decorate_topic_field, get_metadata_cache, schedule_database_export
-from mathbank.paper_helper import build_answer_sheet_latex, build_latex_document, collect_referenced_images, create_full_bundle_zip_package, create_tex_zip_package, restore_storage_images_to_markdown
+from mathbank.paper_helper import build_answer_sheet_latex, build_latex_document, collect_referenced_images, create_full_bundle_zip_package, create_tex_zip_package, patch_missing_latex_images, restore_storage_images_to_markdown
 from mathbank.pdf_inspector_helper import inspect_and_extract_pdf, merge_pdf_page_texts
+from mathbank import pdf_split
 from mathbank.prompts import build_import_parse_system_prompt, build_latex_error_explanation_prompts, build_paper_selection_prompts
 from mathbank.task_manager import TaskCancelled, TaskQueueFull, format_duration
 from mathbank.tex_helper import MAX_TEX_BYTES, decode_and_prepare_tex, prepare_tex_source, tex_asset_basename, tex_asset_references_match
 from mathbank.word_export_helper import build_word_document, create_word_bundle_zip
 from pathlib import Path
+from sqlalchemy import func, text as _sa_text
 from sqlalchemy.orm import Session
 from typing import List, Optional
 import datetime
@@ -730,6 +732,12 @@ def ai_select_paper(payload: dict, db: Session = Depends(get_db)):
         return JSONResponse(content={"status": "error", "message": f"AI 智能选题失败: {str(e)}"}, status_code=500)
 
 
+# 拆题（AI 结构化解析）单次调用的墙上时钟上限。requests 的 timeout 只对单次
+# socket 读写生效，服务端持续慢速吐字节时永远不会触发，曾导致一个任务挂住
+# 50 分钟并占死工作线程。这里给整次调用一个硬上限，保证任务一定会回来。
+AI_SPLIT_DEADLINE_SECONDS = 480
+
+
 def _resolve_task_paper_title(paper_title: Optional[str], filename: str) -> str:
     """用户在前端统一填写的试卷标题优先；留空时回退到文件名。"""
     title = (paper_title or "").strip()
@@ -849,6 +857,54 @@ def _render_pdf_page_images(
     return page_paths, page_urls
 
 
+def _detect_solution_split(source, task_id: str = ""):
+    """检测「前半纯题干原卷 + 后半含答案解析」的两段式卷，返回切分信息或 ``None``。
+
+    不少真题 PDF 把同一份卷子印了两遍：前半是原卷，后半是「题干 + 答案 + 详解」。
+    整本解析会得到两份重复的题目卡片，而且同一道题的插图在两部分各出现一次，
+    拆题模型很容易把整批图挂到最后一题上（真实样本：大庆实验中学、东北师大附中）。
+
+    只读 PDF 文本层，**不调 AI、不碰网络**，所以可以在任务一开始就算出来。
+    任何异常都吞掉：检测失败必须安静地退回整本解析，绝不能拖垮任务。
+    """
+
+    if not source:
+        return None
+    try:
+        info = pdf_split.detect_solution_split(pdf_split.read_page_texts(source))
+    except Exception as exc:  # noqa: BLE001 - 检测是尽力而为，失败即放弃
+        print(f"[PDF Split] 两段式检测跳过（{type(exc).__name__}: {exc}）", flush=True)
+        return None
+    if not info:
+        return None
+
+    start, total = info["start_page"], info["total_pages"]
+    message = (
+        f"检测到两段式卷：前 {start} 页是纯题干原卷、后 {total - start} 页是"
+        f"「题干 + 答案解析」，本次只解析第 {start + 1}–{total} 页"
+        f"（想整本解析就在「页码范围」里手填 1-{total}）。"
+    )
+    print(f"[PDF Split] {message}", flush=True)
+    if task_id:
+        try:
+            _main.DOCUMENT_TASKS.update(task_id, log=message, document_type="pdf")
+        except Exception:  # noqa: BLE001 - 任务已被取消/清理时不强求
+            pass
+    return info
+
+
+def _split_render_note(split_info) -> str:
+    """把切分信息写成一句渲染阶段的提示文案（未命中时用默认文案）。"""
+
+    if not split_info:
+        return "正在渲染高清图..."
+    start, total = split_info["start_page"], split_info["total_pages"]
+    return (
+        f"已跳过前 {start} 页纯题干原卷（两段式卷：后 {total - start} 页为题干+答案解析），"
+        "正在渲染高清图..."
+    )
+
+
 def run_mineru_pdf_parsing_task(
     task_id: str,
     file_bytes: bytes,
@@ -893,9 +949,23 @@ def run_mineru_pdf_parsing_task(
 
         workdir.mkdir(parents=True, exist_ok=True)
 
+        # 两段式卷（前半纯题干原卷 + 后半含答案解析）：MinerU 不认识页码范围，
+        # 只能先把前半段**物理裁掉**再送云端。裁完 MinerU 的 page_idx 会从 0 重新
+        # 数起，所以下面用 page_offset 把页码补回原始页号 —— 保证卡片上的
+        # 「源自第 N 页 / 查看原页」与原始 PDF 对得上。
+        split_info = _detect_solution_split(file_bytes, task_id)
+        page_offset = int(split_info["start_page"]) if split_info else 0
+        mineru_bytes = (
+            pdf_split.build_trimmed_pdf(file_bytes, page_offset)
+            if page_offset
+            else file_bytes
+        )
+
         # 整页原图必须自己渲染：MinerU 只替我们抽出它认得的插图，并不能免除整页 PNG。
         # 少了这一步，MinerU 路径下「手动裁图」会直接报错（它读的就是这些文件），
         # 拆完题之后也无从对照原页核对「这道题到底有没有图」。
+        # ⚠️ 一律用**原始 PDF + 原始页号**渲染：即使上面裁掉了前半段，页图与页号
+        # 仍与用户手上的原文件一致。
         _main.DOCUMENT_TASKS.update(
             task_id,
             progress=15,
@@ -903,7 +973,17 @@ def run_mineru_pdf_parsing_task(
             document_type="pdf",
         )
         try:
-            _render_pdf_page_images(file_bytes, task_id, temp_assets)
+            _render_pdf_page_images(
+                file_bytes,
+                task_id,
+                temp_assets,
+                page_indices=(
+                    list(range(page_offset, split_info["total_pages"]))
+                    if split_info
+                    else None
+                ),
+                log=_split_render_note(split_info),
+            )
         except Exception as render_exc:  # noqa: BLE001 - 渲染失败不得拖垮主流程
             print(
                 f"[MinerU] 整页原图渲染失败，手动裁图与图文核对将不可用: {render_exc}",
@@ -933,8 +1013,10 @@ def run_mineru_pdf_parsing_task(
                     document_type="pdf",
                 )
 
+        # 送云端的是**裁过**的 PDF（命中两段式时会少掉前半段），这样 MinerU 不会再
+        # 抽出原卷那一份重复的题干与插图 —— 「末题吞掉整卷图」的重要成因就此消掉。
         result = mineru_client.parse_pdf(
-            file_bytes,
+            mineru_bytes,
             filename,
             workdir,
             on_progress=on_progress,
@@ -967,6 +1049,11 @@ def run_mineru_pdf_parsing_task(
         # 有了它才能推断「这道题来自第几页」，前端卡片才能给出「源自第 N 页 / 查看原页」。
         # 拿不到清单时返回空列表，行为退化成改动前（不会更差）。
         page_texts = mineru_client.collect_page_texts(result.get("workdir") or workdir)
+        # 裁过前半段时 MinerU 的 page_idx 从 0 重新数起，补上 page_offset 个空页，
+        # 下标即还原为**原始页号** —— 与 pdf_page_*.png（按原始页号命名）同一套基，
+        # 否则「源自第 N 页」会整体偏移、「查看原页」打开的是错页。
+        if page_offset and page_texts:
+            page_texts = [""] * page_offset + list(page_texts)
 
         if not markdown.strip():
             raise ValueError("MinerU 未能从 PDF 中提取出可解析的文字内容。")
@@ -982,13 +1069,20 @@ def run_mineru_pdf_parsing_task(
         _main.DOCUMENT_TASKS.check_cancelled(task_id)
 
         paper_title = _resolve_task_paper_title(paper_title, filename)
-        parsed_questions = _main.parse_paper_text_internal(markdown, generate_answers)
+        parsed_questions = _main.parse_paper_text_internal(
+            markdown,
+            generate_answers,
+            deadline_seconds=AI_SPLIT_DEADLINE_SECONDS,
+            cancel_check=lambda: _main.DOCUMENT_TASKS.is_cancelled(task_id),
+            preserve_extracted_answers=bool(split_info),
+        )
         _main.DOCUMENT_TASKS.check_cancelled(task_id)
         # 传入逐页文本（见上）：用来推断每道题的来源页，供卡片上的「源自第 N 页」入口。
         # 它**不会**让插图兜底误挂图 —— 兜底只认 tmp 下的 pdf_crop_*，而 MinerU 的插图
         # 落在静态根目录，所以这里实际只会产出 _source_page。
         final_questions = _main.post_process_pdf_parsed_questions(
-            parsed_questions, paper_title, task_id, page_texts or None, markdown
+            parsed_questions, paper_title, task_id, page_texts or None, markdown,
+            generate_answers_bool=generate_answers,
         )
         _main.DOCUMENT_TASKS.check_cancelled(task_id)
         # 云路线同样要对账：MinerU 抽了几幅图、模型把几幅挂到了题上。整卷口径
@@ -1003,13 +1097,18 @@ def run_mineru_pdf_parsing_task(
             )
         if figure_report.get("warnings"):
             finish_log += " 插图待核对：" + "；".join(figure_report["warnings"])
+        if split_info:
+            finish_log += (
+                f" 已跳过前 {split_info['start_page']} 页纯题干原卷（两段式卷）；"
+                "想整本解析请在「页码范围」里手填全范围。"
+            )
         _main.DOCUMENT_TASKS.complete(
             task_id,
             log=finish_log,
             data=final_questions,
             document_type="pdf",
             temp_assets=list(temp_assets),
-            diagnostics={"figures": figure_report},
+            diagnostics={"figures": figure_report, "split": split_info},
         )
     except TaskCancelled:
         _delete_task_temp_assets(temp_assets)
@@ -1098,7 +1197,18 @@ def run_pdf_parsing_task(
             total_pages = len(probe)
         if total_pages == 0:
             raise ValueError("此 PDF 没有有效页面，或者格式已损坏！")
-        target_page_indices = parse_page_range(page_range, total_pages)
+        # 两段式卷自动跳过前半段（前半是纯题干原卷，后半是题干+答案解析）。
+        # ⚠️ 用户手填「页码范围」时一律以用户为准 —— 那正是「我想整本解析」或
+        # 「我只想取某几页」的覆盖入口，不能被自动检测抢走。
+        split_info = (
+            _detect_solution_split(tmp_pdf_path, task_id)
+            if not (page_range or "").strip()
+            else None
+        )
+        if split_info:
+            target_page_indices = list(range(split_info["start_page"], total_pages))
+        else:
+            target_page_indices = parse_page_range(page_range, total_pages)
         if len(target_page_indices) > _main.MAX_PDF_TASK_PAGES:
             raise ValueError(
                 f"单次最多解析 {_main.MAX_PDF_TASK_PAGES} 页，请填写较小的页码范围。"
@@ -1108,6 +1218,7 @@ def run_pdf_parsing_task(
             task_id,
             temp_assets,
             page_indices=target_page_indices,
+            log=_split_render_note(split_info),
         )
 
         tmp_pdf_path.unlink(missing_ok=True)
@@ -1283,6 +1394,9 @@ def run_pdf_parsing_task(
         parsed_questions = _main.parse_paper_text_internal(
             full_latex_content,
             generate_answers,
+            deadline_seconds=AI_SPLIT_DEADLINE_SECONDS,
+            cancel_check=lambda: _main.DOCUMENT_TASKS.is_cancelled(task_id),
+            preserve_extracted_answers=bool(split_info),
         )
         _main.DOCUMENT_TASKS.check_cancelled(task_id)
         final_questions = _main.post_process_pdf_parsed_questions(
@@ -1291,6 +1405,7 @@ def run_pdf_parsing_task(
             task_id,
             ocr_results,
             full_latex_content,
+            generate_answers_bool=generate_answers,
         )
         _main.DOCUMENT_TASKS.check_cancelled(task_id)
         # 图形对账：逐页比较「PDF 里真实有几幅图形」与「有几幅归到了题目上」。
@@ -1310,6 +1425,11 @@ def run_pdf_parsing_task(
         )
         if figure_report.get("warnings"):
             finish_log += " 插图待核对：" + "；".join(figure_report["warnings"])
+        if split_info:
+            finish_log += (
+                f" 已跳过前 {split_info['start_page']} 页纯题干原卷（两段式卷）；"
+                "想整本解析请在「页码范围」里手填全范围。"
+            )
         _main.DOCUMENT_TASKS.complete(
             task_id,
             log=finish_log,
@@ -1317,7 +1437,7 @@ def run_pdf_parsing_task(
             page_images=list(page_urls),
             temp_assets=list(temp_assets),
             document_type="pdf",
-            diagnostics={"figures": figure_report},
+            diagnostics={"figures": figure_report, "split": split_info},
         )
     except TaskCancelled:
         _delete_task_temp_assets(temp_assets)
@@ -1538,7 +1658,12 @@ def run_docx_parsing_task(
         )
         diagnostics["math_locks_created"] = len(math_locks)
         _main.DOCUMENT_TASKS.check_cancelled(task_id)
-        parsed_questions = _main.parse_paper_text_internal(locked_markdown_content, generate_answers)
+        parsed_questions = _main.parse_paper_text_internal(
+            locked_markdown_content,
+            generate_answers,
+            deadline_seconds=AI_SPLIT_DEADLINE_SECONDS,
+            cancel_check=lambda: _main.DOCUMENT_TASKS.is_cancelled(task_id),
+        )
         lock_report = restore_visible_math(parsed_questions, math_locks)
         diagnostics.update(lock_report)
 
@@ -1898,38 +2023,136 @@ def get_paper_detail(paper_id: int, db: Session = Depends(get_db)):
         return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
 
 
+@router.get("/api/papers/{paper_id}/delete-preview")
+def preview_paper_deletion(paper_id: int, db: Session = Depends(get_db)):
+    """删卷预检：返回卷名与题数，供确认弹窗如实告知「题目会保留在题库」。只读，不写任何东西。"""
+    paper = db.query(Paper).filter(Paper.id == paper_id).first()
+    if not paper:
+        return JSONResponse(content={"status": "error", "message": "试卷不存在"}, status_code=404)
+    question_count = (
+        db.query(func.count(PaperQuestion.id))
+        .filter(PaperQuestion.paper_id == paper_id)
+        .scalar()
+    )
+    return {
+        "status": "success",
+        "data": {"id": paper.id, "paper_name": paper.title, "question_count": int(question_count or 0)},
+    }
+
+
+def _recount_usage_for_questions(db: Session, question_ids: list) -> None:
+    """把受影响题目的 usage_count 重算为**现存绑定数**，替代增量扣减。
+
+    save_paper 每次新建 Paper 都逐题 +1，同一份卷重复保存会让计数虚高；增量扣减只能把这个
+    漂移永久带下去。按 `COUNT(paper_questions)` 重算是绝对口径，删一次纠偏一次。
+    """
+    if not question_ids:
+        return
+    placeholders = ",".join(f":q{i}" for i in range(len(question_ids)))
+    db.execute(
+        _sa_text(
+            "UPDATE questions SET usage_count = ("
+            "SELECT COUNT(*) FROM paper_questions WHERE paper_questions.question_id = questions.id"
+            f") WHERE questions.id IN ({placeholders})"
+        ),
+        {f"q{i}": qid for i, qid in enumerate(question_ids)},
+    )
+
+
+def _backup_before_paper_delete(paper_id: int) -> str:
+    """删卷前登记一份可验证完整备份（destructive 操作的既有规矩）。
+
+    失败必须**拒绝删除**而不是静默跳过——没有备份的硬删不可恢复。备份本身是 SQLite 在线快照，
+    服务运行中可安全创建（持锁的是恢复，不是备份）。
+    """
+    from mathbank.backup import create_full_backup
+
+    path = create_full_backup()
+    return str(path)
+
+
 @router.delete("/api/papers/{paper_id}")
 def delete_paper(paper_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
-    """删除指定的历史试卷，并同步扣减关联题目的 usage_count"""
+    """删除指定的历史试卷：**题目一律保留**，usage_count 按现存绑定重算。
+
+    删卷前强制落一份完整备份 ZIP；备份失败就拒绝删除，绝不静默跳过。
+    """
     try:
         paper = db.query(Paper).filter(Paper.id == paper_id).first()
         if not paper:
             return JSONResponse(content={"status": "error", "message": "试卷不存在"}, status_code=404)
-            
-        pqs = db.query(PaperQuestion).filter(PaperQuestion.paper_id == paper_id).all()
-        reference_counts = {}
-        for paper_question in pqs:
-            reference_counts[paper_question.question_id] = (
-                reference_counts.get(paper_question.question_id, 0) + 1
-            )
-        questions = db.query(Question).filter(
-            Question.id.in_(reference_counts)
-        ).all()
-        for question in questions:
-            if question.usage_count:
-                question.usage_count = max(
-                    0,
-                    question.usage_count - reference_counts.get(question.id, 0),
-                )
-                
-        db.query(PaperQuestion).filter(PaperQuestion.paper_id == paper_id).delete()
-        db.delete(paper)
-        db.commit()
-        schedule_database_export(background_tasks, operation="delete_paper")
-        return {"status": "success", "message": "试卷记录已成功删除"}
+
+        affected_question_ids = [
+            row[0] for row in
+            db.query(PaperQuestion.question_id)
+            .filter(PaperQuestion.paper_id == paper_id, PaperQuestion.question_id.isnot(None))
+            .distinct()
+            .all()
+        ]
     except Exception as e:
         db.rollback()
         return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+    # 备份在事务之外：ZIP 打包不该占着数据库写事务。失败即中止，用户的数据一行未动。
+    try:
+        backup_path = _backup_before_paper_delete(paper_id)
+    except Exception as e:
+        return JSONResponse(
+            content={"status": "error", "message": f"删除前的完整备份未能创建，已中止删除：{e}"},
+            status_code=500,
+        )
+
+    try:
+        db.query(PaperQuestion).filter(PaperQuestion.paper_id == paper_id).delete()
+        db.delete(paper)
+        db.flush()
+        _recount_usage_for_questions(db, affected_question_ids)
+        db.commit()
+        schedule_database_export(background_tasks, operation="delete_paper")
+        return {
+            "status": "success",
+            "message": "试卷记录已成功删除（题目保留在题库中）",
+            "removed_question_links": len(affected_question_ids),
+            "backup": os.path.basename(backup_path),
+        }
+    except Exception as e:
+        db.rollback()
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+def _patch_export_tex_images(documents: list, image_paths: list) -> tuple:
+    """把正文/答案册/答题卡的缺图引用统一降级成卷面红字占位。
+
+    返回 ``(改写后的文档列表, 缺失文件名列表)``。与 compile_tex_to_pdf 内置的那道网
+    是同一函数，重复调用幂等；在这里先做一遍，是为了把「缺了哪些图」拿出来上报给
+    前端，而不是让用户只拿到一份 PDF 或一条编译器日志。
+    """
+    patched: list = []
+    missing: list = []
+    for tex in documents:
+        if not tex:
+            patched.append(tex)
+            continue
+        item, names = patch_missing_latex_images(tex, image_paths)
+        patched.append(item)
+        for name in names:
+            if name not in missing:
+                missing.append(name)
+    return patched, missing
+
+
+def _missing_image_headers(missing_images: list) -> dict:
+    """缺图上报头：计数 + 文件名清单。
+
+    头值必须是 ASCII，文件名一律百分号编码（与讲义导出 X-MathBank-Export-Notes 同
+    一路子），前端 decode 后可直接拼进提示文案。
+    """
+    from urllib.parse import quote
+
+    headers = {"X-Paper-Missing-Images": str(len(missing_images))}
+    if missing_images:
+        headers["X-Paper-Missing-Image-Files"] = quote(",".join(missing_images), safe="")
+    return headers
 
 
 def _build_paper_questions_data(questions_input, db):
@@ -1938,7 +2161,13 @@ def _build_paper_questions_data(questions_input, db):
 
     q_ids = [int(q.get("id")) for q in questions_input if q.get("id")]
     questions_db = db.query(Question).filter(Question.id.in_(q_ids)).all()
-    q_map = {q.id: _decorate_topic_field(q.to_dict()) for q in questions_db}
+    q_map = {}
+    for row in questions_db:
+        payload = _decorate_topic_field(row.to_dict())
+        # to_dict 的 image_paths 是 display 语义（会藏掉已重绘成 TikZ 的原参考图），
+        # 导出必须另带一份物理口径清单，否则清单漏图、XeLaTeX 崩整卷。
+        payload["export_image_paths"] = row.export_image_paths
+        q_map[row.id] = payload
     questions_data = []
     for item in questions_input:
         qid = int(item.get("id"))
@@ -1999,13 +2228,18 @@ def export_paper_tex(payload: dict, db: Session = Depends(get_db)):
             tex_answer_sheet = None
 
         image_paths = collect_referenced_images(questions_data, _main.UPLOAD_DIR, _main.UPLOAD_DIR_REL)
+        # 打包前先消化缺图：ZIP 里的 .tex 与 images/ 必须自洽，用户拿去别处编译也不该炸。
+        (tex_main, tex_ans, tex_answer_sheet), missing_images = _patch_export_tex_images(
+            [tex_main, tex_ans, tex_answer_sheet], image_paths
+        )
         zip_bytes = create_tex_zip_package(title, tex_main, tex_ans, image_paths, answer_sheet_tex=tex_answer_sheet)
         
         from urllib.parse import quote
         safe_title = re.sub(r'[/\\?%*:|"<>]', '_', title.strip()) or "试卷"
         encoded_filename = quote(f"{safe_title}.zip")
         return Response(content=zip_bytes, media_type="application/zip", headers={
-            "Content-Disposition": f"attachment; filename=\"paper_export.zip\"; filename*=utf-8''{encoded_filename}"
+            "Content-Disposition": f"attachment; filename=\"paper_export.zip\"; filename*=utf-8''{encoded_filename}",
+            **_missing_image_headers(missing_images),
         })
     except Exception as e:
         return JSONResponse(content={"status": "error", "message": f"生成 LaTeX 源码失败: {str(e)}"}, status_code=500)
@@ -2033,6 +2267,10 @@ def export_paper_bundle(payload: dict, db: Session = Depends(get_db)):
             tex_answer_sheet = None
 
         image_paths = collect_referenced_images(questions_data, _main.UPLOAD_DIR, _main.UPLOAD_DIR_REL)
+        # 归档包里的三份 .tex 与 PDF 必须同一口径：先降级缺图，再编译、再打包。
+        (tex_main, tex_ans, tex_answer_sheet), missing_images = _patch_export_tex_images(
+            [tex_main, tex_ans, tex_answer_sheet], image_paths
+        )
 
         # Pre-compile PDFs
         main_pdf_bytes, _ = _main.compile_tex_to_pdf(tex_main, image_paths)
@@ -2055,7 +2293,8 @@ def export_paper_bundle(payload: dict, db: Session = Depends(get_db)):
         filename = f"{safe_title}_全套归档.zip"
         encoded_filename = quote(filename)
         return Response(content=zip_bytes, media_type="application/zip", headers={
-            "Content-Disposition": f"attachment; filename=\"paper_bundle.zip\"; filename*=utf-8''{encoded_filename}"
+            "Content-Disposition": f"attachment; filename=\"paper_bundle.zip\"; filename*=utf-8''{encoded_filename}",
+            **_missing_image_headers(missing_images),
         })
     except Exception as e:
         return JSONResponse(content={"status": "error", "message": f"生成全套合并包失败: {str(e)}"}, status_code=500)
@@ -2136,12 +2375,16 @@ def export_paper_pdf(payload: dict, db: Session = Depends(get_db)):
             tex_content = build_latex_document(title, subtitle, paper_type, questions_data, include_answers=include_answers, show_secret=show_secret, show_notice=show_notice)
 
         image_paths = collect_referenced_images(questions_data, _main.UPLOAD_DIR, _main.UPLOAD_DIR_REL)
+        # 缺图先降级成红字占位：宁可卷面上少一张图并写明原因，也不能让一张死链
+        # 触发 -halt-on-error 把整卷编译干掉。
+        (tex_content,), missing_images = _patch_export_tex_images([tex_content], image_paths)
         pdf_bytes, log_or_err = _main.compile_tex_to_pdf(tex_content, image_paths)
         
         if pdf_bytes:
             filename = f"sheet_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf" if target == "sheet" else f"paper_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
             return Response(content=pdf_bytes, media_type="application/pdf", headers={
-                "Content-Disposition": f'inline; filename="{filename}"'
+                "Content-Disposition": f'inline; filename="{filename}"',
+                **_missing_image_headers(missing_images),
             })
         else:
             diagnostic = _main.explain_latex_compile_error(log_or_err, tex_content)
@@ -2150,6 +2393,8 @@ def export_paper_pdf(payload: dict, db: Session = Depends(get_db)):
                     "status": "error",
                     "message": diagnostic.get("summary", "PDF 编译失败"),
                     "diagnostic": diagnostic,
+                    # 缺图清单单独回传：即使编译因别的原因失败，用户也要一眼看到哪些图没进卷。
+                    "missing_images": missing_images,
                 },
                 status_code=400,
             )

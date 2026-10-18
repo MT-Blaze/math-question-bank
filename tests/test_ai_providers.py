@@ -214,6 +214,58 @@ def test_bailian_thinking_policy_is_a_pure_noop_for_other_providers(provider_cod
     assert result is not original
 
 
+def test_custom_provider_resolve_text_provider_hits_cp_prefix():
+    environ = {
+        "CUSTOM_PROVIDERS_JSON": (
+            '[{"name": "TokenPlan", "base_url": "https://tp.example/v1", '
+            '"api_key": "tp-key", "model": "gpt-4o"}]'
+        )
+    }
+    config = resolve_text_provider("CP_TOKENPLAN/gpt-4o-mini", environ)
+    assert config.provider_code == "cp_tokenplan"
+    assert config.provider_label == "TokenPlan"
+    assert config.api_key == "tp-key"
+    assert config.api_base == "https://tp.example/v1"
+    assert config.model_name == "gpt-4o-mini"
+
+
+def test_custom_provider_falls_back_to_saved_model_when_unset():
+    environ = {
+        "CUSTOM_PROVIDERS_JSON": (
+            '[{"name": "TokenPlan", "base_url": "https://tp.example/v1", '
+            '"api_key": "tp-key", "model": "gpt-4o"}]'
+        )
+    }
+    config = resolve_text_provider("CP_TOKENPLAN/", environ)
+    assert config.model_name == "gpt-4o"
+
+
+def test_custom_provider_resolve_endpoint_supports_cp_prefix():
+    environ = {
+        "CUSTOM_PROVIDERS_JSON": (
+            '[{"name": "TokenPlan", "base_url": "https://tp.example/v1", '
+            '"api_key": "tp-key", "model": "gpt-4o"}]'
+        )
+    }
+    code, label, base, key = resolve_provider_endpoint("cp_tokenplan", environ)
+    assert code == "cp_tokenplan"
+    assert label == "TokenPlan"
+    assert base == "https://tp.example/v1"
+    assert key == "tp-key"
+
+
+def test_custom_provider_unknown_slug_returns_none():
+    environ = {
+        "CUSTOM_PROVIDERS_JSON": (
+            '[{"name": "TokenPlan", "base_url": "https://tp.example/v1", '
+            '"api_key": "tp-key", "model": "gpt-4o"}]'
+        )
+    }
+    code, label, base, key = resolve_provider_endpoint("cp_unknown", environ)
+    assert code is None
+    assert label is None
+
+
 def test_bailian_thinking_policy_preserves_legacy_custom_models():
     original = {"model": "qwen-vl-plus", "max_tokens": 2048}
 

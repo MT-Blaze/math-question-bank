@@ -115,6 +115,7 @@ class Question(Base):
     topic_id = Column(String(100), default="", index=True)  # 考点 ID（挂在小节下，稳定不变；显示名由大纲映射翻译）
     difficulty = Column(String(50), default="L2", index=True)  # L1概念/L2运算/L3应用/L4综合
     source = Column(String(200), default="")  # 来源（具体试卷名，如"2025全国甲卷"）
+    source_school_id = Column(String(20))  # 主来源学校 ID（schools.json 的 sch_xxx；可空=未建档/手输地区）
     paper_category = Column(String(50), default="", index=True)  # 试卷分类：gaokao/liankao/moni/xiaokao/qiangji/foreign
     paper_question_no = Column(String(50), default="")  # 试卷原题号
     answer_markdown = Column(Text, default="")  # 答案与解析 (LaTeX + markdown)
@@ -134,7 +135,7 @@ class Question(Base):
     exam_region = Column(String(100), default="", index=True)  # 卷区/地区（如 全国甲卷/新高考I卷）
     exam_stage = Column(String(20), default="", index=True)  # 考试阶段（校考题细分：期中/期末/月考/其他）
     video_url = Column(Text, default="")  # 视频讲解链接
-    option_columns = Column(Integer, default=1)  # 选择题选项列数（1/2/3/4）
+    option_columns = Column(Integer, default=0)  # 选择题选项列数：0=自适应，1/2/4=强制列数
     options = Column(Text, default="[]")  # 选项级结构化（JSON 数组，如 [{"label":"A","content":"..."}]）
     analysis_methods = Column(Text, default="[]")  # 解法方法（JSON 数组，如 ["几何法","代数法"]）
     # 教育测量维度（v17，借鉴主流题库/教育测量学）
@@ -206,6 +207,33 @@ class Question(Base):
         hidden_references.discard("")
         return [path for path in self.image_paths if path not in hidden_references]
 
+    @property
+    def export_image_paths(self):
+        r"""导出侧的**物理**资源清单：显示清单 + 被 display 口径藏起来的 TikZ 参考图。
+
+        ``display_image_paths`` 是 UI 语义（已重绘成 TikZ 就不该在面板里再显示原参考图），
+        但导出必须按物理口径收图：正文里的 ``\includegraphics`` 仍可能指向那些原图
+        —— ``\begin{choices}`` 内的选项图就不会被改写成 TikZ。拿 display 口径去凑编译
+        清单会把它们整批藏掉，XeLaTeX 于是撞上不存在的文件，``Unable to load picture or
+        PDF file`` 叠加 ``-halt-on-error`` 直接炸掉整卷（2026-10-18 事故，题库 id=15）。
+        """
+        collected: list = []
+
+        def add(reference) -> None:
+            value = str(reference or "").strip()
+            if value and value not in collected:
+                collected.append(value)
+
+        for path in self.image_paths:
+            add(path)
+        add(self.tikz_reference_image_path)
+        for asset in [*self.content_tikz_assets, *self.answer_tikz_assets]:
+            if not isinstance(asset, dict):
+                continue
+            add(asset.get("image_path"))
+            add(asset.get("reference_image_path"))
+        return collected
+
     def to_dict(self):
         return {
             "id": self.id,
@@ -218,6 +246,7 @@ class Question(Base):
             "topic_id": self.topic_id or "",
             "difficulty": self.difficulty,
             "source": self.source,
+            "source_school_id": self.source_school_id or "",
             "answer_markdown": self.answer_markdown,
             "has_answer": bool((self.answer_markdown or "").strip()),
             "review": self.review,
@@ -236,7 +265,7 @@ class Question(Base):
             "exam_region": self.exam_region or "",
             "exam_stage": self.exam_stage or "",
             "video_url": self.video_url or "",
-            "option_columns": self.option_columns or 1,
+            "option_columns": self.option_columns or 0,
             "options": _parse_json_list(self.options),
             "analysis_methods": _parse_json_list(self.analysis_methods),
             "difficulty_index": self.difficulty_index,
@@ -259,6 +288,7 @@ class Question(Base):
             "topic_id": self.topic_id or "",
             "difficulty": self.difficulty,
             "source": self.source,
+            "source_school_id": self.source_school_id or "",
             "has_answer": bool((self.answer_markdown or "").strip()),
             "association_group_id": self.association_group_id,
             "paper_category": self.paper_category or "",
@@ -275,7 +305,7 @@ class Question(Base):
             "exam_region": self.exam_region or "",
             "exam_stage": self.exam_stage or "",
             "video_url": self.video_url or "",
-            "option_columns": self.option_columns or 1,
+            "option_columns": self.option_columns or 0,
             "options": _parse_json_list(self.options),
             "analysis_methods": _parse_json_list(self.analysis_methods),
             "difficulty_index": self.difficulty_index,
@@ -353,15 +383,18 @@ class QuestionSource(Base):
     semester = Column(String(10), default="")  # 学期：上/下
     exam_type = Column(String(50), default="")  # 考试类型显示名：三模、期末、高考、月考…
     paper_title = Column(String(200), default="")  # 整卷出处（试卷标题）
+    school_id = Column(String(20))  # 学校词库 ID（sch_xxx；可空=手输地区/未建档）
     sort_order = Column(Integer, default=0)
     created_at = Column(DateTime, default=_utcnow_naive)
 
     def to_dict(self):
+        from mathbank.school_library import resolve_school_label
+        region_display = resolve_school_label(self.school_id, self.region)
         return {
             "id": self.id,
             "question_id": self.question_id,
             "year": self.year or "",
-            "region": self.region or "",
+            "region": region_display,
             "province": self.province or "",
             "city": self.city or "",
             "grade": self.grade or "",
@@ -369,10 +402,11 @@ class QuestionSource(Base):
             "exam_type": self.exam_type or "",
             "paper_title": self.paper_title or "",
             "text": format_source_text(
-                self.year, self.region, self.exam_type,
+                self.year, region_display, self.exam_type,
                 province=self.province, city=self.city,
                 grade=self.grade, semester=self.semester,
             ),
+            "school_id": self.school_id or "",
             "sort_order": self.sort_order,
         }
 

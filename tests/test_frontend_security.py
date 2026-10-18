@@ -612,6 +612,194 @@ const document = {{ getElementById() {{ return activeCard; }} }};
     assert result.returncode == 0, result.stderr
 
 
+def _extract_import_async_answer_sources():
+    """抽取 import.js 中 processAsyncAnswerGeneration 及其依赖 helper 的源码。
+
+    复用与既有 `test_import_answer_generation_rejects_replaced_question_set_in_real_js`
+    相同的区间：`generateSingleAnswer` 的函数体范围天然包住紧随其后的
+    `processAsyncAnswerGeneration`（generateSingleAnswer 的导出行物理上位于 processAsync
+    之后），所以该区间能一次性给出两个函数定义，且不会夹带更靠后的其它 `window.*` 导出。
+    """
+    import_source = _read(STATIC_JS_DIR / "import.js")
+    helpers_start = import_source.index("function replaceParsedQuestions(nextQuestions)")
+    helpers_end = import_source.index("function blockImportResetWhileSaving()", helpers_start)
+    helpers_source = import_source[helpers_start:helpers_end]
+    answer_start = import_source.index("async function generateSingleAnswer(index)")
+    answer_end = import_source.index(
+        "window.generateSingleAnswer = generateSingleAnswer", answer_start
+    )
+    answer_source = import_source[answer_start:answer_end]
+    return helpers_source, answer_source
+
+
+_NODE_HEAD = """
+const window = {};
+let parsedQuestionsData = [];
+let parsedQuestionsGeneration = 0;
+const pendingFetches = [];
+function fetch() { return new Promise(resolve => pendingFetches.push(resolve)); }
+class FormData { append() {} }
+const localStorage = { getItem() { return ''; } };
+const logs = [];
+const toasts = [];
+function appendImportLog(message) { logs.push(message); }
+function showToast(message) { toasts.push(message); }
+function renderParsedCardPreview() {}
+function makeCard() {
+  const button = { disabled: false, innerHTML: '' };
+  const answer = { value: '' };
+  const preview = { innerHTML: '' };
+  return {
+    button, answer, preview,
+    querySelector(selector) {
+      if (selector === '.card-solve-btn') return button;
+      if (selector === '.card-answer-textarea') return answer;
+      if (selector === '.card-answer-preview') return preview;
+      return null;
+    }
+  };
+}
+const cards = [];
+const document = {
+  getElementById(id) {
+    if (typeof id === 'string' && id.indexOf('parsed-card-') === 0) {
+      const n = parseInt(id.slice('parsed-card-'.length), 10);
+      return cards[n] || null;
+    }
+    return null;
+  }
+};
+"""
+
+
+def test_batch_generate_answers_button_present_in_index_html():
+    index_source = _read(STATIC_DIR / "index.html")
+    assert 'onclick="batchGenerateAnswers()"' in index_source
+    assert 'id="batchGenerateAnswersBtn"' in index_source
+    assert 'id="batchGenerateAnswersBtnText"' in index_source
+
+
+def test_process_async_only_empty_filters_blank_answers_in_real_js():
+    node = shutil.which("node")
+    assert node, "Node.js is required for the frontend executable regression"
+
+    helpers_source, answer_source = _extract_import_async_answer_sources()
+    body = """
+(async () => {
+  const q0 = { content: 'q0', answer_markdown: '' };
+  const q1 = { content: 'q1', answer_markdown: 'A' };
+  const q2 = { content: 'q2', answer_markdown: '原卷解答 [EXTRACTED_ORIGINAL]' };
+  parsedQuestionsGeneration = replaceParsedQuestions([q0, q1, q2]);
+  cards[0] = makeCard();
+  // onlyEmpty=true：只生成真正空答案的题
+  const p = processAsyncAnswerGeneration(parsedQuestionsData, parsedQuestionsGeneration, true, false);
+  pendingFetches.shift()({ ok: true, json: () => Promise.resolve({ status: 'success', solution: 'SOL0' }) });
+  await p;
+  if (q0.answer_markdown !== 'SOL0') throw new Error('空答案题未被批量生成: ' + q0.answer_markdown);
+  if (q1.answer_markdown !== 'A') throw new Error('短选项答案被误生成: ' + q1.answer_markdown);
+  if (q2.answer_markdown !== '原卷解答 [EXTRACTED_ORIGINAL]') throw new Error('原卷答案被误覆盖: ' + q2.answer_markdown);
+})().catch(error => { console.error(error); process.exitCode = 1; });
+"""
+    script = _NODE_HEAD + helpers_source + answer_source + body
+    result = subprocess.run(
+        [node, "-e", script], cwd=PROJECT_ROOT, text=True, capture_output=True, check=False
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_process_async_protects_user_edited_answers_in_real_js():
+    node = shutil.which("node")
+    assert node, "Node.js is required for the frontend executable regression"
+
+    helpers_source, answer_source = _extract_import_async_answer_sources()
+    body = """
+(async () => {
+  const q0 = { content: 'q0', answer_markdown: '' };  // 用户会手改
+  const q1 = { content: 'q1', answer_markdown: '' };  // 用户不手改 → 正常写回
+  parsedQuestionsGeneration = replaceParsedQuestions([q0, q1]);
+  const c0 = makeCard(); cards[0] = c0;
+  const c1 = makeCard(); cards[1] = c1;
+  // protectOverwrite=true：发起时快照为空，写回前若用户手改则跳过
+  const p = processAsyncAnswerGeneration(parsedQuestionsData, parsedQuestionsGeneration, true, true);
+  const r0 = pendingFetches.shift();
+  const r1 = pendingFetches.shift();
+  // 在写回前模拟用户手改 q0 的解析框
+  c0.answer.value = 'USER EDITED';
+  r0({ ok: true, json: () => Promise.resolve({ status: 'success', solution: 'SOL0' }) });
+  r1({ ok: true, json: () => Promise.resolve({ status: 'success', solution: 'SOL1' }) });
+  await p;
+  if (q0.answer_markdown !== '') throw new Error('手改的 q0 被覆盖: ' + q0.answer_markdown);
+  if (c0.answer.value !== 'USER EDITED') throw new Error('手改的 q0 textarea 被覆盖: ' + c0.answer.value);
+  if (q1.answer_markdown !== 'SOL1') throw new Error('未手改的 q1 未被写回: ' + q1.answer_markdown);
+  if (!logs.some(m => m.indexOf('解答跳过') >= 0)) throw new Error('未记录跳过日志');
+})().catch(error => { console.error(error); process.exitCode = 1; });
+"""
+    script = _NODE_HEAD + helpers_source + answer_source + body
+    result = subprocess.run(
+        [node, "-e", script], cwd=PROJECT_ROOT, text=True, capture_output=True, check=False
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_on_base_url_input_reverse_identifies_vendor_in_real_js():
+    """地址框输入已知 hostname → 自动识别厂商名（不覆盖用户手填地址）。"""
+    node = shutil.which("node")
+    assert node, "Node.js is required for the frontend executable regression"
+
+    api_source = _read(STATIC_JS_DIR / "api.js")
+    start = api_source.index("const VENDOR_BASE_URL_DEFAULTS = Object.freeze({")
+    end_marker = "window.onBaseUrlInput = onBaseUrlInput;"
+    end = api_source.index(end_marker) + len(end_marker)
+    block = api_source[start:end]
+
+    head = """
+const window = {};
+function syncModelProviderOptions() { window.__synced = (window.__synced || 0) + 1; }
+function makeRow(initialVendor) {
+  const select = { value: initialVendor };
+  const row = { querySelector: function (sel) { return sel === '.vendor-select' ? select : null; } };
+  const input = { value: '', closest: function () { return row; } };
+  return { input: input, select: select };
+}
+"""
+    body = """
+    // 场景A：Token Plan 地址 → 自动识别为阿里百炼
+    let r = makeRow('DeepSeek');
+    r.input.value = 'https://token-plan.maas.qianwenai.com/compatible-mode/v1';
+    onBaseUrlInput(r.input);
+    if (r.select.value !== '阿里百炼') throw new Error('Token Plan 未识别为阿里百炼: ' + r.select.value);
+
+    // DeepSeek 地址（带路径）→ DeepSeek
+    r = makeRow('阿里百炼');
+    r.input.value = 'https://api.deepseek.com/chat/completions';
+    onBaseUrlInput(r.input);
+    if (r.select.value !== 'DeepSeek') throw new Error('deepseek 地址未识别: ' + r.select.value);
+
+    // SiliconFlow 地址 → SiliconFlow
+    r = makeRow('DeepSeek');
+    r.input.value = 'https://api.siliconflow.cn/v1';
+    onBaseUrlInput(r.input);
+    if (r.select.value !== 'SiliconFlow') throw new Error('siliconflow 地址未识别: ' + r.select.value);
+
+    // 未知地址 → 不改变厂商名（保留用户手填）
+    r = makeRow('DeepSeek');
+    r.input.value = 'https://example.com/foo';
+    onBaseUrlInput(r.input);
+    if (r.select.value !== 'DeepSeek') throw new Error('未知地址不应改变厂商: ' + r.select.value);
+
+    // 空输入 → 不改变厂商名
+    r = makeRow('SiliconFlow');
+    r.input.value = '   ';
+    onBaseUrlInput(r.input);
+    if (r.select.value !== 'SiliconFlow') throw new Error('空输入不应改变厂商');
+"""
+    script = head + block + body
+    result = subprocess.run(
+        [node, "-e", script], cwd=PROJECT_ROOT, text=True, capture_output=True, check=False
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+
+
 def test_document_poll_generation_rejects_old_terminal_callbacks_in_real_js():
     node = shutil.which("node")
     assert node, "Node.js is required for the frontend executable regression"
@@ -1075,7 +1263,14 @@ def test_shared_question_preview_pipeline_is_used_by_editor_and_duplicate_review
     assert "scheduleParsedDuplicateCandidateRender(" in candidate_source
     assert "new window.IntersectionObserver" in scheduler_source
     assert "parsedDuplicateCandidateObserver.disconnect()" in scheduler_source
-    assert "parsedDuplicateCandidateObserver.observe(container)" in scheduler_source
+    # 懒渲染 root 固定为弹窗列表容器（旧版靠 data-candidate-scroll 祖先解析，
+    # 但该属性全项目从未被设置过 → root 恒 null → 左栏永不渲染，是 bug）；
+    # 视口内候选先同步渲染，视口外才以该容器为 root 挂观察器。
+    assert "const root = parsedDuplicateCandidateListRoot();" in scheduler_source
+    assert "if (parsedDuplicateCandidateInViewport(container)) {" in scheduler_source
+    assert "observer.observe(container)" in scheduler_source
+    assert "parsedDuplicateCandidateScrollRoot" not in scheduler_source
+    assert "parsedDuplicateCandidateObservers.set(root, observer)" in scheduler_source
     assert "window.requestAnimationFrame" in scheduler_source
     assert "{ includeImages: false }" in scheduler_source
     assert "container.setAttribute('aria-busy', 'false')" in scheduler_source
@@ -1106,6 +1301,24 @@ def test_parsed_save_generation_prevents_index_reuse_and_stale_callback_in_real_
     save_start = import_source.index("function saveParsedQuestion(index)")
     save_end = import_source.index("function confirmClearAllParsed()", save_start)
     save_source = import_source[save_start:save_end]
+    # 拆卷保存载荷会收附加考向（待办 #20），它定义在卡片联动那一段里；沙箱只喂
+    # helpers + save 两块，不把它一起取进来就是 ReferenceError。
+    # 但整段实现在这里用不上（save 只调 collectParsedCardExtraTopics），而该测试是用
+    # node -e 传脚本的：Windows cmd.exe 命令行上限 8191 字符，整段塞进去直接撞墙
+    # （实测 36KB）。因此只取真正被 save 依赖的那一个函数。
+    extra_start = import_source.index(
+        "        function collectParsedCardExtraTopics(q) {"
+    )
+    extra_end = import_source.index("        function parsedCardSlotLabel", extra_start)
+    norm_start = import_source.index(
+        "        function normalizeParsedCardExtraTopic(slot) {"
+    )
+    norm_end = import_source.index("        function readParsedCardExtraTopics", norm_start)
+    extra_topic_source = (
+        "const PARSED_CARD_EXTRA_TOPIC_LIMIT = 3;\n"
+        + import_source[norm_start:norm_end]
+        + import_source[extra_start:extra_end]
+    )
 
     # saveParsedQuestion relies on the shared auto-tagging helpers that api.js
     # defines earlier in the cascade, so the sandbox has to load them too.
@@ -1155,6 +1368,8 @@ function createCard(content) {{
     '.card-compulsory': {{ value: 'high_school' }},
     '.card-chapter': {{ value: 'chapter_1' }},
     '.card-knowledge': {{ value: 'section_1' }},
+    '.card-topic': {{ value: '' }},
+    '.card-option-columns': {{ value: '0' }},
     '.card-save-btn': {{ disabled: false, innerHTML: '', className: '' }},
     '.card-status-badge': {{ textContent: '', className: '' }},
     '.card-select-checkbox': {{
@@ -1172,8 +1387,15 @@ function fetch() {{
 }}
 let activeCard = null;
 const document = {{ getElementById() {{ return activeCard; }} }};
+// 阶段 1：单题入库成功后 saveParsedQuestion 会兑现查重弹窗里预约的相似题关联；
+// 本测试只验代际防串写，预约集合恒空，替身直接消费即可。
+const parsedDuplicateAssociationRequests = [];
+function drainParsedDuplicateAssociationRequests() {{
+  parsedDuplicateAssociationRequests.length = 0;
+}}
 {tag_helper_source}
 {helpers_source}
+{extra_topic_source}
 {save_source}
 
 (async () => {{

@@ -115,14 +115,15 @@ def test_choice_empty_parentheses_do_not_leave_orphan_display_math():
         "题干 $",
     ):
         cleaned = clean_content_for_latex(content, q_type="single_choice")
-        assert cleaned == r"题干 \paren"
+        # 作答括号在导出侧展开成**字面**全角括号（题库源码里存的是 \paren）
+        assert cleaned == "题干 （\u3000\u3000）"
         assert "$$" not in cleaned
 
     # A real, paired display formula must not be mistaken for an empty answer
     # parenthesis and removed.
     assert clean_content_for_latex(
         "$$x=1$$", q_type="single_choice"
-    ) == r"$$x=1$$ \paren"
+    ) == "$$x=1$$ （\u3000\u3000）"
 
 
 def test_tex_zip_image_directory_matches_generated_graphics_path(tmp_path):

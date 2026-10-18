@@ -2,6 +2,8 @@ import ast
 import asyncio
 import re
 
+import pytest
+
 from mathbank.curriculums import get_curriculum_preset, load_curriculum
 from mathbank.paths import (
     CURRICULUMS_DIR,
@@ -58,11 +60,42 @@ def test_solve_prompt_builder_preserves_required_structure():
         ocr_result="草稿",
         custom_prompt="简化步骤",
     )
-    assert "【参考答案】" in system_prompt
+    assert "【答案】" in system_prompt
+    assert "【解析】" in system_prompt
     assert "严禁超纲" in system_prompt
     assert "草稿" in user_prompt
     assert "简化步骤" in user_prompt
     assert "若 $x=1$" in user_prompt
+
+
+@pytest.mark.parametrize("question_type", ["single_choice", "multi_choice", "fill_in_blank", "detailed_answer"])
+def test_solve_prompt_keeps_exactly_answer_and_analysis_blocks(question_type):
+    """AI 解题输出必须只有【答案】+【解析】两个板块，不得再出现旧板块。"""
+
+    system_prompt, _ = build_ai_solve_prompts(question_type, "若 $x=1$，求函数值。")
+
+    # 只保留这两个板块；首个板块必须是【答案】（first_block_header 判据与之一致）
+    assert "【答案】" in system_prompt
+    assert "【解析】" in system_prompt
+    for removed_header in ("【参考答案】", "【解析过程】", "【解析思路】", "【核心知识点】", "【规范解答】"):
+        assert removed_header not in system_prompt
+
+    # 落进 system_instructions 的首个板块判据必须写成新名，避免提示词改了
+    # 而 "第一个字符必须是..." 仍指向旧名。
+    assert "第一个字符必须是“\\textbf{【答案】}”" in system_prompt
+
+
+def test_extract_choice_answer_letter_reads_new_answer_block():
+    """新格式（【答案】+答案）必须仍能被答案字母提取链路命中。"""
+
+    from mathbank.paper_helper import extract_choice_answer_letter
+
+    # 提示词要求的形态：`\textbf{【答案】}` + 答案内容（无冒号）
+    assert extract_choice_answer_letter("\\textbf{【答案】}D\n\\textbf{【解析】}由 $x=1$ 得。") == "D"
+    # 带冒号的写法同样兼容
+    assert extract_choice_answer_letter("\\textbf{【答案】}：D\n\\textbf{【解析】}由 $x=1$ 得。") == "D"
+    # 多选题多字母
+    assert extract_choice_answer_letter("\\textbf{【答案】}ACD\n\\textbf{【解析】}略。") == "ACD"
 
 
 def test_editor_identity_and_meta_preview_have_single_sources():

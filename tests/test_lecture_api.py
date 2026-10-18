@@ -246,6 +246,7 @@ def test_lecture_preview_includes_sources(client, db_session):
         "exam_type": "三模",
         "paper_title": "2026届哈三中高三三模",
         "text": "2026年哈三中三模",
+        "school_id": "",
         "sort_order": 1,
     }]
 

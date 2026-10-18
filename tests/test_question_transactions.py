@@ -328,7 +328,8 @@ def test_post_commit_cleanup_failure_does_not_report_update_failure(
 
     assert response.status_code == 200
     db_session.expire_all()
-    assert db_session.get(Question, question_id).content == "已成功更新"
+    # 单选题入库会补 exam-zh 的作答括号 \paren
+    assert db_session.get(Question, question_id).content == "已成功更新" + r" \paren"
 
 
 def test_post_commit_cleanup_failure_does_not_report_delete_failure(
@@ -375,7 +376,8 @@ def test_create_succeeds_when_post_commit_export_scheduling_fails(
 
     assert response.status_code == 200
     db_session.expire_all()
-    assert db_session.query(Question).filter_by(content="创建已提交").count() == 1
+    # 单选题入库会补 exam-zh 的作答括号 \paren
+    assert db_session.query(Question).filter_by(content="创建已提交" + r" \paren").count() == 1
 
 
 def test_update_succeeds_when_post_commit_export_scheduling_fails(
@@ -401,7 +403,8 @@ def test_update_succeeds_when_post_commit_export_scheduling_fails(
 
     assert response.status_code == 200
     db_session.expire_all()
-    assert db_session.get(Question, question_id).content == "更新已提交"
+    # 单选题入库会补 exam-zh 的作答括号 \paren
+    assert db_session.get(Question, question_id).content == "更新已提交" + r" \paren"
 
 
 @pytest.mark.parametrize("operation", ["create", "update"])
@@ -451,7 +454,8 @@ def test_committed_question_write_returns_minimal_success_when_response_fails(
     db_session.expire_all()
     stored = db_session.get(Question, committed_id)
     assert stored is not None
-    assert stored.content == ("已提交新题" if operation == "create" else "已提交更新")
+    # 单选题入库会补 exam-zh 的作答括号 \paren（见 normalize_choice_paren_macro）
+    assert stored.content == ("已提交新题" if operation == "create" else "已提交更新") + r" \paren"
 
 
 def test_asset_cleanup_loads_question_references_only_once(
@@ -488,6 +492,22 @@ def test_asset_cleanup_loads_question_references_only_once(
 
     assert removed == 2
     assert calls == 1
+    # 软删除：原位置文件应被移入回收站，而非物理消失
+    assert not first.exists(), "first.png 应被移入回收站"
+    assert not second.exists(), "second.png 应被移入回收站"
+    # 本测试把 routes_questions.UPLOAD_DIR 改成了 tmp_path/uploads，回收站在该目录内
+    trash_dir = upload_dir / ".trash"
+    trashed = [
+        n.name
+        for n in trash_dir.iterdir()
+        if n.name.startswith("first.png.") or n.name.startswith("second.png.")
+    ]
+    assert len(trashed) == 2, "两个文件都应进入回收站"
+    for n in trashed:
+        try:
+            (trash_dir / n).unlink()
+        except OSError:
+            pass
 
 
 def test_question_delete_cascades_paper_link_and_recalculates_total(
