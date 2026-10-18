@@ -155,7 +155,7 @@
             </button>
             <div id="navThemeMenu" class="absolute left-3 right-3 bottom-full mb-1 bg-slate-900 border border-slate-600 rounded-xl shadow-xl py-1 hidden z-50">
                 <button onclick="selectTheme('obsidian')" class="w-full flex items-center gap-2 px-3 py-2 text-xs text-slate-200 hover:bg-slate-700 transition-colors"><span class="w-2.5 h-2.5 rounded-full bg-[#0f172a] border border-slate-400"></span>曜石黑</button>
-                <button onclick="selectTheme('violet')" class="w-full flex items-center gap-2 px-3 py-2 text-xs text-slate-200 hover:bg-slate-700 transition-colors"><span class="w-2.5 h-2.5 rounded-full bg-[#8b5cf6]"></span>罗兰紫</button>
+                <button onclick="selectTheme('violet')" class="w-full flex items-center gap-2 px-3 py-2 text-xs text-slate-200 hover:bg-slate-700 transition-colors"><span class="w-2.5 h-2.5 rounded-full bg-[#4f46e5]"></span>罗兰紫</button>
                 <button onclick="selectTheme('ocean')" class="w-full flex items-center gap-2 px-3 py-2 text-xs text-slate-200 hover:bg-slate-700 transition-colors"><span class="w-2.5 h-2.5 rounded-full bg-[#0ea5e9]"></span>深海蓝</button>
                 <button onclick="selectTheme('emerald')" class="w-full flex items-center gap-2 px-3 py-2 text-xs text-slate-200 hover:bg-slate-700 transition-colors"><span class="w-2.5 h-2.5 rounded-full bg-[#10b981]"></span>翡翠绿</button>
                 <button onclick="selectTheme('amber')" class="w-full flex items-center gap-2 px-3 py-2 text-xs text-slate-200 hover:bg-slate-700 transition-colors"><span class="w-2.5 h-2.5 rounded-full bg-[#f97316]"></span>日落橙</button>
@@ -566,9 +566,16 @@
                                 </div>
                                 <div>
                                     <label class="block text-[10px] font-bold text-slate-500" for="importSrcProvince">来源·省份</label>
-                                    <select id="importSrcProvince" class="w-full px-2 py-1.5 border border-slate-200 rounded-lg outline-none focus:border-brand-500 focus:ring-1 focus:ring-brand-500 transition-all text-xs bg-white">
-                                        <option value="">不选（全国）</option>
-                                    </select>
+                                    <div class="flex items-center gap-1">
+                                        <select id="importSrcProvince" class="min-w-0 flex-1 px-2 py-1.5 border border-slate-200 rounded-lg outline-none focus:border-brand-500 focus:ring-1 focus:ring-brand-500 transition-all text-xs bg-white">
+                                            <option value="">不选（全国）</option>
+                                        </select>
+                                        <button type="button" id="importSortOrderBtn" title="自定义省/市/校显示顺序" aria-haspopup="dialog"
+                                                class="shrink-0 h-[30px] w-[30px] inline-flex items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 transition-colors hover:bg-brand-50/40 hover:text-brand-600 focus:outline-none focus:ring-2 focus:ring-brand-500/30">
+                                            <i class="fa-solid fa-gear" aria-hidden="true"></i>
+                                            <span class="sr-only">排序</span>
+                                        </button>
+                                    </div>
                                 </div>
                                 <div>
                                     <label class="block text-[10px] font-bold text-slate-500" for="importSrcCity">来源·城市</label>
@@ -739,6 +746,10 @@
                                 </div>
                             </div>
                             <div class="flex items-center space-x-2.5">
+                                <button onclick="batchGenerateAnswers()" id="batchGenerateAnswersBtn" class="flex items-center space-x-1.5 px-4 py-2 rounded-xl bg-indigo-50 hover:bg-indigo-100 text-indigo-600 font-bold text-xs border border-indigo-200 shadow-sm transition-all active:scale-95" title="对所有空答案的题批量调用 AI 生成解析；生成期间可继续编辑其它题，您手改过的题不会被覆盖">
+                                    <i class="fa-solid fa-wand-magic-sparkles text-[10px]"></i>
+                                    <span id="batchGenerateAnswersBtnText">批量生成解析</span>
+                                </button>
                                 <button onclick="confirmClearAllParsed()" class="flex items-center space-x-1.5 px-4 py-2 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-600 font-bold text-xs border border-rose-200 shadow-sm transition-all active:scale-95">
                                     <i class="fa-solid fa-trash-can text-[10px]"></i>
                                     <span>一键清除</span>
@@ -840,12 +851,31 @@
                 <select id="filterSort" class="px-2 py-1 text-xs rounded-lg border border-slate-300 bg-white dark:bg-slate-800 dark:border-slate-600 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-brand-500" style="min-width:90px;">
                     <option value="desc">最新优先</option>
                     <option value="asc">最早优先</option>
+                    <option value="paper_no">按原题号</option>
                 </select>
                 <!-- 未转 TikZ 筛选 -->
                 <button id="filterTikzPending" type="button"
                         class="px-2 py-1 text-xs rounded-lg border border-slate-300 bg-white dark:bg-slate-800 dark:border-slate-600 text-slate-700 dark:text-slate-200 hover:bg-brand-50 dark:hover:bg-slate-700 focus:outline-none focus:ring-2 focus:ring-brand-500 transition-colors"
                         data-active="false" title="只显示还有原图未转 TikZ 的题目">
                     <i class="fa-regular fa-image mr-1"></i>未转 TikZ
+                </button>
+                <!-- 质量：显示烂题（默认关闭 = 排除烂题） -->
+                <button id="filterExcludeBad" type="button"
+                        class="px-2 py-1 text-xs rounded-lg border border-slate-300 bg-white dark:bg-slate-800 dark:border-slate-600 text-slate-700 dark:text-slate-200 hover:bg-brand-50 dark:hover:bg-slate-700 focus:outline-none focus:ring-2 focus:ring-brand-500 transition-colors"
+                        data-active="false" title="默认隐藏「烂题」，开启后列表中也会显示烂题">
+                    <i class="fa-regular fa-eye-slash mr-1"></i>显示烂题
+                </button>
+                <!-- 按卷分组（按 source 聚合浏览整套试卷） -->
+                <button id="filterGroupMode" type="button"
+                        class="px-2 py-1 text-xs rounded-lg border border-slate-300 bg-white dark:bg-slate-800 dark:border-slate-600 text-slate-700 dark:text-slate-200 hover:bg-brand-50 dark:hover:bg-slate-700 focus:outline-none focus:ring-2 focus:ring-brand-500 transition-colors"
+                        data-active="false" title="按卷名分组，点击某卷查看整套题目">
+                    <i class="fa-solid fa-layer-group mr-1"></i>按卷分组
+                </button>
+                <!-- 列表 / 网格 视图切换 -->
+                <button id="filterViewMode" type="button"
+                        class="px-2 py-1 text-xs rounded-lg border border-slate-300 bg-white dark:bg-slate-800 dark:border-slate-600 text-slate-700 dark:text-slate-200 hover:bg-brand-50 dark:hover:bg-slate-700 focus:outline-none focus:ring-2 focus:ring-brand-500 transition-colors"
+                        data-mode="list" title="切换列表 / 网格视图（宽屏并排，窄屏自动单列）">
+                    <i class="fa-solid fa-list mr-1"></i><span id="filterViewModeText">列表</span>
                 </button>
             </div>
             <!-- 考向标签区 -->
@@ -955,6 +985,17 @@
                     <option value="fill_in_blank">填空题</option>
                     <option value="detailed_answer">解答题</option>
                     <option value="unknown">未定</option>
+                </select>
+            </div>
+            <!-- 选项列数：仅选择题生效。0=交给 exam-zh 按内容自动算列数；
+                 图片型选项（如四个函数图像）可强制 4/2/1 列，避免被压成两行。 -->
+            <div class="inline-flex items-center gap-1.5 shrink-0">
+                <label class="text-[11px] font-medium text-slate-500 whitespace-nowrap" for="editOptionColumns">选项列数</label>
+                <select id="editOptionColumns" class="glass-select w-[76px] px-2 py-1.5 text-xs rounded-xl" title="选择题选项排版：自适应=按内容自动算列数；图片型选项可强制 4/2/1 列">
+                    <option value="0">自适应</option>
+                    <option value="4">4 列</option>
+                    <option value="2">2 列</option>
+                    <option value="1">1 列</option>
                 </select>
             </div>
             <!-- 难度 -->
@@ -1148,8 +1189,8 @@
 
                     <!-- 题干编辑框：可拖拽/粘贴题目截图 → 题干 OCR -->
                     <div class="space-y-3 flex flex-col">
-                        <textarea id="editContent" rows="8" placeholder="在此输入题干内容... 或将题目截图拖拽/粘贴到此处自动识别题干&#10;行内公式使用 $...$，行间公式使用 $$...$$&#10;例如：已知集合 $A = \{x | x^2 - 3x + 2 = 0\}$..."
-                                  class="glass-input w-full p-4 rounded-xl outline-none focus:border-brand-500 focus:ring-1 focus:ring-brand-500 font-mono text-sm leading-relaxed resize-y flex-1 min-h-[150px] border-2 border-dashed border-slate-300 hover:border-brand-500 transition-colors duration-300"></textarea>
+                        <textarea id="editContent" rows="6" placeholder="在此输入题干内容... 或将题目截图拖拽/粘贴到此处自动识别题干&#10;行内公式使用 $...$，行间公式使用 $$...$$&#10;例如：已知集合 $A = \{x | x^2 - 3x + 2 = 0\}$..."
+                                  class="glass-input w-full p-4 rounded-xl outline-none focus:border-brand-500 focus:ring-1 focus:ring-brand-500 font-mono text-sm leading-relaxed resize-y border-2 border-dashed border-slate-300 hover:border-brand-500 transition-colors duration-300"></textarea>
                     </div>
 
                     <!-- 题干 OCR 面板 -->
@@ -1249,8 +1290,8 @@
 
                     <!-- 解析编辑框：可拖拽/粘贴答案截图 → 解析 OCR -->
                     <div class="space-y-3 flex flex-col">
-                        <textarea id="editAnswerMarkdown" rows="8" placeholder="在此处精细排版或合并您的答案与详细解析过程... 或将答案截图拖拽/粘贴到此处自动识别&#10;支持 MathJax / KaTeX 公式、TikZ 绘图块、Markdown 段落..."
-                                  class="w-full p-4 rounded-xl font-mono text-sm leading-relaxed resize-y border-2 border-dashed border-slate-300 hover:border-brand-500 focus:border-brand-500 focus:ring-2 focus:ring-brand-100 transition-all flex-1 min-h-[150px]"></textarea>
+                        <textarea id="editAnswerMarkdown" rows="6" placeholder="在此处精细排版或合并您的答案与详细解析过程... 或将答案截图拖拽/粘贴到此处自动识别&#10;支持 MathJax / KaTeX 公式、TikZ 绘图块、Markdown 段落..."
+                                  class="w-full p-4 rounded-xl font-mono text-sm leading-relaxed resize-y border-2 border-dashed border-slate-300 hover:border-brand-500 focus:border-brand-500 focus:ring-2 focus:ring-brand-100 transition-all"></textarea>
                     </div>
 
                     <!-- 解析 workflow tab 按钮 -->
@@ -1266,6 +1307,10 @@
                         <button type="button" onclick="switchWorkflowTab('image')" id="tabBtn-image" class="flex-1 py-2 px-3 rounded-lg font-medium text-xs flex items-center justify-center space-x-1.5 text-slate-600 hover:text-slate-800 hover:bg-white/50 transition-all">
                             <i class="fa-solid fa-images text-slate-400"></i>
                             <span>图片答案</span>
+                        </button>
+                        <button type="button" onclick="switchWorkflowTab('batch')" id="tabBtn-batch" class="flex-1 py-2 px-3 rounded-lg font-medium text-xs flex items-center justify-center space-x-1.5 text-slate-600 hover:text-slate-800 hover:bg-white/50 transition-all">
+                            <i class="fa-solid fa-layer-group text-slate-400"></i>
+                            <span>第四方案·批量</span>
                         </button>
                     </div>
 
@@ -1384,6 +1429,81 @@
                             </div>
                         </div>
 
+                    </div>
+
+                    <!-- TAB 4: 第四录入方案·批量流水线 -->
+                    <div id="tabContent-batch" class="space-y-4 hidden">
+                        <!-- 模式 & 上传 -->
+                        <div class="space-y-2">
+                            <div class="flex items-center gap-2 flex-wrap">
+                                <label class="text-xs font-medium text-slate-500">录入模式</label>
+                                <select id="batchMode" class="text-xs rounded-lg border border-slate-200 px-2 py-1.5 bg-white">
+                                    <option value="exam">整卷录入（试卷）</option>
+                                    <option value="textbook">教材 / 练习册</option>
+                                </select>
+                                <input id="batchTitle" type="text" placeholder="批次标题（作为题目来源，如：2024北京高考）"
+                                       class="flex-1 min-w-[160px] text-xs rounded-lg border border-slate-200 px-3 py-1.5">
+                            </div>
+                            <div id="batchDropZone" tabindex="0" class="border-2 border-dashed border-slate-200 hover:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500 bg-white rounded-xl p-4 text-center cursor-pointer transition-all duration-300">
+                                <input id="batchFileInput" type="file" accept="application/pdf" multiple class="hidden">
+                                <i class="fa-solid fa-file-pdf text-slate-300 text-2xl mb-1.5"></i>
+                                <p class="text-xs text-slate-500 font-medium">拖拽或点击上传 PDF（可多选，单文件 ≤300MB）</p>
+                                <div id="batchFileList" class="mt-2 space-y-1 text-[11px] text-slate-500"></div>
+                            </div>
+                        </div>
+
+                        <!-- 步骤条 -->
+                        <ol id="batchSteps" class="flex items-center gap-1.5 text-[11px]">
+                            <li data-step="session" class="flex-1 px-2 py-1.5 rounded-lg text-center border bg-slate-50 text-slate-400 border-slate-200">1 上传</li>
+                            <li data-step="plan" class="flex-1 px-2 py-1.5 rounded-lg text-center border bg-slate-50 text-slate-400 border-slate-200">2 计划</li>
+                            <li data-step="recognize" class="flex-1 px-2 py-1.5 rounded-lg text-center border bg-slate-50 text-slate-400 border-slate-200">3 识别</li>
+                            <li data-step="risk" class="flex-1 px-2 py-1.5 rounded-lg text-center border bg-slate-50 text-slate-400 border-slate-200">4 风险</li>
+                            <li data-step="commit" class="flex-1 px-2 py-1.5 rounded-lg text-center border bg-slate-50 text-slate-400 border-slate-200">5 入库</li>
+                        </ol>
+
+                        <!-- 操作区 -->
+                        <div id="batchActions" class="flex flex-wrap gap-2"></div>
+
+                        <!-- 进度 / 日志 -->
+                        <div id="batchProgressWrap" class="hidden">
+                            <div class="w-full bg-slate-200 h-1.5 rounded-full overflow-hidden">
+                                <div id="batchProgressBar" class="bg-brand-500 h-1.5 w-0 transition-all duration-300 rounded-full"></div>
+                            </div>
+                            <p id="batchLog" class="text-[11px] text-slate-500 mt-1"></p>
+                        </div>
+
+                        <!-- 计划预览 -->
+                        <div id="batchPlanWrap" class="hidden">
+                            <div class="text-xs font-semibold text-slate-500 mb-1">待识别页面（计划）</div>
+                            <div id="batchPlanList" class="text-[11px] text-slate-500 space-y-1 max-h-40 overflow-y-auto border border-slate-100 rounded-lg p-2"></div>
+                        </div>
+
+                        <!-- 目录树预览（教材模式） -->
+                        <div id="batchCatalogWrap" class="hidden">
+                            <div class="text-xs font-semibold text-slate-500 mb-1 flex items-center gap-1">
+                                <i class="fa-solid fa-list-tree text-brand-500"></i>
+                                按章节归档预览（教材模式）
+                            </div>
+                            <div id="batchCatalogTree" class="space-y-2 max-h-52 overflow-y-auto pr-1"></div>
+                        </div>
+
+                        <!-- 风险确认 -->
+                        <div id="batchRiskWrap" class="hidden space-y-2">
+                            <div class="text-xs font-semibold text-slate-500 flex items-center gap-1">
+                                <i class="fa-solid fa-triangle-exclamation text-amber-500"></i>
+                                风险确认（逐项填写接受理由后才能入库）
+                            </div>
+                            <div id="batchRiskList" class="space-y-2"></div>
+                        </div>
+
+                        <!-- 结果 -->
+                        <div id="batchResult" class="hidden text-xs"></div>
+
+                        <!-- 历史批次 -->
+                        <details class="text-xs text-slate-500">
+                            <summary class="cursor-pointer select-none hover:text-slate-700">历史批次</summary>
+                            <div id="batchHistory" class="mt-2 space-y-1"></div>
+                        </details>
                     </div>
 
                     <!-- 解析 TikZ 资产 -->
@@ -1651,12 +1771,13 @@
                             </div>
                             
                             <!-- 1. DeepSeek -->
-                            <div class="api-key-row space-y-1">
-                                <div class="grid grid-cols-[minmax(6rem,1fr)_minmax(0,2fr)_auto_auto] gap-2 items-end">
+                            <div class="api-key-row space-y-1" data-vendor-row>
+                                <div class="api-vendor-grid">
                                     <div>
                                         <label class="block text-[10px] font-semibold text-slate-500 dark:text-slate-400 mb-0.5">厂商名</label>
-                                        <select class="vendor-select glass-select w-full px-2 py-2 rounded-lg text-xs"
-                                                onchange="onVendorSelectChange(this);syncModelProviderOptions()">
+                                        <select class="vendor-select glass-select w-full px-2 py-2 rounded-lg text-xs" disabled
+                                                onchange="onVendorSelectChange(this);syncModelProviderOptions();autoFillVendorBaseUrl(this)">
+                                                title="固定厂商：改地址见右侧接口地址框">
                                             <option value="DeepSeek" selected>DeepSeek</option>
                                             <option value="SiliconFlow">SiliconFlow</option>
                                             <option value="阿里百炼">阿里百炼</option>
@@ -1667,30 +1788,36 @@
                                             <option value="Together AI">Together AI</option>
                                             <option value="__custom__">其他…</option>
                                         </select>
+                                        <p class="text-[9px] text-slate-400 leading-tight mt-0.5">固定厂商；改地址见右侧接口地址框</p>
                                     </div>
                                     <div>
                                         <label class="block text-[10px] font-semibold text-slate-500 dark:text-slate-400 mb-0.5">DeepSeek API Key</label>
                                         <input type="password" id="settingsDeepseekKey" placeholder="输入您的 DEEPSEEK_API_KEY"
                                                class="glass-input w-full px-3 py-2 rounded-lg text-xs font-mono">
                                     </div>
+                                    <div>
+                                        <label class="block text-[10px] font-semibold text-slate-500 dark:text-slate-400 mb-0.5">接口地址</label>
+                                        <input type="text" id="settingsDeepseekBaseUrl" placeholder="https://api.deepseek.com"
+                                               class="glass-input w-full px-3 py-2 rounded-lg text-xs font-mono"
+                                               oninput="onBaseUrlInput(this)">
+                                    </div>
                                     <a href="https://platform.deepseek.com/" target="_blank" rel="noopener"
                                        class="h-9 inline-flex items-center justify-center px-2.5 rounded-lg bg-slate-100 hover:bg-brand-50 text-brand-600 font-bold text-[10px] border border-slate-200 transition-all">获取 Key</a>
-                                    <button type="button" onclick="testProviderConnection('deepseek','settingsDeepseekKey',null,'btnTestDeepseek','testResultDeepseek')" id="btnTestDeepseek"
+                                    <button type="button" onclick="testProviderConnection('deepseek','settingsDeepseekKey','settingsDeepseekBaseUrl','btnTestDeepseek','testResultDeepseek')" id="btnTestDeepseek"
                                             class="h-9 inline-flex items-center justify-center px-2.5 rounded-lg bg-slate-100 hover:bg-brand-50 text-brand-600 font-bold text-[10px] border border-slate-200 transition-all">测试连接</button>
-                                </div>
-                                <div class="grid grid-cols-[minmax(6rem,1fr)_minmax(0,2fr)_auto_auto] gap-2">
-                                    <div></div>
-                                    <p id="testResultDeepseek" class="text-[10px] text-slate-400 leading-normal test-result min-h-[1rem]"></p>
+                                    <!-- 测试结果与控件同属一个网格容器：分两个容器时 auto 列各自按本行内容算宽，两行必错位 -->
+                                    <p data-result-slot="3" id="testResultDeepseek" class="text-[10px] text-slate-400 leading-normal test-result min-h-[1rem]"></p>
                                 </div>
                             </div>
 
                             <!-- 2. SiliconFlow -->
-                            <div class="api-key-row space-y-1">
-                                <div class="grid grid-cols-[minmax(6rem,1fr)_minmax(0,2fr)_auto_auto] gap-2 items-end">
+                            <div class="api-key-row space-y-1" data-vendor-row>
+                                <div class="api-vendor-grid">
                                     <div>
                                         <label class="block text-[10px] font-semibold text-slate-500 dark:text-slate-400 mb-0.5">厂商名</label>
-                                        <select class="vendor-select glass-select w-full px-2 py-2 rounded-lg text-xs"
-                                                onchange="onVendorSelectChange(this);syncModelProviderOptions()">
+                                        <select class="vendor-select glass-select w-full px-2 py-2 rounded-lg text-xs" disabled
+                                                onchange="onVendorSelectChange(this);syncModelProviderOptions();autoFillVendorBaseUrl(this)">
+                                                title="固定厂商：改地址见右侧接口地址框">
                                             <option value="DeepSeek">DeepSeek</option>
                                             <option value="SiliconFlow" selected>SiliconFlow</option>
                                             <option value="阿里百炼">阿里百炼</option>
@@ -1701,30 +1828,36 @@
                                             <option value="Together AI">Together AI</option>
                                             <option value="__custom__">其他…</option>
                                         </select>
+                                        <p class="text-[9px] text-slate-400 leading-tight mt-0.5">固定厂商；改地址见右侧接口地址框</p>
                                     </div>
                                     <div>
                                         <label class="block text-[10px] font-semibold text-slate-500 dark:text-slate-400 mb-0.5">SiliconFlow API Key</label>
                                         <input type="password" id="settingsSiliconflowKey" placeholder="输入您的 SILICONFLOW_API_KEY"
                                                class="glass-input w-full px-3 py-2 rounded-lg text-xs font-mono">
                                     </div>
+                                    <div>
+                                        <label class="block text-[10px] font-semibold text-slate-500 dark:text-slate-400 mb-0.5">接口地址</label>
+                                        <input type="text" id="settingsSiliconflowBaseUrl" placeholder="https://api.siliconflow.cn/v1"
+                                               class="glass-input w-full px-3 py-2 rounded-lg text-xs font-mono"
+                                               oninput="onBaseUrlInput(this)">
+                                    </div>
                                     <a href="https://cloud.siliconflow.cn/" target="_blank" rel="noopener"
                                        class="h-9 inline-flex items-center justify-center px-2.5 rounded-lg bg-slate-100 hover:bg-brand-50 text-brand-600 font-bold text-[10px] border border-slate-200 transition-all">获取 Key</a>
-                                    <button type="button" onclick="testProviderConnection('siliconflow','settingsSiliconflowKey',null,'btnTestSiliconflow','testResultSiliconflow')" id="btnTestSiliconflow"
+                                    <button type="button" onclick="testProviderConnection('siliconflow','settingsSiliconflowKey','settingsSiliconflowBaseUrl','btnTestSiliconflow','testResultSiliconflow')" id="btnTestSiliconflow"
                                             class="h-9 inline-flex items-center justify-center px-2.5 rounded-lg bg-slate-100 hover:bg-brand-50 text-brand-600 font-bold text-[10px] border border-slate-200 transition-all">测试连接</button>
-                                </div>
-                                <div class="grid grid-cols-[minmax(6rem,1fr)_minmax(0,2fr)_auto_auto] gap-2">
-                                    <div></div>
-                                    <p id="testResultSiliconflow" class="text-[10px] text-slate-400 leading-normal test-result min-h-[1rem]"></p>
+                                    <!-- 测试结果与控件同属一个网格容器：分两个容器时 auto 列各自按本行内容算宽，两行必错位 -->
+                                    <p data-result-slot="3" id="testResultSiliconflow" class="text-[10px] text-slate-400 leading-normal test-result min-h-[1rem]"></p>
                                 </div>
                             </div>
 
                             <!-- 3. 阿里百炼 -->
-                            <div class="api-key-row space-y-1">
-                                <div class="grid grid-cols-[minmax(6rem,1fr)_minmax(0,2fr)_auto_auto] gap-2 items-end">
+                            <div class="api-key-row space-y-1" data-vendor-row>
+                                <div class="api-vendor-grid">
                                     <div>
                                         <label class="block text-[10px] font-semibold text-slate-500 dark:text-slate-400 mb-0.5">厂商名</label>
-                                        <select class="vendor-select glass-select w-full px-2 py-2 rounded-lg text-xs"
-                                                onchange="onVendorSelectChange(this);syncModelProviderOptions()">
+                                        <select class="vendor-select glass-select w-full px-2 py-2 rounded-lg text-xs" disabled
+                                                onchange="onVendorSelectChange(this);syncModelProviderOptions();autoFillVendorBaseUrl(this)">
+                                                title="固定厂商：改地址见右侧接口地址框">
                                             <option value="DeepSeek">DeepSeek</option>
                                             <option value="SiliconFlow">SiliconFlow</option>
                                             <option value="阿里百炼" selected>阿里百炼</option>
@@ -1735,30 +1868,36 @@
                                             <option value="Together AI">Together AI</option>
                                             <option value="__custom__">其他…</option>
                                         </select>
+                                        <p class="text-[9px] text-slate-400 leading-tight mt-0.5">固定厂商；改地址见右侧接口地址框</p>
                                     </div>
                                     <div>
                                         <label class="block text-[10px] font-semibold text-slate-500 dark:text-slate-400 mb-0.5">Alibaba Bailian API Key</label>
                                         <input type="password" id="settingsAliBailianKey" placeholder="输入您的 ALI_BAILIAN_API_KEY"
                                                class="glass-input w-full px-3 py-2 rounded-lg text-xs font-mono">
                                     </div>
+                                    <div>
+                                        <label class="block text-[10px] font-semibold text-slate-500 dark:text-slate-400 mb-0.5">接口地址</label>
+                                        <input type="text" id="settingsAliBailianBaseUrl" placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1"
+                                               class="glass-input w-full px-3 py-2 rounded-lg text-xs font-mono"
+                                               oninput="onBaseUrlInput(this)">
+                                    </div>
                                     <a href="https://bailian.console.aliyun.com/" target="_blank" rel="noopener"
                                        class="h-9 inline-flex items-center justify-center px-2.5 rounded-lg bg-slate-100 hover:bg-brand-50 text-brand-600 font-bold text-[10px] border border-slate-200 transition-all">获取 Key</a>
-                                    <button type="button" onclick="testProviderConnection('bailian','settingsAliBailianKey',null,'btnTestBailian','testResultBailian')" id="btnTestBailian"
+                                    <button type="button" onclick="testProviderConnection('bailian','settingsAliBailianKey','settingsAliBailianBaseUrl','btnTestBailian','testResultBailian')" id="btnTestBailian"
                                             class="h-9 inline-flex items-center justify-center px-2.5 rounded-lg bg-slate-100 hover:bg-brand-50 text-brand-600 font-bold text-[10px] border border-slate-200 transition-all">测试连接</button>
-                                </div>
-                                <div class="grid grid-cols-[minmax(6rem,1fr)_minmax(0,2fr)_auto_auto] gap-2">
-                                    <div></div>
-                                    <p id="testResultBailian" class="text-[10px] text-slate-400 leading-normal test-result min-h-[1rem]"></p>
+                                    <!-- 测试结果与控件同属一个网格容器：分两个容器时 auto 列各自按本行内容算宽，两行必错位 -->
+                                    <p data-result-slot="3" id="testResultBailian" class="text-[10px] text-slate-400 leading-normal test-result min-h-[1rem]"></p>
                                 </div>
                             </div>
 
                             <!-- 4. MinerU -->
-                            <div class="api-key-row space-y-1">
-                                <div class="grid grid-cols-[minmax(6rem,1fr)_minmax(0,2fr)_auto_auto] gap-2 items-end">
+                            <div class="api-key-row space-y-1" data-vendor-row>
+                                <div class="api-vendor-grid">
                                     <div>
                                         <label class="block text-[10px] font-semibold text-slate-500 dark:text-slate-400 mb-0.5">厂商名</label>
-                                        <select class="vendor-select glass-select w-full px-2 py-2 rounded-lg text-xs"
+                                        <select class="vendor-select glass-select w-full px-2 py-2 rounded-lg text-xs" disabled
                                                 onchange="onVendorSelectChange(this);syncModelProviderOptions()">
+                                                title="固定厂商：改地址见右侧接口地址框">
                                             <option value="DeepSeek">DeepSeek</option>
                                             <option value="SiliconFlow">SiliconFlow</option>
                                             <option value="阿里百炼">阿里百炼</option>
@@ -1769,26 +1908,31 @@
                                             <option value="Together AI">Together AI</option>
                                             <option value="__custom__">其他…</option>
                                         </select>
+                                        <p class="text-[9px] text-slate-400 leading-tight mt-0.5">固定厂商；改地址见右侧接口地址框</p>
                                     </div>
                                     <div>
                                         <label class="block text-[10px] font-semibold text-slate-500 dark:text-slate-400 mb-0.5">MinerU 云端解析 Token</label>
                                         <input type="password" id="settingsMineruToken" placeholder="输入您的 MINERU_API_TOKEN"
                                                class="glass-input w-full px-3 py-2 rounded-lg text-xs font-mono">
                                     </div>
+                                    <div>
+                                        <label class="block text-[10px] font-semibold text-slate-500 dark:text-slate-400 mb-0.5">接口地址</label>
+                                        <input type="text" id="settingsMineruApiBase" placeholder="https://mineru.net/api/v4"
+                                               class="glass-input w-full px-3 py-2 rounded-lg text-xs font-mono"
+                                               oninput="onBaseUrlInput(this)">
+                                    </div>
                                     <a href="https://mineru.net/" target="_blank" rel="noopener"
                                        class="h-9 inline-flex items-center justify-center px-2.5 rounded-lg bg-slate-100 hover:bg-brand-50 text-brand-600 font-bold text-[10px] border border-slate-200 transition-all">获取 Key</a>
                                     <button type="button" onclick="testProviderConnection('mineru','settingsMineruToken',null,'btnTestMineru','testResultMineru')" id="btnTestMineru"
                                             class="h-9 inline-flex items-center justify-center px-2.5 rounded-lg bg-slate-100 hover:bg-brand-50 text-brand-600 font-bold text-[10px] border border-slate-200 transition-all">测试连接</button>
-                                </div>
-                                <div class="grid grid-cols-[minmax(6rem,1fr)_minmax(0,2fr)_auto_auto] gap-2">
-                                    <div></div>
-                                    <p id="testResultMineru" class="text-[10px] text-slate-400 leading-normal test-result min-h-[1rem]"></p>
+                                    <!-- 测试结果与控件同属一个网格容器：分两个容器时 auto 列各自按本行内容算宽，两行必错位 -->
+                                    <p data-result-slot="3" id="testResultMineru" class="text-[10px] text-slate-400 leading-normal test-result min-h-[1rem]"></p>
                                 </div>
                             </div>
 
                             <!-- 5. 中转站 A -->
-                            <div class="api-key-row space-y-1" data-provider-slot="zhongzhan_gpt">
-                                <div class="grid grid-cols-[minmax(6rem,1fr)_minmax(0,2fr)_auto_auto] gap-2 items-end">
+                            <div class="api-key-row space-y-1" data-provider-slot="zhongzhan_gpt" data-vendor-row>
+                                <div class="api-vendor-grid">
                                     <div>
                                         <label class="block text-[10px] font-semibold text-slate-500 dark:text-slate-400 mb-0.5">厂商名</label>
                                         <select class="vendor-select glass-select w-full px-2 py-2 rounded-lg text-xs"
@@ -1809,21 +1953,24 @@
                                         <input type="password" id="settingsZhongzhanGptKey" placeholder="输入智元 API Key"
                                                class="glass-input w-full px-3 py-2 rounded-lg text-xs font-mono">
                                     </div>
+                                    <div>
+                                        <label class="block text-[10px] font-semibold text-slate-500 dark:text-slate-400 mb-0.5">接口地址</label>
+                                        <input type="text" id="settingsZhongzhanGptBaseUrl" placeholder="https://token.sensenova.cn/v1"
+                                               class="glass-input w-full px-3 py-2 rounded-lg text-xs font-mono"
+                                               oninput="onBaseUrlInput(this)">
+                                    </div>
                                     <a href="https://token.sensenova.cn" target="_blank" rel="noopener"
                                        class="zhongzhan-gpt-link h-9 inline-flex items-center justify-center px-2.5 rounded-lg bg-slate-100 hover:bg-brand-50 text-brand-600 font-bold text-[10px] border border-slate-200 transition-all">获取 Key</a>
                                     <button type="button" onclick="testProviderConnection('zhongzhan_gpt','settingsZhongzhanGptKey','settingsZhongzhanGptBaseUrl','btnTestZhongzhanGpt','testResultZhongzhanGpt')" id="btnTestZhongzhanGpt"
                                             class="h-9 inline-flex items-center justify-center px-2.5 rounded-lg bg-slate-100 hover:bg-brand-50 text-brand-600 font-bold text-[10px] border border-slate-200 transition-all">测试连接</button>
+                                    <!-- 测试结果与控件同属一个网格容器：分两个容器时 auto 列各自按本行内容算宽，两行必错位 -->
+                                    <p data-result-slot="3" id="testResultZhongzhanGpt" class="text-[10px] text-slate-400 leading-normal test-result min-h-[1rem]"></p>
                                 </div>
-                                <div class="grid grid-cols-[minmax(6rem,1fr)_minmax(0,2fr)_auto_auto] gap-2">
-                                    <div></div>
-                                    <p id="testResultZhongzhanGpt" class="text-[10px] text-slate-400 leading-normal test-result min-h-[1rem]"></p>
-                                </div>
-                                <input type="hidden" id="settingsZhongzhanGptBaseUrl" value="https://token.sensenova.cn/v1">
                             </div>
 
                             <!-- 6. 中转站 B -->
-                            <div class="api-key-row space-y-1" data-provider-slot="zhongzhan_claude">
-                                <div class="grid grid-cols-[minmax(6rem,1fr)_minmax(0,2fr)_auto_auto] gap-2 items-end">
+                            <div class="api-key-row space-y-1" data-provider-slot="zhongzhan_claude" data-vendor-row>
+                                <div class="api-vendor-grid">
                                     <div>
                                         <label class="block text-[10px] font-semibold text-slate-500 dark:text-slate-400 mb-0.5">厂商名</label>
                                         <select class="vendor-select glass-select w-full px-2 py-2 rounded-lg text-xs"
@@ -1844,27 +1991,28 @@
                                         <input type="password" id="settingsZhongzhanClaudeKey" placeholder="输入 Agnes AI API Key"
                                                class="glass-input w-full px-3 py-2 rounded-lg text-xs font-mono">
                                     </div>
+                                    <div>
+                                        <label class="block text-[10px] font-semibold text-slate-500 dark:text-slate-400 mb-0.5">接口地址</label>
+                                        <input type="text" id="settingsZhongzhanClaudeBaseUrl" placeholder="https://apihub.agnes-ai.cn/v1"
+                                               class="glass-input w-full px-3 py-2 rounded-lg text-xs font-mono"
+                                               oninput="onBaseUrlInput(this)">
+                                    </div>
                                     <a href="https://apihub.agnes-ai.cn" target="_blank" rel="noopener"
                                        class="zhongzhan-claude-link h-9 inline-flex items-center justify-center px-2.5 rounded-lg bg-slate-100 hover:bg-brand-50 text-brand-600 font-bold text-[10px] border border-slate-200 transition-all">获取 Key</a>
                                     <button type="button" onclick="testProviderConnection('zhongzhan_claude','settingsZhongzhanClaudeKey','settingsZhongzhanClaudeBaseUrl','btnTestZhongzhanClaude','testResultZhongzhanClaude')" id="btnTestZhongzhanClaude"
                                             class="h-9 inline-flex items-center justify-center px-2.5 rounded-lg bg-slate-100 hover:bg-brand-50 text-brand-600 font-bold text-[10px] border border-slate-200 transition-all">测试连接</button>
+                                    <!-- 测试结果与控件同属一个网格容器：分两个容器时 auto 列各自按本行内容算宽，两行必错位 -->
+                                    <p data-result-slot="3" id="testResultZhongzhanClaude" class="text-[10px] text-slate-400 leading-normal test-result min-h-[1rem]"></p>
                                 </div>
-                                <div class="grid grid-cols-[minmax(6rem,1fr)_minmax(0,2fr)_auto_auto] gap-2">
-                                    <div></div>
-                                    <p id="testResultZhongzhanClaude" class="text-[10px] text-slate-400 leading-normal test-result min-h-[1rem]"></p>
-                                </div>
-                                <input type="hidden" id="settingsZhongzhanClaudeBaseUrl" value="https://apihub.agnes-ai.cn/v1">
                             </div>
 
-                            <!-- 高级：MinerU 接口地址覆盖（默认隐藏，点击展开） -->
-                            <details class="mt-2 group">
-                                <summary class="cursor-pointer text-[11px] font-semibold text-slate-500 hover:text-brand-600 transition-colors">高级选项：MinerU 接口地址覆盖</summary>
-                                <div class="mt-2 space-y-1">
-                                    <label class="block text-[10px] font-semibold text-slate-500 dark:text-slate-400 mb-0.5">MinerU 接口地址（可选，默认 https://mineru.net/api/v4）</label>
-                                    <input type="text" id="settingsMineruApiBase" placeholder="https://mineru.net/api/v4"
-                                           class="glass-input w-full px-3 py-2.5 rounded-xl text-xs font-mono">
-                                </div>
-                            </details>
+                            <!-- 自定义厂商（瘦版：仅 OpenAI 兼容的第三方文本厂商） -->
+                            <div id="customProvidersContainer" class="space-y-4"></div>
+
+                            <button type="button" onclick="openCustomVendorModal()"
+                                    class="mt-2 inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-dashed border-brand-500 text-brand-600 hover:bg-brand-50 text-xs font-semibold transition-all">
+                                <i class="fa-solid fa-plus"></i> 添加厂商
+                            </button>
                         </div>
 
                         <!-- Column 2: Preferred Models & OCR -->
@@ -1977,31 +2125,6 @@
 
                 <!-- Metadata Tab Content (JSON Editor) -->
                 <div id="settings-tab-metadata" class="hidden">
-                    <!-- 考向树 TXT 底层文件同步 -->
-                    <div class="glass-panel p-3 rounded-2xl mb-3">
-                        <div class="flex items-center justify-between">
-                            <h4 class="text-[11px] font-bold text-slate-700 flex items-center gap-1.5">
-                                <i class="fa-solid fa-file-lines text-sky-500"></i>
-                                <span>考向树 TXT 底层文件</span>
-                                <span id="kaoxiangDir" class="text-[9px] font-normal text-slate-400"></span>
-                            </h4>
-                            <div class="flex items-center gap-1">
-                                <button type="button" onclick="kaoxiangRefresh()" class="glass-btn px-2 py-1 rounded text-[10px] text-slate-600 hover:text-slate-800 font-medium" title="刷新状态">
-                                    <i class="fa-solid fa-rotate-right text-[9px]"></i> 状态
-                                </button>
-                                <button type="button" onclick="kaoxiangSync('pull')" class="glass-btn px-2 py-1 rounded text-[10px] text-emerald-600 hover:text-emerald-700 font-medium" title="以 TXT 为准刷新网页大纲">
-                                    <i class="fa-solid fa-file-import text-[9px]"></i> TXT → 网页
-                                </button>
-                                <button type="button" onclick="kaoxiangSync('push')" class="glass-btn px-2 py-1 rounded text-[10px] text-purple-600 hover:text-purple-700 font-medium" title="把网页大纲回写进 TXT">
-                                    <i class="fa-solid fa-file-export text-[9px]"></i> 网页 → TXT
-                                </button>
-                            </div>
-                        </div>
-                        <div id="kaoxiangStatus" class="mt-2 text-[10px] text-slate-500 leading-relaxed space-y-1"></div>
-                        <p class="text-[9px] text-slate-400 mt-1.5">
-                            底层文件位于项目根目录的 <code>考向树/</code> 文件夹；直接改 TXT 后点「TXT → 网页」，在网页里改完点「网页 → TXT」，两边互为镜像。
-                        </p>
-                    </div>
                     <!-- 左右两栏 -->
                     <!-- 两栏：左A大纲参考树，右当前活跃大纲可编辑树 -->
                     <div class="flex gap-3 items-start">
@@ -2262,6 +2385,55 @@
                     <button type="submit" id="btnSettingsSave" class="glass-btn-primary px-5 py-2 rounded-xl font-medium text-xs">保存配置</button>
                 </div>
             </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- 自定义厂商弹窗（瘦版：仅 OpenAI 兼容的第三方文本厂商） -->
+    <div id="customVendorModal" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="customVendorModalTitle" class="fixed inset-0 glass-modal-overlay z-50 flex items-center justify-center hidden opacity-0 transition-opacity duration-300">
+        <div class="glass-modal rounded-3xl w-full max-w-lg p-6 sm:p-7 transform scale-95 transition-transform duration-300 flex flex-col shadow-2xl border border-brand-200/50 dark:border-brand-500/20">
+            <div class="flex justify-between items-start pb-4 border-b border-slate-200/60 dark:border-slate-700/60 shrink-0">
+                <div class="flex items-center space-x-3.5">
+                    <div class="w-11 h-11 rounded-2xl bg-gradient-to-br from-brand-500 to-indigo-600 text-white flex items-center justify-center text-lg shadow-md shrink-0">
+                        <i class="fa-solid fa-server text-white"></i>
+                    </div>
+                    <div>
+                        <h3 class="font-bold text-base text-slate-800 dark:text-white" id="customVendorModalTitle">添加自定义厂商</h3>
+                        <p class="text-[11px] text-slate-400 mt-0.5">仅支持 OpenAI 兼容的第三方文本模型</p>
+                    </div>
+                </div>
+                <button type="button" data-modal-close onclick="closeCustomVendorModal()" aria-label="关闭" class="glass-btn w-9 h-9 flex items-center justify-center rounded-xl text-slate-400 hover:text-slate-600 transition-all">
+                    <i class="fa-solid fa-xmark text-base"></i>
+                </button>
+            </div>
+            <div class="flex-1 overflow-y-auto py-4 space-y-3 text-xs">
+                <div>
+                    <label class="block text-[11px] font-bold text-slate-600 mb-1">厂商名 <span class="text-red-500">*</span></label>
+                    <input id="cvName" type="text" placeholder="例如 TokenPlan / MyOpenAI"
+                           class="glass-input w-full px-3 py-2 rounded-lg text-xs">
+                </div>
+                <div>
+                    <label class="block text-[11px] font-bold text-slate-600 mb-1">Base URL <span class="text-slate-400 font-normal">（OpenAI 兼容 /v1 地址）</span></label>
+                    <input id="cvBaseUrl" type="text" placeholder="https://api.example.com/v1"
+                           class="glass-input w-full px-3 py-2 rounded-lg text-xs font-mono">
+                </div>
+                <div>
+                    <label class="block text-[11px] font-bold text-slate-600 mb-1">API Key</label>
+                    <input id="cvApiKey" type="password" placeholder="填写该厂商的 API Key"
+                           class="glass-input w-full px-3 py-2 rounded-lg text-xs font-mono">
+                </div>
+                <div>
+                    <label class="block text-[11px] font-bold text-slate-600 mb-1">默认模型名</label>
+                    <input id="cvModel" type="text" placeholder="例如 gpt-4o"
+                           class="glass-input w-full px-3 py-2 rounded-lg text-xs font-mono">
+                </div>
+                <p class="text-[10px] text-slate-400 leading-normal">
+                    添加后，该厂商会出现在「Key 配置区」下方；同时其名称会出现在右侧「首选模型」的厂商下拉中（解题 / 拆解 / 分类 / 绘图），模型名在对应处手填即可。
+                </p>
+            </div>
+            <div class="flex justify-end space-x-2 pt-2 border-t border-slate-200/50 shrink-0">
+                <button type="button" onclick="closeCustomVendorModal()" class="glass-btn px-4 py-2 rounded-xl text-xs font-medium text-slate-500">取消</button>
+                <button type="button" onclick="submitCustomVendor()" class="glass-btn-primary px-5 py-2 rounded-xl font-medium text-xs">添加</button>
             </div>
         </div>
     </div>
@@ -2594,14 +2766,15 @@
 
     <!-- Duplicate review before importing a single question or a parsed paper batch -->
     <div id="parsedDuplicateReviewModal" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="parsedDuplicateReviewTitle" aria-describedby="parsedDuplicateReviewDescription" class="fixed inset-0 z-[95] hidden items-center justify-center bg-slate-950/55 p-4 opacity-0 backdrop-blur-sm transition-opacity duration-200">
-        <div data-modal-surface class="glass-modal flex max-h-[88vh] w-full max-w-3xl scale-95 flex-col overflow-hidden rounded-3xl border border-white/50 shadow-2xl transition-transform duration-200">
+        <div data-modal-surface class="glass-modal flex max-h-[88vh] w-full max-w-6xl scale-95 flex-col overflow-hidden rounded-3xl border border-white/50 shadow-2xl transition-transform duration-200">
             <div class="flex items-start gap-4 border-b border-slate-200/70 p-5 dark:border-slate-700 sm:p-6">
-                <span class="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-amber-50 text-lg text-amber-600 dark:bg-amber-500/15 dark:text-amber-300">
-                    <i class="fa-solid fa-code-compare" aria-hidden="true"></i>
-                </span>
-                <div class="min-w-0 flex-1">
-                    <h3 id="parsedDuplicateReviewTitle" tabindex="-1" data-modal-initial-focus="true" class="text-base font-bold text-slate-800 dark:text-slate-100">发现疑似已收录题目</h3>
-                    <p id="parsedDuplicateReviewDescription" class="mt-1.5 text-xs leading-5 text-slate-600 dark:text-slate-300">查重仅提供提示，不会自动删除、覆盖或合并题目。请先核对题干、公式与配图。</p>
+                <div class="min-w-0 flex-1 space-y-2">
+                    <div class="flex flex-wrap items-center justify-between gap-2">
+                        <h3 id="parsedDuplicateReviewTitle" tabindex="-1" data-modal-initial-focus="true" class="text-base font-bold text-slate-800 dark:text-slate-100">发现疑似已收录题目</h3>
+                        <span id="duplicateReviewProgress" role="status" aria-live="polite" class="hidden shrink-0 rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-bold text-slate-700 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200"></span>
+                    </div>
+                    <div id="duplicateReviewConclusion" data-dup-badge="visual" class="flex flex-wrap items-center gap-3 rounded-2xl border border-slate-200/70 bg-white/60 px-3 py-2 dark:border-slate-700 dark:bg-slate-900/40"></div>
+                    <p id="parsedDuplicateReviewDescription" class="text-xs leading-5 text-slate-600 dark:text-slate-300">查重仅提供提示，不会自动删除、覆盖或合并题目。请先核对题干、公式与配图。</p>
                 </div>
                 <button type="button" data-modal-close onclick="closeParsedDuplicateReviewModal('review')" aria-label="关闭查重审查弹窗并返回题目列表" class="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-700 focus:outline-none focus:ring-2 focus:ring-brand-500/30 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-white">
                     <i class="fa-solid fa-xmark" aria-hidden="true"></i>
@@ -2611,10 +2784,13 @@
             <div id="parsedDuplicateReviewList" class="min-h-0 flex-1 space-y-3 overflow-y-auto p-5 custom-scrollbar sm:p-6"></div>
 
             <div class="flex flex-col-reverse gap-2 border-t border-slate-200/70 bg-slate-50/70 p-4 dark:border-slate-700 dark:bg-slate-900/70 sm:flex-row sm:items-center sm:justify-end sm:p-5">
-                <button id="duplicateReviewReturnBtn" type="button" onclick="closeParsedDuplicateReviewModal('review')" class="glass-btn min-h-11 rounded-xl px-4 py-2 text-xs font-bold text-slate-600 dark:text-slate-200">返回审查</button>
-                <button id="duplicateReviewSkipBtn" type="button" onclick="closeParsedDuplicateReviewModal('skip')" class="min-h-11 rounded-xl border border-amber-200 bg-amber-50 px-4 py-2 text-xs font-bold text-amber-700 transition-colors hover:bg-amber-100 dark:border-amber-500/40 dark:bg-amber-500/15 dark:text-amber-200 dark:hover:bg-amber-500/25">跳过疑似题，导入其余</button>
-                <button id="duplicateReviewMergeBtn" type="button" class="min-h-11 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-2 text-xs font-bold text-emerald-700 transition-colors hover:bg-emerald-100 dark:border-emerald-500/40 dark:bg-emerald-500/15 dark:text-emerald-200 dark:hover:bg-emerald-500/25">并入已有题（仅追加来源）</button>
-                <button id="duplicateReviewIndependentBtn" type="button" onclick="closeParsedDuplicateReviewModal('independent')" class="min-h-11 rounded-xl bg-brand-600 px-4 py-2 text-xs font-bold text-white shadow-sm transition-colors hover:bg-brand-700">全部独立保存</button>
+                <button id="duplicateReviewReturnBtn" type="button" class="glass-btn min-h-11 rounded-xl px-4 py-2 text-xs font-bold text-slate-600 dark:text-slate-200">返回审查</button>
+                <button id="duplicateReviewSkipBtn" type="button" class="min-h-11 rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-bold text-slate-600 transition-colors hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700">跳过本题</button>
+                <button id="duplicateReviewDedupeBtn" type="button" class="min-h-11 rounded-xl border border-rose-200 bg-rose-50 px-4 py-2 text-xs font-bold text-rose-700 transition-colors hover:bg-rose-100 dark:border-rose-500/40 dark:bg-rose-500/15 dark:text-rose-200 dark:hover:bg-rose-500/25">去重</button>
+                <button id="duplicateReviewMergeBtn" type="button" class="min-h-11 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-2 text-xs font-bold text-emerald-700 transition-colors hover:bg-emerald-100 dark:border-emerald-500/40 dark:bg-emerald-500/15 dark:text-emerald-200 dark:hover:bg-emerald-500/25">追加来源</button>
+                <button id="duplicateReviewAssociateBtn" type="button" class="min-h-11 rounded-xl border border-sky-200 bg-sky-50 px-4 py-2 text-xs font-bold text-sky-700 transition-colors hover:bg-sky-100 dark:border-sky-500/40 dark:bg-sky-500/15 dark:text-sky-200 dark:hover:bg-sky-500/25">标记为相似题</button>
+                <button id="duplicateReviewIndependentBtn" type="button" class="min-h-11 rounded-xl bg-brand-600 px-4 py-2 text-xs font-bold text-white shadow-sm transition-colors hover:bg-brand-700">独立保存</button>
+                <button id="duplicateReviewSkipAllBtn" type="button" class="min-h-11 rounded-xl border border-slate-300 bg-slate-100 px-4 py-2 text-xs font-bold text-slate-600 transition-colors hover:bg-slate-200 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700">跳过全部</button>
             </div>
         </div>
     </div>
@@ -2675,6 +2851,7 @@
     <script src="/static/js/editor.js?v=1.0.2"></script>
     <script src="/static/js/ocr.js?v=1.0.1"></script>
     <script src="/static/js/import.js?v=1.0.3"></script>
+    <script src="/static/js/import_batch.js?v=1.0.0"></script>
     <script src="/static/js/paper.js?v=1.0.1"></script>
     <script src="/static/js/lesson.js?v=1.0.2"></script>
     <script src="/static/js/lecture.js?v=1.0.0"></script>
@@ -2889,9 +3066,6 @@
                 </button>
                 <div id="lectureKnowledgeDropdown" class="hidden glass-dropdown absolute left-0 top-full z-30 mt-1 max-h-72 w-72 overflow-y-auto rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-xl py-1"></div>
             </div>
-            <button onclick="LectureManager.loadSection()" class="rounded-lg bg-indigo-600 px-3 py-1.5 text-sm font-bold text-white hover:bg-indigo-700">
-                <i class="fa-solid fa-download mr-1"></i>加载小节
-            </button>
             <div class="flex-1"></div>
             <button onclick="LectureManager.editKnowledge()" class="rounded-lg border border-slate-300 dark:border-slate-700 px-3 py-1.5 text-sm hover:bg-slate-100 dark:hover:bg-slate-800">
                 <i class="fa-solid fa-pen mr-1"></i>知识梳理
@@ -2899,6 +3073,8 @@
             <button onclick="LectureManager.openOrphans()" class="rounded-lg border border-slate-300 dark:border-slate-700 px-3 py-1.5 text-sm hover:bg-slate-100 dark:hover:bg-slate-800" data-tooltip="列出考向树重建或小节改名后定位不到的修订稿，可逐条删除">
                 <i class="fa-solid fa-box-archive mr-1"></i>孤儿修订稿<span id="lectureOrphanCount" class="ml-1 text-[11px] px-1.5 py-0.5 rounded-full bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300 font-bold hidden"></span>
             </button>
+            <button id="lectureEditLock" class="rounded-lg border border-slate-300 dark:border-slate-700 px-3 py-1.5 text-sm hover:bg-slate-100 dark:hover:bg-slate-800" title="点击解锁后可编辑讲义内容">🔒 编辑已锁定</button>
+            <button id="lectureCommitNotes" class="rounded-lg border border-slate-300 dark:border-slate-700 px-3 py-1.5 text-sm hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed" disabled title="把本次会话的临时改动写入知识库">固化到知识库</button>
             <button onclick="LectureManager.saveDraft()" class="rounded-lg bg-emerald-600 px-3 py-1.5 text-sm font-bold text-white hover:bg-emerald-700">
                 <i class="fa-solid fa-floppy-disk mr-1"></i>保存讲义
             </button>
@@ -2913,10 +3089,16 @@
             <button onclick="LectureManager.printLecture()" class="rounded-lg border border-violet-600 px-3 py-1.5 text-sm font-bold text-violet-700 dark:text-violet-300 hover:bg-violet-50 dark:hover:bg-violet-900/20" data-tooltip="用浏览器打印对话框输出当前视图">
                 <i class="fa-solid fa-print mr-1"></i>浏览器打印
             </button>
+            <button id="lectureExportTex" onclick="LectureManager.exportTex()" class="rounded-lg border border-slate-300 dark:border-slate-700 px-3 py-1.5 text-sm hover:bg-slate-100 dark:hover:bg-slate-800" data-tooltip="导出与 PDF 同一份 LaTeX 源码（.tex），可自行编译">
+                <i class="fa-solid fa-file-code mr-1"></i>导出 TEX
+            </button>
             <button id="lectureExportPdf" onclick="LectureManager.exportPdf()" class="rounded-lg bg-violet-600 px-3 py-1.5 text-sm font-bold text-white hover:bg-violet-700 disabled:opacity-50" data-tooltip="走组卷引擎（exam-zh + XeLaTeX）编译高清 PDF，按当前视图决定含不含答案">
                 <i class="fa-solid fa-file-pdf mr-1"></i>导出 PDF
             </button>
         </div>
+
+        <!-- 已选小节 chips：点击切换激活节，点 × 移除该节（事件委托绑定，坐标不进内联属性） -->
+        <div id="lectureSectionChips" class="px-4 py-2 border-b border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-900/40 flex flex-wrap items-center gap-1.5"></div>
 
         <div class="flex-1 flex min-h-0">
             <!-- 考向选题面板 -->
@@ -2938,7 +3120,7 @@
         </div>
         <div class="flex-1 overflow-auto p-4">
             <textarea id="lectureNoteContent" class="w-full h-72 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 p-3 text-sm font-mono leading-relaxed" spellcheck="false"></textarea>
-            <p class="text-xs text-slate-400 mt-2">知识梳理为思维导图时：点击预览中任一文字块可直接编辑；此处为源码视图。支持 HTML / LaTeX（\(...\)）与 @mindmap JSON，保存后自动渲染。</p>
+            <p class="text-xs text-slate-400 mt-2">知识梳理为思维导图时：点击预览中任一文字块可直接编辑；此处为源码视图。支持 HTML / LaTeX（\(...\)）与 @mindmap JSON，保存后自动渲染。节点文字支持换行（直接按回车）；字面 \n 与 &lt;br&gt; 不生效。</p>
         </div>
         <div class="px-5 py-3 border-t border-slate-200 dark:border-slate-800 flex justify-end gap-2">
             <button id="lectureNoteDelete" onclick="LectureManager.deleteNote()" class="rounded-lg border border-red-300 dark:border-red-800 px-4 py-1.5 text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 hidden">恢复默认</button>
@@ -3011,9 +3193,6 @@
 
         <form id="lessonForm" class="flex-1 overflow-y-auto px-5 py-4 space-y-5 custom-scrollbar" onsubmit="return false;">
             <input type="hidden" id="lessonId">
-        <!-- 已选小节 chips：点击切换激活节，点 × 移除该节（事件委托绑定，坐标不进内联属性） -->
-        <div id="lectureSectionChips" class="px-4 py-2 border-b border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-900/40 flex flex-wrap items-center gap-1.5"></div>
-
 
             <!-- 基本信息 -->
             <div class="space-y-3">
@@ -3192,6 +3371,29 @@
 <datalist id="dlSrcRegions"></datalist>
 <datalist id="dlSrcExamTypes"></datalist>
 <datalist id="dlSrcPaperTitles"></datalist>
+
+<!-- 省/市/校展示顺序排序面板（import.js 的 openDisplayOrderPanel 驱动） -->
+<div id="displayOrderModal" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="displayOrderTitle" class="fixed inset-0 z-[95] hidden items-center justify-center bg-slate-950/55 p-4 opacity-0 backdrop-blur-sm transition-opacity duration-200">
+    <div data-modal-surface class="glass-modal flex max-h-[86vh] w-full max-w-lg scale-95 flex-col overflow-hidden rounded-3xl border border-white/50 shadow-2xl transition-transform duration-200">
+        <div class="flex items-start gap-3 border-b border-slate-200/70 p-4 dark:border-slate-700">
+            <div class="min-w-0 flex-1 space-y-2">
+                <h3 id="displayOrderTitle" tabindex="-1" class="text-base font-bold text-slate-800 dark:text-slate-100">自定义显示顺序</h3>
+                <div id="displayOrderTabs" class="flex gap-1.5" role="tablist" aria-label="选择要排序的层级"></div>
+                <p id="displayOrderHint" class="text-[11px] text-slate-500 dark:text-slate-300">点 📌 置顶（同一父级内生效），其余按引用次数、字母序自动排列；校档可 ✎ 改简称。</p>
+            </div>
+            <button type="button" data-modal-close aria-label="关闭排序面板" class="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-700 focus:outline-none focus:ring-2 focus:ring-brand-500/30 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-white">
+                <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+            </button>
+        </div>
+        <div id="displayOrderSelectors" class="flex flex-wrap items-center gap-1.5 px-4 pt-2 empty:hidden"></div>
+        <div id="displayOrderList" class="min-h-0 flex-1 space-y-1.5 overflow-y-auto p-4 custom-scrollbar" aria-live="off"></div>
+        <div class="flex items-center justify-end gap-2 border-t border-slate-200/70 bg-slate-50/70 p-4 dark:border-slate-700 dark:bg-slate-900/70">
+            <span id="displayOrderStatus" role="status" aria-live="polite" class="mr-auto text-[11px] text-slate-500 dark:text-slate-300"></span>
+            <button id="displayOrderCancelBtn" type="button" class="min-h-11 rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-bold text-slate-600 transition-colors hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700">取消</button>
+            <button id="displayOrderSaveBtn" type="button" class="min-h-11 rounded-xl bg-brand-600 px-4 py-2 text-xs font-bold text-white shadow-sm transition-colors hover:bg-brand-700 disabled:opacity-50 disabled:cursor-not-allowed">保存</button>
+        </div>
+    </div>
+</div>
 
 </body>
 </html>

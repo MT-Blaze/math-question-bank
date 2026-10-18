@@ -317,6 +317,63 @@ window.topicName = function(t) {
         })();
         window.MathBankModal = MathBankModal;
 
+        // ==================== 「全屏遮罩 + opacity 过渡」弹窗的统一开关 ====================
+        // 教训来自「+ 添加厂商」整页假死事故：弹窗根节点 class 带 fixed inset-0 + opacity-0，
+        // 打开逻辑只 remove('hidden') 而没人清 opacity-0 —— 遮罩隐形却吞掉全屏所有点击，
+        // 叠加 MathBankModal 把 header/main 置 inert，页面看起来"瞬间卡死"。
+        // 此类弹窗今后一律走这两个函数开关，业务代码不要再手写 hidden/opacity 的切换。
+        function findModalTransitionSurface(modal, surface) {
+            if (surface instanceof Element) return surface;
+            return modal.querySelector('.glass-modal, [data-modal-surface]');
+        }
+
+        function revealModalWithTransition(modal) {
+            const surface = modal.__transitionSurface || findModalTransitionSurface(modal);
+            modal.__transitionSurface = surface;
+            const show = () => {
+                modal.classList.remove('opacity-0');
+                if (surface) {
+                    surface.classList.remove('scale-95');
+                    surface.classList.add('scale-100');
+                }
+            };
+            // 同帧改 opacity 会被浏览器合并样式、过渡不跑，必须下一帧再改；
+            // 后台标签页/无头环境 rAF 会被冻结，所以再挂一个 setTimeout 兜底。
+            requestAnimationFrame(() => setTimeout(show, 0));
+            setTimeout(show, 60);
+        }
+
+        function openModalWithTransition(modalOrId, options) {
+            const opts = options || {};
+            const modal = typeof modalOrId === 'string' ? document.getElementById(modalOrId) : modalOrId;
+            if (!modal) return null;
+            modal.classList.remove('hidden');
+            modal.classList.add('flex');   // displayOrder/pandoc 这类运行时补 flex 的弹窗用；markup 自带 flex 时无操作
+            modal.__transitionSurface = findModalTransitionSurface(modal, opts.surface);
+            if (window.MathBankModal) window.MathBankModal.open(modal, opts);
+            revealModalWithTransition(modal);
+            return modal;
+        }
+
+        function closeModalWithTransition(modalOrId) {
+            const modal = typeof modalOrId === 'string' ? document.getElementById(modalOrId) : modalOrId;
+            if (!modal) return;
+            if (window.MathBankModal) window.MathBankModal.close(modal);
+            const surface = modal.__transitionSurface || findModalTransitionSurface(modal);
+            modal.classList.add('opacity-0');
+            if (surface) {
+                surface.classList.remove('scale-100');
+                surface.classList.add('scale-95');
+            }
+            // hidden 立刻归位、不等淡出动画跑完：淡出到 hidden 生效之间存在一段
+            // "看不见但吞点击"的窗口期。防点击吞噬优先于淡出观感。
+            modal.classList.add('hidden');
+            modal.classList.remove('flex');
+        }
+        window.revealModalWithTransition = revealModalWithTransition;
+        window.openModalWithTransition = openModalWithTransition;
+        window.closeModalWithTransition = closeModalWithTransition;
+
         // Duplicate-hit auto tagging. All three entry points (plain editor save,
         // single parsed-card import and batch import) must share this wording so a
         // question never ends up with two different "suspected duplicate" tags.
@@ -959,6 +1016,20 @@ window.topicName = function(t) {
             }
         };
         window.TikzState = TikzState;
+
+        // 「这张图本身就是 TikZ 渲染结果」的唯一判据：文件名以 tikz_ 开头。
+        // 后端 paper_helper 与前端 describeQuestionImageSource 早已用同一条规则，
+        // 但 decoratePreviewIllustrationButtons 原先只认内存资产表（TikzState），
+        // 资产记录一丢（老数据 / 刷新后 hydrate 到空 content_tikz_assets），
+        // 一张早就转好的图又会挂回「转 TikZ」入口。文件名是物理事实，比内存态可靠。
+        function isTikzRenderImage(value) {
+            const raw = String(value === null || value === undefined ? '' : value).trim();
+            const withoutFragment = raw.split('#')[0];
+            const base = withoutFragment.split('?')[0].split('/').pop() || '';
+            return /^tikz_/i.test(base);
+        }
+        window.isTikzRenderImage = isTikzRenderImage;
+
         let originalQuestionState = null;
         let contentOcrAbortController = null;
         let answerOcrAbortController = null;
@@ -1371,7 +1442,7 @@ window.topicName = function(t) {
                 const prov = val.substring(0, idx).toLowerCase();
                 const name = val.substring(idx + 1);
                 // 校验前缀合理性
-                if (['deepseek', 'siliconflow', 'bailian', 'zhongzhan', 'zhongzhan_gpt', 'zhongzhan_claude'].includes(prov)) {
+                if (['deepseek', 'siliconflow', 'bailian', 'zhongzhan', 'zhongzhan_gpt', 'zhongzhan_claude'].includes(prov) || prov.indexOf('cp_') === 0) {
                     let targetProv = prov;
                     if (targetProv === 'zhongzhan') targetProv = 'zhongzhan_gpt'; // 兼容老数据
                     return { provider: targetProv, model: name };
@@ -1387,7 +1458,16 @@ window.topicName = function(t) {
             
             const isZhongzhan = provider === 'zhongzhan' || provider === 'zhongzhan_gpt' || provider === 'zhongzhan_claude';
             
-            if (isZhongzhan) {
+            if (provider.indexOf('cp_') === 0) {
+                // 自定义厂商（瘦版）：无预设模型列表，模型名手填。
+                const inputId = `settings_${typeKey}_model_input`;
+                container.innerHTML = `
+                    <input id="${inputId}" type="text"
+                           class="glass-input flex-1 px-2.5 py-1.5 rounded-lg text-xs font-mono min-w-0"
+                           placeholder="输入模型名（如 gpt-4o）"
+                           value="${MathBankSafe.escapeAttribute(selectedValue || '')}">
+                `;
+            } else if (isZhongzhan) {
                 // 中转站模式：与官方渠道统一使用真正的 <select> 下拉，避免 datalist 仅自动填充无展开列表。
                 // 模型名中可拼接的推理强度（如 :max）单独用一个下拉控制。
                 let rawModel = selectedValue || "";
@@ -1505,6 +1585,8 @@ window.topicName = function(t) {
                 defVal = ""; // 默认空白，供用户填写
             } else if (provider === 'zhongzhan_claude') {
                 defVal = ""; // 默认空白，供用户填写
+            } else if (provider.indexOf('cp_') === 0) {
+                defVal = ""; // 自定义厂商：模型名由用户手填
             }
             
             renderModelSelector(typeKey, provider, defVal);
@@ -1613,18 +1695,73 @@ window.topicName = function(t) {
             });
         }
 
-        // 根据厂商名自动填充中转站行的隐藏 Base URL 与控制台链接
+        // 三家内置厂商「接口地址」输入框的默认值（与设置页 placeholder 一致）。
+        // 注：DeepSeek 官方用 https://api.deepseek.com（不带 /v1），与下方
+        // VENDOR_DEFAULT_BASE_URLS 的中转站映射不同，这里单独维护。
+        const VENDOR_BASE_URL_DEFAULTS = Object.freeze({
+            'DeepSeek': 'https://api.deepseek.com',
+            'SiliconFlow': 'https://api.siliconflow.cn/v1',
+            '阿里百炼': 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+            'MinerU': 'https://mineru.net/api/v4',
+            '智元/SenseNova': 'https://token.sensenova.cn/v1',
+            'Agnes AI': 'https://apihub.agnes-ai.cn/v1'
+        });
+
+        // 反向识别：在「接口地址」框输入时，按 hostname 自动推断厂商名。
+        // 命中 → 把左侧厂商名下拉切到对应项（但不回写地址框，避免覆盖用户手填的地址）。
+        const BASE_URL_VENDOR_HOST_MAP = Object.freeze([
+            { host: 'dashscope.aliyuncs.com', vendor: '阿里百炼' },
+            { host: 'token-plan.maas.qianwenai.com', vendor: '阿里百炼' },
+            { host: 'api.deepseek.com', vendor: 'DeepSeek' },
+            { host: 'api.siliconflow.cn', vendor: 'SiliconFlow' },
+            { host: 'mineru.net', vendor: 'MinerU' },
+            { host: 'token.sensenova.cn', vendor: '智元/SenseNova' },
+            { host: 'apihub.agnes-ai.cn', vendor: 'Agnes AI' }
+        ]);
+
+        function onBaseUrlInput(inputEl) {
+            if (!inputEl) return;
+            const row = inputEl.closest('.api-key-row');
+            const select = row ? row.querySelector('.vendor-select') : null;
+            // 前四行（DeepSeek/SiliconFlow/阿里百炼/MinerU）厂商名已 disabled 不可切换：
+            // 反查命中别的厂商时只改显示会变成「写着百炼、实际还是 DeepSeek 那一行」的误导，
+            // 因此固定行一律不跟随地址反查（地址仍可手填，保存目标不变）。
+            if (!select || select.disabled) return;
+            const url = (inputEl.value || '').trim().toLowerCase();
+            if (!url) return;
+            let matched = '';
+            for (const m of BASE_URL_VENDOR_HOST_MAP) {
+                if (url.indexOf(m.host) !== -1) {
+                    matched = m.vendor;
+                    break;
+                }
+            }
+            // 命中且当前选择不同：只切厂商名下拉（触发右侧模型候选同步），
+            // 不调用 autoFillVendorBaseUrl，以免把用户刚手填的自定义地址冲掉。
+            if (matched && select.value !== matched) {
+                select.value = matched;
+                syncModelProviderOptions();
+            }
+        }
+        window.onBaseUrlInput = onBaseUrlInput;
+
+        // 根据厂商名自动填充厂商行的 Base URL 与控制台链接（兼容中转站隐藏框 + 三家内置可见框）
         function autoFillVendorBaseUrl(selectEl) {
             if (!selectEl) return;
-            const row = selectEl.closest('[data-provider-slot]');
+            const row = selectEl.closest('.api-key-row');
             if (!row) return;
             const vendor = selectEl.value || '';
-            const baseInput = row.querySelector('input[type="hidden"][id$="BaseUrl"]');
+            const hiddenBaseInput = row.querySelector('input[type="hidden"][id$="BaseUrl"]');
+            const visibleBaseInput = row.querySelector('input[id$="BaseUrl"]:not([type="hidden"])');
             const consoleLink = row.querySelector('a[href]');
             const keyInput = row.querySelector('input[type="password"]');
 
             if (vendor && VENDOR_DEFAULT_BASE_URLS[vendor] !== undefined) {
-                if (baseInput) baseInput.value = VENDOR_DEFAULT_BASE_URLS[vendor];
+                if (hiddenBaseInput) hiddenBaseInput.value = VENDOR_DEFAULT_BASE_URLS[vendor];
+                // 三家内置厂商的可见「接口地址」框：选中厂商名时自动填回默认地址
+                if (visibleBaseInput && VENDOR_BASE_URL_DEFAULTS[vendor] !== undefined) {
+                    visibleBaseInput.value = VENDOR_BASE_URL_DEFAULTS[vendor];
+                }
                 if (consoleLink) {
                     consoleLink.href = VENDOR_CONSOLE_URLS[vendor] || '#';
                     consoleLink.removeAttribute('aria-disabled');
@@ -1639,10 +1776,37 @@ window.topicName = function(t) {
             updateZhongzhanVendorLinks();
         }
 
+        // 厂商名下拉切换后，让同行 Key 输入框的「标签 + placeholder」跟着新厂商名走。
+        // 注意：只改显示文字，绝不改 input 的 id —— 保存链路（saveSettings /
+        // providerCredentialInputs）全靠固定 id 定位，动 id 会把.env 写入错位。
+        // 后缀规则与 autoFillVendorBaseUrl 保持一致（MinerU 是 Token 不是 API Key）。
+        function syncVendorRowLabels(rowEl) {
+            if (!rowEl) return;
+            const select = rowEl.querySelector('.vendor-select');
+            const keyInput = rowEl.querySelector('input[type="password"]');
+            if (!select || !keyInput) return;
+            const vendor = (select.value || '').trim();
+            // 「其他…」（__custom__）时输入框已被换成自由文本厂商名，保持上一个厂商名不动
+            if (!vendor || vendor === '__custom__') return;
+            const keyLabel = keyInput.parentElement ? keyInput.parentElement.querySelector('label') : null;
+            if (!keyLabel) return;
+            const suffix = vendor === 'MinerU' ? ' Token' : ' API Key';
+            keyLabel.textContent = vendor + suffix;
+            keyInput.placeholder = '输入 ' + vendor + suffix;
+        }
+
+        // 批量同步所有已标记的厂商行（设置弹窗打开时做初始化）
+        function syncAllVendorRowLabels() {
+            document.querySelectorAll('#settings-tab-api [data-vendor-row]')
+                .forEach(function (row) { syncVendorRowLabels(row); });
+        }
+
         // 左侧厂商名选择「其他…」时变成可手动输入的文本框，并暴露 Base URL 输入框供自定义
         function onVendorSelectChange(selectEl) {
-            if (!selectEl) return;
-            const row = selectEl.closest('[data-provider-slot]');
+            if (!selectEl || selectEl.disabled) return;
+            // 用 [data-vendor-row] 而不是 [data-provider-slot]：后者只有中转站两行带，
+            // 其余四行会取到 null（旧写法留下的暗坑）。
+            const row = selectEl.closest('[data-vendor-row]');
             if (selectEl.value === '__custom__') {
                 // 把隐藏 Base URL 输入框换成可见输入框，让用户填写自定义地址
                 if (row) {
@@ -1678,6 +1842,8 @@ window.topicName = function(t) {
                 }
                 autoFillVendorBaseUrl(selectEl);
             }
+            // 无论走哪个分支，Key 输入框的标签与 placeholder 都要跟上当前厂商名
+            syncVendorRowLabels(selectEl.closest('[data-vendor-row]'));
         }
 
         // 根据左侧 API 密钥配置里出现的厂商，同步右侧「首选模型」的 provider 下拉可选项。
@@ -1744,7 +1910,154 @@ window.topicName = function(t) {
                     onModelProviderChange(typeKey);
                 }
             });
+            // 重建下拉后重新把自定义厂商（cp_ 前缀）选项补回（仅文本类任务）
+            syncCustomProviderOptions();
         }
+
+        // ===== 自定义厂商（瘦版：仅 OpenAI 兼容的第三方文本厂商） =====
+        // 状态保存在模块级数组；openSettingsModal 时从后端回填，saveSettings 时序列化提交。
+        let customProviders = [];
+
+        // 把厂商名压成稳定大写 slug（与后端 ai_providers._slugify 保持一致：去非 A-Z0-9）
+        function slugifyVendorName(name) {
+            return String(name || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+        }
+
+        function getCustomProviderOptions() {
+            // 返回 [{value:'cp_<slug>', label: name}]，供首选模型 provider 下拉使用。
+            // value 用小写 slug，与 parseModelConfig 解析出来的小写 provider 一致；
+            // 保存时会被 toUpperCase 成 CP_<SLUG> 后再交给后端 resolve_text_provider。
+            return customProviders
+                .map(p => {
+                    const slug = slugifyVendorName(p.name);
+                    return slug ? { value: 'cp_' + slug.toLowerCase(), label: p.name } : null;
+                })
+                .filter(Boolean);
+        }
+
+        // 渲染自定义厂商行到 #customProvidersContainer
+        function renderCustomProviders() {
+            const container = document.getElementById('customProvidersContainer');
+            if (!container) return;
+            if (!customProviders.length) {
+                container.innerHTML = '';
+                return;
+            }
+            container.innerHTML = customProviders.map(p => {
+                const slug = slugifyVendorName(p.name);
+                return `
+                    <div class="api-key-row space-y-1" data-cp-slug="${MathBankSafe.escapeAttribute(slug)}">
+                        <div class="glass-card rounded-xl p-3 space-y-2 shadow-sm">
+                            <div class="flex items-center justify-between">
+                                <div class="flex items-center gap-2 min-w-0">
+                                    <span class="text-[11px] font-bold text-slate-700">${MathBankSafe.escapeText(p.name)}</span>
+                                    <span class="text-[9px] font-mono text-slate-400">cp_${MathBankSafe.escapeText(slug)}</span>
+                                </div>
+                                <button type="button" onclick="removeCustomProvider('${MathBankSafe.escapeAttribute(slug)}')"
+                                        class="h-7 w-7 rounded-lg border border-slate-200 hover:border-red-500 hover:text-red-600 flex items-center justify-center text-xs transition-colors shrink-0 bg-white"
+                                        title="删除该自定义厂商">
+                                    <i class="fa-solid fa-trash-can"></i>
+                                </button>
+                            </div>
+                            <div class="grid grid-cols-[minmax(0,2fr)_minmax(0,2fr)_minmax(0,2fr)] gap-2">
+                                <div>
+                                    <label class="block text-[10px] font-semibold text-slate-500 mb-0.5">Base URL</label>
+                                    <input type="text" class="glass-input w-full px-2 py-1.5 rounded-lg text-xs font-mono"
+                                           value="${MathBankSafe.escapeAttribute(p.base_url)}" readonly>
+                                </div>
+                                <div>
+                                    <label class="block text-[10px] font-semibold text-slate-500 mb-0.5">API Key</label>
+                                    <input type="password" class="glass-input w-full px-2 py-1.5 rounded-lg text-xs font-mono"
+                                           value="${MathBankSafe.escapeAttribute(p.api_key)}" readonly>
+                                </div>
+                                <div>
+                                    <label class="block text-[10px] font-semibold text-slate-500 mb-0.5">默认模型</label>
+                                    <input type="text" class="glass-input w-full px-2 py-1.5 rounded-lg text-xs font-mono"
+                                           value="${MathBankSafe.escapeAttribute(p.model)}" readonly>
+                                </div>
+                            </div>
+                        </div>
+                    </div>`;
+            }).join('');
+        }
+
+        // 把自定义厂商选项同步进右侧「首选模型」的 provider 下拉（仅文本类任务：解题/拆解/分类/绘图；不含 OCR）。
+        function syncCustomProviderOptions() {
+            const cpOptions = getCustomProviderOptions();
+            if (!cpOptions.length) return;
+            const providerSelects = ['solveModelProvider', 'parseModelProvider', 'classifyModelProvider', 'drawModelProvider'];
+            providerSelects.forEach(id => {
+                const sel = document.getElementById(id);
+                if (!sel) return;
+                cpOptions.forEach(opt => {
+                    if (!Array.from(sel.options).some(o => o.value === opt.value)) {
+                        const o = document.createElement('option');
+                        o.value = opt.value;
+                        o.textContent = opt.label;
+                        sel.appendChild(o);
+                    }
+                });
+            });
+        }
+
+        // 打开添加自定义厂商的小窗
+        function openCustomVendorModal() {
+            ['cvName', 'cvBaseUrl', 'cvApiKey', 'cvModel'].forEach(id => {
+                const el = document.getElementById(id);
+                if (el) el.value = '';
+            });
+            // 一律走公共开关助手：下一帧清 opacity-0（rAF+setTimeout 双保险），
+            // 关闭时立刻复位 hidden，杜绝"看不见的点击吞噬层"这类整页假死。
+            window.openModalWithTransition('customVendorModal', { onEscape: closeCustomVendorModal });
+        }
+
+        function closeCustomVendorModal() {
+            window.closeModalWithTransition('customVendorModal');
+        }
+
+        function submitCustomVendor() {
+            const nameEl = document.getElementById('cvName');
+            const baseEl = document.getElementById('cvBaseUrl');
+            const keyEl = document.getElementById('cvApiKey');
+            const modelEl = document.getElementById('cvModel');
+            const name = (nameEl && nameEl.value || '').trim();
+            if (!name) {
+                showToast('请填写厂商名', 'error');
+                return;
+            }
+            const slug = slugifyVendorName(name);
+            if (!slug) {
+                showToast('厂商名需包含至少一个字母或数字', 'error');
+                return;
+            }
+            if (customProviders.some(p => slugifyVendorName(p.name) === slug)) {
+                showToast('已存在同名（或同 slug）的自定义厂商', 'error');
+                return;
+            }
+            customProviders.push({
+                name: name,
+                base_url: (baseEl && baseEl.value || '').trim(),
+                api_key: (keyEl && keyEl.value || '').trim(),
+                model: (modelEl && modelEl.value || '').trim()
+            });
+            renderCustomProviders();
+            syncCustomProviderOptions();
+            closeCustomVendorModal();
+            showToast('已添加自定义厂商：' + name, 'success');
+        }
+
+        // 删除自定义厂商行
+        function removeCustomProvider(slug) {
+            if (!confirm('确认删除该自定义厂商？')) return;
+            customProviders = customProviders.filter(p => slugifyVendorName(p.name) !== slug);
+            renderCustomProviders();
+            syncCustomProviderOptions();
+        }
+
+        window.openCustomVendorModal = openCustomVendorModal;
+        window.closeCustomVendorModal = closeCustomVendorModal;
+        window.submitCustomVendor = submitCustomVendor;
+        window.removeCustomProvider = removeCustomProvider;
 
         function openSettingsModal() {
             if (window.switchSettingsTab) {
@@ -1767,6 +2080,10 @@ window.topicName = function(t) {
                     document.getElementById('settingsSiliconflowKey').value = settings.siliconflow_key || '';
                     document.getElementById('settingsAliBailianKey').value = settings.ali_bailian_key || '';
                     document.getElementById('settingsMineruToken').value = settings.mineru_token || '';
+                    // 回填三家内置厂商的自定义接口地址（场景C：重启后重开仍显示自定义地址）
+                    document.getElementById('settingsDeepseekBaseUrl').value = settings.deepseek_base_url || '';
+                    document.getElementById('settingsSiliconflowBaseUrl').value = settings.siliconflow_base_url || '';
+                    document.getElementById('settingsAliBailianBaseUrl').value = settings.ali_bailian_base_url || '';
                     document.getElementById('settingsMineruApiBase').value = settings.mineru_api_base || '';
                     
                     document.getElementById('settingsZhongzhanGptKey').value = settings.zhongzhan_gpt_key || '';
@@ -1808,6 +2125,19 @@ window.topicName = function(t) {
                     }
                     restoreZhongzhanVendorSlot('zhongzhan_gpt', '智元/SenseNova');
                     restoreZhongzhanVendorSlot('zhongzhan_claude', 'Agnes AI');
+                    // 厂商名回填后，Key 输入框的标签/placeholder 同步成当前厂商名
+                    syncAllVendorRowLabels();
+
+                    // 回填自定义厂商（瘦版）并渲染动态行
+                    customProviders = Array.isArray(settings.custom_providers)
+                        ? settings.custom_providers.map(p => ({
+                            name: String(p.name || ''),
+                            base_url: String(p.base_url || ''),
+                            api_key: String(p.api_key || ''),
+                            model: String(p.model || '')
+                        }))
+                        : [];
+                    renderCustomProviders();
 
                     updateZhongzhanVendorLinks();
                     syncModelProviderOptions();
@@ -1860,31 +2190,18 @@ window.topicName = function(t) {
                     console.error('获取元数据配置失败:', err);
                 });
                 
-            modal.classList.remove('hidden');
-            window.MathBankModal.open(modal, { onEscape: closeSettingsModal });
-            setTimeout(() => {
-                modal.classList.remove('opacity-0');
-                modal.querySelector('div').classList.remove('scale-95');
-                modal.querySelector('div').classList.add('scale-100');
-            }, 50);
+            window.openModalWithTransition(modal, { onEscape: closeSettingsModal });
         }
 
         function closeSettingsModal() {
             const modal = document.getElementById('settingsModal');
-            window.MathBankModal.close(modal);
+            window.closeModalWithTransition(modal);
             document.body.classList.remove('modal-active');
-            
-            modal.classList.add('opacity-0');
-            modal.querySelector('div').classList.remove('scale-100');
-            modal.querySelector('div').classList.add('scale-95');
-            setTimeout(() => {
-                modal.classList.add('hidden');
-                // 弹窗关闭后，如果状态灯是绿色的，恢复呼吸闪烁
-                const indicatorDot = document.querySelector('#apiStatusIndicator span.bg-green-500');
-                if (indicatorDot) {
-                    indicatorDot.classList.add('animate-pulse');
-                }
-            }, 300);
+            // 弹窗关闭后，如果状态灯是绿色的，恢复呼吸闪烁
+            const indicatorDot = document.querySelector('#apiStatusIndicator span.bg-green-500');
+            if (indicatorDot) {
+                indicatorDot.classList.add('animate-pulse');
+            }
         }
 
         // Graceful server shutdown trigger
@@ -1919,9 +2236,7 @@ window.topicName = function(t) {
                     </div>
                 `;
                 document.body.appendChild(overlay);
-                setTimeout(() => {
-                    overlay.classList.remove('opacity-0');
-                }, 50);
+                window.revealModalWithTransition(overlay);
 
                 // Send shutdown request to backend
                 fetch('/api/shutdown', {
@@ -1962,6 +2277,11 @@ window.topicName = function(t) {
             const aliBailianKey = document.getElementById('settingsAliBailianKey').value;
             const mineruToken = document.getElementById('settingsMineruToken').value;
             const mineruApiBase = document.getElementById('settingsMineruApiBase').value.trim();
+
+            // 三家内置厂商的自定义接口地址（Base URL）
+            const deepseekBaseUrl = document.getElementById('settingsDeepseekBaseUrl').value.trim();
+            const siliconflowBaseUrl = document.getElementById('settingsSiliconflowBaseUrl').value.trim();
+            const aliBailianBaseUrl = document.getElementById('settingsAliBailianBaseUrl').value.trim();
             
             const zhongzhanGptKey = document.getElementById('settingsZhongzhanGptKey').value;
             const zhongzhanGptBaseUrl = normalizeApiBase(document.getElementById('settingsZhongzhanGptBaseUrl').value);
@@ -1981,10 +2301,13 @@ window.topicName = function(t) {
                         }
                     }
                     return mVal;
-                } else {
-                    const select = document.getElementById(`settings_${typeKey}_model_select`);
-                    return select ? select.value : '';
-                }
+            } else {
+                const select = document.getElementById(`settings_${typeKey}_model_select`);
+                if (select) return select.value;
+                // 自定义厂商（cp_）渲染的是手填输入框而非下拉
+                const input = document.getElementById(`settings_${typeKey}_model_input`);
+                return input ? input.value.trim() : '';
+            }
             }
             
             // 1. AI 智能解题模型
@@ -2027,7 +2350,11 @@ window.topicName = function(t) {
             formData.append('deepseek_key', key);
             formData.append('siliconflow_key', siliconflowKey);
             formData.append('ali_bailian_key', aliBailianKey);
-            
+
+            formData.append('deepseek_base_url', deepseekBaseUrl);
+            formData.append('siliconflow_base_url', siliconflowBaseUrl);
+            formData.append('ali_bailian_base_url', aliBailianBaseUrl);
+
             formData.append('mineru_token', mineruToken);
             formData.append('mineru_api_base', mineruApiBase);
 
@@ -2045,6 +2372,9 @@ window.topicName = function(t) {
             formData.append('prefer_parse_model', preferParseModel);
             formData.append('prefer_classify_model', preferClassifyModel);
             formData.append('prefer_draw_model', preferDrawModel);
+
+            // 自定义厂商（瘦版）序列化提交
+            formData.append('custom_providers', JSON.stringify(customProviders || []));
             
             // Chain both saves: metadata JSON and ENV settings parameters
             let metaPayload = null;
@@ -2178,6 +2508,8 @@ window.topicName = function(t) {
         }
         window.testProviderConnection = testProviderConnection;
         window.onVendorSelectChange = onVendorSelectChange;
+        window.syncVendorRowLabels = syncVendorRowLabels;
+        window.syncAllVendorRowLabels = syncAllVendorRowLabels;
         window.syncModelProviderOptions = syncModelProviderOptions;
         window.normalizeApiBase = normalizeApiBase;
 
@@ -2601,6 +2933,13 @@ window.topicName = function(t) {
         }
 
         function metadataTreeDraftRow(draft, onOk) {
+            // 这个助手原本只服务设置页那套已不可达的单栏树；拆卷卡片的考向改名也复用它。
+            // 因此不能再无条件调 metadataTreeRender()（调用方可能不在大纲树上下文里）。
+            const redraw = function() {
+                if (typeof window.metadataTreeRender === 'function') {
+                    try { metadataTreeRender(); } catch (err) { /* 非树上下文：忽略 */ }
+                }
+            };
             const row = document.createElement('div');
             row.className = 'flex items-center gap-1.5 py-1';
             const inp = document.createElement('input');
@@ -2621,18 +2960,20 @@ window.topicName = function(t) {
                 const v = inp.value.trim();
                 window.metadataTreeDraft = null;
                 if (v) onOk(v);
-                else metadataTreeRender();
+                else redraw();
             };
             ok.onclick = commit;
-            cancel.onclick = function() { window.metadataTreeDraft = null; metadataTreeRender(); };
+            cancel.onclick = function() { window.metadataTreeDraft = null; redraw(); };
             inp.onkeydown = function(e) {
                 if (e.key === 'Enter') { e.preventDefault(); commit(); }
-                else if (e.key === 'Escape') { e.preventDefault(); window.metadataTreeDraft = null; metadataTreeRender(); }
+                else if (e.key === 'Escape') { e.preventDefault(); window.metadataTreeDraft = null; redraw(); }
             };
             row.appendChild(inp); row.appendChild(ok); row.appendChild(cancel);
             setTimeout(function() { try { inp.focus(); inp.select(); } catch (err) {} }, 0);
             return row;
         }
+        // 拆卷卡片的考向改名要就地展开同一款编辑行（api.js 先加载，import.js 直接用）。
+        window.metadataTreeDraftRow = metadataTreeDraftRow;
 
         function metadataTreeCounts(curriculum) {
             let chapters = 0, topics = 0;
@@ -3453,69 +3794,6 @@ head.appendChild(btns);
               }).catch(function() { showToast('保存失败', 'error'); });
         };
 
-        // ============ 考向树 TXT 底层文件同步 ============
-        function kaoxiangRenderStatus(status) {
-            var box = document.getElementById('kaoxiangStatus');
-            var dirBox = document.getElementById('kaoxiangDir');
-            if (!box) return;
-            if (dirBox && status && status.dir) dirBox.textContent = status.dir;
-            if (!status || !status.files || !status.files.length) {
-                box.innerHTML = '<span class="text-slate-400">未找到考向树 TXT（目录：考向树/）</span>';
-                return;
-            }
-            var rows = status.files.map(function(f) {
-                var badge = !f.matched
-                    ? '<span class="px-1.5 py-0.5 rounded bg-rose-50 text-rose-600">未匹配到章节</span>'
-                    : (f.in_sync
-                        ? '<span class="px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-600">已同步</span>'
-                        : '<span class="px-1.5 py-0.5 rounded bg-amber-50 text-amber-600">待同步</span>');
-                return '<div class="flex items-center gap-2 flex-wrap">'
-                    + '<span class="text-slate-600 font-medium">' + (f.filename || '') + '</span>'
-                    + badge
-                    + '<span class="text-slate-400">' + (f.chapter || '—') + ' · TXT ' + f.txt_topics + ' 考向 / 网页 ' + f.web_topics + ' 考向</span>'
-                    + '</div>';
-            });
-            box.innerHTML = rows.join('');
-        }
-
-        window.kaoxiangRefresh = function() {
-            fetch('/api/kaoxiang/status')
-                .then(function(r) { return r.json(); })
-                .then(function(data) { kaoxiangRenderStatus(data); })
-                .catch(function() {
-                    var box = document.getElementById('kaoxiangStatus');
-                    if (box) box.innerHTML = '<span class="text-rose-500">状态读取失败</span>';
-                });
-        };
-
-        window.kaoxiangSync = function(direction) {
-            var label = direction === 'push' ? '网页 → TXT' : 'TXT → 网页';
-            var box = document.getElementById('kaoxiangStatus');
-            if (box) box.innerHTML = '<span class="text-slate-400">正在同步（' + label + '）…</span>';
-            fetch('/api/kaoxiang/sync', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({direction: direction})
-            }).then(function(r) { return r.json().then(function(d) { return {ok: r.ok, data: d}; }); })
-              .then(function(res) {
-                  if (!res.ok) {
-                      showToast('同步失败：' + ((res.data && res.data.detail) || '未知错误'), 'error');
-                  } else {
-                      var changed = 0;
-                      (res.data.files || []).forEach(function(f) {
-                          if (f.action === 'pulled' || f.action === 'pushed') changed += 1;
-                      });
-                      showToast(changed ? (label + ' 已同步 ' + changed + ' 个章节') : (label + '：两边已一致'), 'success');
-                  }
-                  if (res.data && res.data.status) kaoxiangRenderStatus(res.data.status);
-                  else window.kaoxiangRefresh();
-                  if (typeof window.loadBothTrees === 'function') window.loadBothTrees();
-              }).catch(function() {
-                  showToast('同步失败', 'error');
-                  window.kaoxiangRefresh();
-              });
-        };
-
         function loadBothTrees() {
             ['left', 'right'].forEach(function(side) {
                 var ed = treeEditors[side];
@@ -3648,7 +3926,6 @@ head.appendChild(btns);
                     renderMetadataVisualEditors();
                 }
                 if (typeof loadBothTrees === 'function') loadBothTrees();
-                if (typeof window.kaoxiangRefresh === 'function') window.kaoxiangRefresh();
             } else if (tabName === 'json') {
                 if (btnJson) {
                     btnJson.classList.add('border-brand-500', 'text-brand-600', 'font-semibold');
@@ -3840,25 +4117,11 @@ head.appendChild(btns);
             }
 
             // Show modal
-            modal.classList.remove('hidden');
-            window.MathBankModal.open(modal, { onEscape: window.closeUpdateModal });
-            setTimeout(() => {
-                modal.classList.remove('opacity-0');
-                const content = modal.querySelector('.glass-modal');
-                if (content) content.classList.remove('scale-95');
-            }, 10);
+            window.openModalWithTransition(modal, { onEscape: window.closeUpdateModal });
         };
 
         window.closeUpdateModal = function() {
-            const modal = document.getElementById('updateModal');
-            if (!modal) return;
-            window.MathBankModal.close(modal);
-            modal.classList.add('opacity-0');
-            const content = modal.querySelector('.glass-modal');
-            if (content) content.classList.add('scale-95');
-            setTimeout(() => {
-                modal.classList.add('hidden');
-            }, 300);
+            window.closeModalWithTransition('updateModal');
         };
 
         // Ignore current version update

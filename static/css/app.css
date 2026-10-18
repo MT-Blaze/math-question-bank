@@ -23,39 +23,39 @@ html.init-ws-paper #toggleSidebarBtn { display: none !important; }
     src: url('../lib/fonts/outfit-latin.woff2') format('woff2');
 }
 
-/* Base Background - Warm Gray & Colors */
+/* Base Background - Cool Neutral Light (Modern Clean) */
 :root {
-    --apple-bg: #FAFAF8;
+    --apple-bg: #F5F6F8;
     --apple-bg-elevated: #FFFFFF;
-    --apple-glass-bg: rgba(255, 255, 255, 0.72);
-    --apple-glass-bg-hover: rgba(255, 255, 255, 0.85);
-    --apple-glass-border: rgba(255, 255, 255, 0.5);
-    --apple-glass-blur: 20px;
-    --apple-glass-saturate: 180%;
-    --apple-radius-sm: 12px;
-    --apple-radius-md: 16px;
-    --apple-radius-lg: 20px;
-    --apple-radius-xl: 24px;
-    --apple-shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
-    --apple-shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08), 0 2px 4px rgba(0, 0, 0, 0.04);
-    --apple-shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.12), 0 4px 12px rgba(0, 0, 0, 0.06);
+    --apple-glass-bg: rgba(255, 255, 255, 0.92);
+    --apple-glass-bg-hover: rgba(255, 255, 255, 0.98);
+    --apple-glass-border: rgba(15, 23, 42, 0.07);
+    --apple-glass-blur: 10px;
+    --apple-glass-saturate: 140%;
+    --apple-radius-sm: 10px;
+    --apple-radius-md: 14px;
+    --apple-radius-lg: 18px;
+    --apple-radius-xl: 22px;
+    --apple-shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.04), 0 1px 3px rgba(15, 23, 42, 0.05);
+    --apple-shadow-md: 0 4px 12px rgba(15, 23, 42, 0.06), 0 2px 4px rgba(15, 23, 42, 0.04);
+    --apple-shadow-lg: 0 16px 48px rgba(15, 23, 42, 0.10), 0 6px 16px rgba(15, 23, 42, 0.06);
 
     /* Text hierarchy */
-    --text-primary: #1E293B;
-    --text-secondary: #64748B;
-    --text-tertiary: #94A3B8;
+    --text-primary: #0F172A;
+    --text-secondary: #51607A;
+    --text-tertiary: #8A95A8;
 
-    /* Default Violet Theme */
-    --brand-50-rgb: 245, 243, 255;
-    --brand-100-rgb: 237, 233, 254;
-    --brand-200-rgb: 221, 214, 254;
-    --brand-400-rgb: 167, 139, 250;
-    --brand-500-rgb: 139, 92, 246;
-    --brand-600-rgb: 124, 58, 237;
-    --brand-700-rgb: 109, 40, 217;
-    --brand-900-rgb: 76, 29, 149;
-    --brand-rgb: 124, 58, 237;
-    --apple-shadow-glow: 0 0 20px rgba(var(--brand-rgb), 0.15);
+    /* Default Indigo Theme (Modern Clean) */
+    --brand-50-rgb: 238, 242, 255;
+    --brand-100-rgb: 224, 231, 255;
+    --brand-200-rgb: 199, 210, 254;
+    --brand-400-rgb: 129, 140, 248;
+    --brand-500-rgb: 99, 102, 241;
+    --brand-600-rgb: 79, 70, 229;
+    --brand-700-rgb: 67, 56, 202;
+    --brand-900-rgb: 49, 46, 129;
+    --brand-rgb: 79, 70, 229;
+    --apple-shadow-glow: 0 0 24px rgba(var(--brand-rgb), 0.12);
 }
 
 /* Theme Classes definitions */
@@ -73,16 +73,16 @@ html.init-ws-paper #toggleSidebarBtn { display: none !important; }
 }
 
 .theme-violet {
-    --brand-50-rgb: 245, 243, 255;
-    --brand-100-rgb: 237, 233, 254;
-    --brand-200-rgb: 221, 214, 254;
-    --brand-400-rgb: 167, 139, 250;
-    --brand-500-rgb: 139, 92, 246;
-    --brand-600-rgb: 124, 58, 237;
-    --brand-700-rgb: 109, 40, 217;
-    --brand-900-rgb: 76, 29, 149;
-    --brand-rgb: 124, 58, 237;
-    --apple-shadow-glow: 0 0 20px rgba(var(--brand-rgb), 0.15);
+    --brand-50-rgb: 238, 242, 255;
+    --brand-100-rgb: 224, 231, 255;
+    --brand-200-rgb: 199, 210, 254;
+    --brand-400-rgb: 129, 140, 248;
+    --brand-500-rgb: 99, 102, 241;
+    --brand-600-rgb: 79, 70, 229;
+    --brand-700-rgb: 67, 56, 202;
+    --brand-900-rgb: 49, 46, 129;
+    --brand-rgb: 79, 70, 229;
+    --apple-shadow-glow: 0 0 24px rgba(79, 70, 229, 0.12);
 }
 
 .theme-emerald {
@@ -139,14 +139,14 @@ html.init-ws-paper #toggleSidebarBtn { display: none !important; }
 
 /* Elegant Dark Mode Definition */
 .dark {
-    --apple-bg: #0B0F19; /* Deep Space Navy */
-    --apple-bg-elevated: #161F30;
-    --apple-glass-bg: rgba(22, 31, 48, 0.72);
-    --apple-glass-bg-hover: rgba(29, 41, 64, 0.85);
+    --apple-bg: #0C0E15; /* Clean Deep Navy */
+    --apple-bg-elevated: #141925;
+    --apple-glass-bg: rgba(20, 25, 37, 0.85);
+    --apple-glass-bg-hover: rgba(28, 35, 52, 0.92);
     --apple-glass-border: rgba(255, 255, 255, 0.08);
     --apple-shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.3), 0 1px 2px rgba(0, 0, 0, 0.2);
-    --apple-shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08), 0 2px 4px rgba(0, 0, 0, 0.04);
-    --apple-shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.12), 0 4px 12px rgba(0, 0, 0, 0.06);
+    --apple-shadow-md: 0 4px 12px rgba(0, 0, 0, 0.18), 0 2px 4px rgba(0, 0, 0, 0.12);
+    --apple-shadow-lg: 0 16px 48px rgba(0, 0, 0, 0.40), 0 6px 16px rgba(0, 0, 0, 0.28);
 
     --text-primary: #F1F5F9;
     --text-secondary: #94A3B8;
@@ -499,12 +499,10 @@ html {
 
 /* Glassmorphism Classes - Enhanced Apple Style */
 .glass-panel {
-    background: var(--apple-glass-bg);
-    backdrop-filter: blur(var(--apple-glass-blur)) saturate(var(--apple-glass-saturate));
-    -webkit-backdrop-filter: blur(var(--apple-glass-blur)) saturate(var(--apple-glass-saturate));
+    background: var(--apple-bg-elevated);
     border: 1px solid var(--apple-glass-border);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.6), var(--apple-shadow-sm);
-    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    box-shadow: var(--apple-shadow-sm);
+    transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .dark .glass-panel {
@@ -517,12 +515,10 @@ html {
 }
 
 .glass-card {
-    background: rgba(255, 255, 255, 0.55);
-    backdrop-filter: blur(16px) saturate(180%);
-    -webkit-backdrop-filter: blur(16px) saturate(180%);
-    border: 1px solid rgba(255, 255, 255, 0.4);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.6), var(--apple-shadow-sm);
-    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    background: var(--apple-bg-elevated);
+    border: 1px solid var(--apple-glass-border);
+    box-shadow: var(--apple-shadow-sm);
+    transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .dark .glass-card {
@@ -532,25 +528,25 @@ html {
 }
 
 .glass-card:hover {
-    /* Solid, static grounded appearance without hover lift/elevation */
-    transform: none;
+    box-shadow: var(--apple-shadow-md);
+    transform: translateY(-2px);
 }
 
 /* Glass Button - Solid Flat Style */
 .glass-btn {
     background: #ffffff;
-    border: 1px solid #cbd5e1;
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+    border: 1px solid #E2E8F0;
+    box-shadow: var(--apple-shadow-sm);
     transition: all 0.2s ease;
     cursor: pointer;
-    color: #475569;
+    color: var(--text-secondary);
 }
 
 .glass-btn:hover {
-    background: #f8fafc;
-    border-color: #94a3b8;
-    color: #1e293b;
-    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.06);
+    background: #F8FAFC;
+    border-color: #CBD5E1;
+    color: var(--text-primary);
+    box-shadow: var(--apple-shadow-md);
 }
 
 .glass-btn:active {
@@ -560,19 +556,18 @@ html {
 
 /* Primary Glass Button (Brand Color) - 2D Flat Style (Restored tactile 3D) */
 .glass-btn-primary {
-    background: rgba(var(--brand-rgb), 0.75);
-    backdrop-filter: blur(12px) saturate(150%);
-    -webkit-backdrop-filter: blur(12px) saturate(150%);
-    border: 1px solid rgba(255, 255, 255, 0.18);
-    box-shadow: 0 2px 8px rgba(var(--brand-rgb), 0.15);
-    color: white;
+    background: rgb(var(--brand-600-rgb));
+    border: 1px solid rgb(var(--brand-700-rgb));
+    box-shadow: 0 1px 2px rgba(var(--brand-rgb), 0.18);
+    color: #ffffff;
     transition: all 0.2s ease;
     cursor: pointer;
 }
 
 .glass-btn-primary:hover {
-    background: rgba(var(--brand-rgb), 0.85);
-    box-shadow: 0 4px 12px rgba(var(--brand-rgb), 0.2);
+    background: rgb(var(--brand-500-rgb));
+    border-color: rgb(var(--brand-600-rgb));
+    box-shadow: 0 4px 12px rgba(var(--brand-rgb), 0.22);
     transform: translateY(-1px);
 }
 
@@ -583,19 +578,18 @@ html {
 
 /* Danger Glass Button - 2D Flat Style (Restored tactile 3D) */
 .glass-btn-danger {
-    background: rgba(239, 68, 68, 0.75);
-    backdrop-filter: blur(12px) saturate(150%);
-    -webkit-backdrop-filter: blur(12px) saturate(150%);
-    border: 1px solid rgba(255, 255, 255, 0.18);
-    box-shadow: 0 2px 8px rgba(239, 68, 68, 0.15);
-    color: white;
+    background: #EF4444;
+    border: 1px solid #DC2626;
+    box-shadow: 0 1px 2px rgba(239, 68, 68, 0.18);
+    color: #ffffff;
     transition: all 0.2s ease;
     cursor: pointer;
 }
 
 .glass-btn-danger:hover {
-    background: rgba(239, 68, 68, 0.85);
-    box-shadow: 0 4px 12px rgba(239, 68, 68, 0.2);
+    background: #DC2626;
+    border-color: #B91C1C;
+    box-shadow: 0 4px 12px rgba(239, 68, 68, 0.22);
     transform: translateY(-1px);
 }
 
@@ -643,9 +637,9 @@ input.glass-input {
     box-shadow: 0 0 0 3px rgba(var(--brand-rgb), 0.1);
 }/* Glass Modal Overlay */
 .glass-modal-overlay {
-    background: rgba(255, 255, 255, 0.35); /* 提升白皙度，配合模糊展现柔和高档的苹果牛奶玻璃感 */
-    backdrop-filter: blur(12px); /* 细腻舒适的 12px 模糊 */
-    -webkit-backdrop-filter: blur(12px);
+    background: rgba(15, 23, 42, 0.22);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
 }
 
 .dark .glass-modal-overlay {
@@ -653,8 +647,8 @@ input.glass-input {
 }
 
 .glass-modal {
-    background: rgba(255, 255, 255, 0.96); /* 升级至 96% 高级白润，杜绝父子遮罩层嵌套 Backdrop-Filter 冲突引发的硬件频闪 */
-    border: 1px solid rgba(0, 0, 0, 0.08); /* 稍微勾画清晰卡片轮廓，展现高级质感 */
+    background: #FFFFFF;
+    border: 1px solid var(--apple-glass-border);
     box-shadow: var(--apple-shadow-lg);
 }
 
@@ -675,26 +669,26 @@ header, main {
     transition: opacity 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
 }/* Apple-Style Card List Item */
 .glass-list-item {
-    background: rgba(255, 255, 255, 0.5);
-    backdrop-filter: blur(10px);
-    -webkit-backdrop-filter: blur(10px);
-    border: 1px solid rgba(0, 0, 0, 0.04);
+    background: #FFFFFF;
+    border: 1px solid var(--apple-glass-border);
+    box-shadow: var(--apple-shadow-sm);
     transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
     cursor: pointer;
 }
 
 .glass-list-item:hover {
-    background: rgba(255, 255, 255, 0.8);
-    box-shadow: var(--apple-shadow-sm);
+    background: #F8FAFC;
+    box-shadow: var(--apple-shadow-md);
+    border-color: #CBD5E1;
 }
 
 .glass-list-item.active {
-    background: rgba(var(--brand-rgb), 0.08);
-    border-color: rgba(var(--brand-rgb), 0.2);
+    background: rgba(var(--brand-50-rgb), 1);
+    border-color: rgba(var(--brand-500-rgb), 0.35);
 }/* Apple-Style Divider */
 .apple-divider {
     height: 1px;
-    background: linear-gradient(to right, transparent, rgba(0, 0, 0, 0.06), transparent);
+    background: linear-gradient(to right, transparent, rgba(15, 23, 42, 0.08), transparent);
 }
 
 /* Custom Scrollbars - Apple Style */
@@ -746,13 +740,15 @@ header, main {
 }
 
 /* Math rendering dynamic custom rules */
+/* 作答括号：紧跟题干末尾（与导出侧 `stem + ' ' + rendered` 同一口径）。
+   原先 float:right 是照抄 exam-zh 默认的 paren/type=hfill（\hfill 推到行尾）。
+   现在导出侧已改成 paren/type=none，预览也必须跟着改成内联，否则两边分叉。
+   margin-left 只留一个空格的余量，模拟 LaTeX 源码里 stem 与括号之间的空格。 */
 .exam-zh-paren-preview {
-    float: right;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    min-width: 3rem;
-    margin-left: 1rem;
+    margin-left: 0.25rem;
     white-space: nowrap;
     font-family: "Times New Roman", "Songti SC", "SimSun", serif;
 }
@@ -777,9 +773,40 @@ header, main {
     overflow-x: auto;
     overflow-y: hidden;
     scrollbar-width: thin;
+    /* 2026-09-25 超宽公式兜底：--choices-scale 由 editor.js 的
+     * fitOversizedChoicesContent 在「降到 1 列仍装不下」时写入（默认 1=不动）。
+     * 用 font-size 而不是 transform: scale()——transform 不改变布局宽度，
+     * scrollWidth 依旧溢出、滚动条不会消失，缩放文字还容易发虚；改 font-size
+     * 会真正回流，滚动条自然消失。整行统一缩放，保证 A/B/C/D 四个选项字号
+     * 一致。注意 .choices-content 上没有 Tailwind 字体类，这里不会被覆盖。 */
+    font-size: calc(1em * var(--choices-scale, 1));
 }
-.choices-grid .choices-content > .katex {
+/* 「装不下就降列，绝不折行」——但只在**测量列数期间**强制不折行。
+ *
+ * ⚠️ 选择器必须是**后代** .katex，不能写 `> .katex`：renderMathInElement
+ * 渲染出的真实 DOM 是 `.choices-content > span > span.katex`（KaTeX 外面
+ * 还包了一层无 class 的 <span>），直接子选择器从来匹配不到，于是
+ * white-space 一直是 normal → 内容选择折行 → `overflow-x` 又测不出溢出
+ * → 列数检测器永远看到「没溢出」，列数卡死在首选值上（典型表现：该 4 列
+ * 一行排的题，实际排成 2 列 2 行）。
+ *
+ * 测量期结束后 adaptSingleChoicesGrid 会摘掉 .is-measuring：若最终降到
+ * 1 列仍装不下，内容就允许折行（不折行的话只剩一条横向滚动条，更难看）。 */
+.choices-grid.is-measuring .choices-content .katex {
     white-space: nowrap;
+}
+/* 2026-09-25 补丁 A：上面那条只 nowrap 了 **公式**，纯文本（中文长句等）仍可
+ * 折行；文本一折行 `scrollWidth === clientWidth`，choicesGridOverflows 就永远
+ * 读到「没溢出」→ 列数不再降级（典型表现：中文长选项题卡在 4 列、每个选项
+ * 折成 2~4 行，却绝不降列）。故测量期连纯文本一并强制 nowrap，让实测口径
+ * 覆盖「文本」和「公式/图片」两类内容。
+ *
+ * 注意必须挂在 .is-measuring 下：最终态撤掉 nowrap 才是刻意的——降到 1 列仍
+ * 装不下时，纯文本应当折行（KaTeX 公式因 .katex .base 自带 nowrap 折不了，
+ * 那条仍走横向滚动条）。 */
+.choices-grid.is-measuring .choices-content {
+    white-space: nowrap;
+    overflow-x: hidden;
 }
 
 .paper-choice-stem-row,
@@ -802,6 +829,16 @@ header, main {
     border-radius: var(--apple-radius-sm);
     margin: 0.5rem 0;
     display: inline-block;
+}
+
+/* 二级小问（圈号 ①②③…）的预览缩进。
+   圈号是 (1)/(2) 内部的小小问：一级小问顶格（或只有 \parindent 首行缩进），
+   圈号必须整体再右移一级，否则两者齐平、看不出层级。
+   用块缩进（margin-left）而不是首行缩进，折行后的行也保持在同一竖线上。
+   类名由 editor.js 的 preprocessFormulaForKaTeX 生成（DOMPurify 只放行 class）。 */
+.preview-subitem {
+    margin-left: 1.5em;
+    margin-top: 0.25em;
 }
 
 /* Skeleton Animation */
@@ -835,36 +872,55 @@ button, a, input, select, textarea {
     animation: apple-spin 1s cubic-bezier(0.4, 0, 0.2, 1) infinite;
 }/* Question Card - Apple Style */
 .question-card {
-    background: rgba(255, 255, 255, 0.6);
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
-    border: 1px solid rgba(0, 0, 0, 0.04);
+    background: #FFFFFF;
+    border: 1px solid var(--apple-glass-border);
     border-radius: var(--apple-radius-lg);
+    box-shadow: var(--apple-shadow-sm);
     transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
     cursor: pointer;
 }
 
 .question-card:hover {
-    background: rgba(255, 255, 255, 0.85);
+    background: #FFFFFF;
     box-shadow: var(--apple-shadow-md);
-    transform: translateX(2px);
+    transform: translateY(-2px);
 }
 
 .question-card:active {
-    transform: scale(0.985);
+    transform: scale(0.99);
 }
 
 .question-card.active {
-    background: rgba(var(--brand-50-rgb), 0.8);
-    border-color: rgba(var(--brand-500-rgb), 0.3);
-    border-left: 3.5px solid rgb(var(--brand-600-rgb));
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
-}/* Dropdown - Apple Style */
+    background: rgba(var(--brand-50-rgb), 1);
+    border-color: rgba(var(--brand-500-rgb), 0.4);
+    border-left: 3px solid rgb(var(--brand-600-rgb));
+    box-shadow: var(--apple-shadow-md);
+}
+
+/* ===== 题库列表：网格视图（响应式多列卡片） ===== */
+#questionsList.bank-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 0.625rem;
+    align-items: start;
+}
+/* 覆盖卡片自带的 mx-1.5 mb-2，避免与网格间距冲突 */
+#questionsList.bank-grid > .question-card {
+    margin: 0 !important;
+}
+/* 按卷分组行在网格下占满整行 */
+#questionsList.bank-grid > .bank-group-row {
+    grid-column: 1 / -1;
+}
+/* 覆盖 space-y-2 在网格下产生的上边距 */
+#questionsList.bank-grid > :not([hidden]) ~ :not([hidden]) {
+    margin-top: 0 !important;
+}
+
+/* Dropdown - Apple Style */
 .glass-dropdown {
-    background: rgba(255, 255, 255, 0.85);
-    backdrop-filter: blur(40px) saturate(200%);
-    -webkit-backdrop-filter: blur(40px) saturate(200%);
-    border: 1px solid rgba(0, 0, 0, 0.08);
+    background: #FFFFFF;
+    border: 1px solid var(--apple-glass-border);
     box-shadow: var(--apple-shadow-lg);
     border-radius: var(--apple-radius-md);
 }
@@ -1035,10 +1091,8 @@ button, a, input, select, textarea {
 #sidebarPagination {
     min-width: 0;
     max-width: 100%;
-    border-top: 1px solid rgba(0, 0, 0, 0.05);
-    background: rgba(255, 255, 255, 0.55);
-    backdrop-filter: blur(12px) saturate(160%);
-    -webkit-backdrop-filter: blur(12px) saturate(160%);
+    border-top: 1px solid var(--apple-glass-border);
+    background: #FFFFFF;
 }
 
 .pagination-btn {
@@ -1051,16 +1105,16 @@ button, a, input, select, textarea {
     font-weight: 600;
     border-radius: 6px;
     color: var(--text-secondary);
-    background: rgba(255, 255, 255, 0.4);
-    border: 1px solid rgba(0, 0, 0, 0.05);
+    background: #F1F5F9;
+    border: 1px solid #E2E8F0;
     transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
     cursor: pointer;
 }
 
 .pagination-btn:hover:not(:disabled) {
-    background: rgba(255, 255, 255, 0.95);
+    background: #E2E8F0;
     color: var(--text-primary);
-    border-color: rgba(0, 0, 0, 0.1);
+    border-color: #CBD5E1;
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
     transform: translateY(-0.5px);
 }
@@ -1098,8 +1152,8 @@ button, a, input, select, textarea {
 }
 
 .pagination-jump-input {
-    background: rgba(255, 255, 255, 0.5);
-    border: 1px solid rgba(0, 0, 0, 0.08);
+    background: #FFFFFF;
+    border: 1px solid #E2E8F0;
     border-radius: 6px;
     padding: 2px 4px;
     width: 32px;
@@ -2062,3 +2116,118 @@ main {
         row-gap: 0.5rem;
     }
 }
+
+/* ---------------------------------------------------------------------------
+ * 四个编辑 textarea 的高度由 **JS 撑高** 主导（autoResizeTextarea，editor.js）。
+ * 2026-09-24 回退：曾用 CSS `field-sizing: content` 撑高，但其存在已知渲染
+ * bug——撑高后点击坐标映射错乱，编辑框内点击任意位置插入符都停在框顶、不跟随
+ * 点击。故移除 field-sizing，改回纯 JS（始终写 inline height）。
+ * ⚠️ 不得再加 `min-h-*`/`max-h-*`/`!important` 高度锁定（会盖掉 JS 算出的高度），
+ * 也**不要再启用 field-sizing**。
+ * ------------------------------------------------------------------------- */
+textarea.card-content-textarea,
+textarea.card-answer-textarea,
+textarea#editContent,
+textarea#editAnswerMarkdown {
+    /* ⚠️ 关键：四个框的父容器是 flex column，它们本身是 flex item。
+       flex-shrink:1 会把 JS 算出的 inline height 压回父容器给的尺寸，
+       必须先 flex:none 解除。`textarea.xxx` 提高特异性：Tailwind 是 CDN
+       运行时注入，单纯 `.xxx` 与 `.p-2.5` 同权重会看加载顺序，不稳。 */
+    flex: none;
+    min-height: 120px;
+    max-height: 70vh;
+    overflow-y: auto;
+}
+
+/* ---------------------------------------------------------------------------
+ * 编辑框光标（caret）颜色显式化 —— 2026-09-24
+ * 现象：点击题干 / 解析 / 拆卷卡片 / 教案备注等编辑框，插入符看不见（实际是
+ *       浅色），用户误以为「光标没反应」。
+ * 成因：caret-color 初始值为 auto，实际取 caret 处的文字颜色 currentColor；
+ *       部分容器下文字色被算成极浅色，白底上几乎没有对比度。
+ * 处理：显式指定 caret-color，浅色主题用深灰 #1e293b、`.dark` 下用浅灰 #e2e8f0。
+ * 覆盖：#editContent / #editAnswerMarkdown / .card-content-textarea /
+ *       .card-answer-textarea / #lectureNoteContent 以及全部文本类输入框
+ *       （text / password / number / search / 无 type 的 input）。
+ * 注：checkbox / radio / file 等非文本控件 caret 本来就无效，无需设置。
+ * ------------------------------------------------------------------------- */
+textarea,
+input[type="text"],
+input[type="password"],
+input[type="number"],
+input[type="search"],
+input:not([type]) {
+    caret-color: #1e293b;
+}
+
+.dark textarea,
+.dark input[type="text"],
+.dark input[type="password"],
+.dark input[type="number"],
+.dark input[type="search"],
+.dark input:not([type]) {
+    caret-color: #e2e8f0;
+}
+
+/* ===== API 厂商配置行（设置弹窗 · API 接口密钥配置）=====
+   6 个固定厂商行 + 中转站行共用。
+
+   1) 对齐口径改为 items-start（顶对齐）。原先的 items-end 是底对齐，于是厂商名列
+      下面那行灰色提示只加高自己那一列，却把 API Key / 接口地址两列一起往下推
+      （实测同三列 top 相差 25px；带提示的行与不带提示的行内部又不一致）。
+      顶对齐后提示文字无论存在与否都不影响兄弟列。
+
+   2) 列宽下限从 minmax(0, Nfr) 提到绝对值。minmax(0,2fr) 允许轨道压到 0px，
+      窄容器里 label 文字会竖排换行、把列高撑成 45~60px（实测 349px 视口解析成
+      96px 0px 0px 41px 44px）。给非零下限后列不可能塌成 0。
+      注意这里只做下限保护，不做换列降级：五列折成两列会让控件顺序错乱，反而更糟。
+ */
+.api-vendor-grid {
+    display: grid;
+    /* 最后两列用 auto（不是定宽、不是 max-content）：
+       - 定宽会把按钮拉伸成砖头，右侧还留一大块空白；
+       - max-content 是「按本行内容」算的，结果行没有按钮就算出 0，两种行列宽又不一致；
+       - auto 轨道会吸收 fr 分完后的剩余空间，只要前面三列的 fr 比例相同，
+         控件行与结果行（都占满五条轨道）必然得到同一组宽度——实测窄屏 128/176/176/94/110、
+         宽屏 217.6/435.2/435.2/94/110 两行完全相等。
+       按钮本身靠 px-2.5 保持紧凑自然宽，justify-self: end 让它贴列右缘而不被拉宽。 */
+    grid-template-columns:
+        minmax(8rem, 1fr)
+        minmax(11rem, 2fr)
+        minmax(11rem, 2fr)
+        auto
+        auto;
+    gap: 0.5rem;
+    align-items: start;
+}
+
+/* 「获取 Key」是 <a>、「测试连接」是 <button>，它们和同列的 select/input 必须齐平：
+   1) 等高——原本两个按钮都写 h-9(36px)，而 select/input 实测 44px；底对齐时这个差
+      被掩盖，改顶对齐后会露出「按钮比输入框矮一截」。
+   2) 下移一个 label 的高度——左侧三列各自带一行 label（text-[10px] + mb-0.5，实测
+      约 15~16px），按钮列没有 label；items-start 下若不管，按钮会贴到列顶（实测
+      top 185 vs 控件 201）。用 margin-top 让整块下移到与输入框同一水平线——
+   不能用 padding-top：按钮自带 Tailwind inline-flex + items-center，内容会被
+   重新居中回原位，实测 padding-top 完全不改变 getBoundingClientRect().top。
+*/
+
+/* 测试结果 <p> 与控件同属一个网格容器后，自动落位会把它排到第 1 列（实测左偏 320px），
+   必须显式钉在第 3 列——即「接口地址」正下方。用属性选择器而不是通用类名，
+   避免误伤页面其它 .test-result 节点。
+*/
+.api-vendor-grid > [data-result-slot="3"] {
+    grid-column: 3;
+}
+
+.api-vendor-grid > a,
+.api-vendor-grid > button {
+    justify-self: end;
+    height: 2.75rem;
+    /* label 在列顶到控件之间占了 16.3px（行高 15px + mb-0.5 的 2px），但实测按钮仍
+       比同排控件低 0.7px——那是 label 盒子高 14.3px 与 line-height 15px 不一致带来的
+       亚像素误差。按实测值补齐，而不是照抄理论值：照 16px / 16.3px 都各差 1px / 0.7px。
+       浏览器缩放或字号变化时可能需要重标，故此处留注释说明量法。 */
+    margin-top: 17px;
+}
+
+
