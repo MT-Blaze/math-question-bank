@@ -32,6 +32,7 @@
     editLocked: true,        // 编辑锁定：true 时禁止一切讲义内容修改，刷新自动回锁
     pendingNotes: {},        // 未固化的临时修订稿 {note_key: {payload}}
     pendingCoverTitle: null, // 未固化的封面标题（null=无改动）
+    pendingPatches: {},      // 未固化的单节点文字改动 {note_key: {mindPath, text}}，固化/丢弃时局部更新用
   };
 
   var ROLE_LABELS = { example: '例题', variant: '变式', practice: '趁热打铁', homework: '实战演练' };
@@ -585,7 +586,7 @@
       }
       return buildMindmapSheets(mm, compulsory, chapter, knowledge, src, head);
     }
-    var body = src || '<div class="kn-empty">（尚未编写知识梳理，点击工具栏「知识梳理」开始编辑）</div>';
+    var body = src ? renderRevisionHtml(src) : '<div class="kn-empty">（尚未编写知识梳理，点击工具栏「知识梳理」开始编辑）</div>';
     return '<div class="sheet" id="page-knowledge">' + lectureHeadHtml(head, '知识梳理') +
       '<div class="knowledge">' + body + '</div></div>';
   }
@@ -613,12 +614,23 @@
 
   function mindTextLines(s, perLine) {
     var t = String(s == null ? '' : s);
+    // label 里用户敲的回车是真换行符：显式断行数，不得被自动换行的估算吞掉
+    var segs = t.split('\n');
+    if (segs.length > 1) {
+      return segs.reduce(function (acc, seg) { return acc + mindTextLines(seg, perLine); }, 0);
+    }
     var w = 0;
     for (var i = 0; i < t.length; i++) {
       var ch = t.charCodeAt(i);
       w += (ch > 0x2E7F || ch === 0x2014 || ch === 0x2026) ? 1 : 0.5;
     }
     return Math.max(1, Math.ceil(w / (perLine || 42)));
+  }
+
+  /* 节点 label → HTML：先 esc 再换 <br>（顺序即防 XSS 边界）。
+     字面 \n 与手打 <br> 一律不认——换行只来自 textarea 的真回车。 */
+  function mindLabelHtml(s) {
+    return esc(s == null ? '' : String(s)).replace(/\n/g, '<br>');
   }
 
   function mindItemHeight(item) {
@@ -658,7 +670,7 @@
   function mindBuildItem(item, path) {
     var html = '';
     if (item.label != null) {
-      html += '<div class="mind-item" data-mp-path="' + path + '">' + esc(item.label) + '</div>';
+      html += '<div class="mind-item" data-mp-path="' + path + '">' + mindLabelHtml(item.label) + '</div>';
     }
     if (item.table) {
       html += mindBuildTable(item.table, path);
@@ -675,7 +687,7 @@
   function mindBuildBranchHTML(branch, bi) {
     var pal = MIND_COLORS[bi % MIND_COLORS.length];
     var html = '<div class="mind-branch" style="--mc:' + pal.c + ';--mcb:' + pal.b + '">';
-    html += '<div class="mind-branch-label" data-mp-path="b.' + bi + '" style="background:' + pal.c + '">' + esc(branch.label || '') + '</div>';
+    html += '<div class="mind-branch-label" data-mp-path="b.' + bi + '" style="background:' + pal.c + '">' + mindLabelHtml(branch.label || '') + '</div>';
     html += '<div class="mind-branch-line"></div>';
     html += '<div class="mind-items">';
     (branch.items || []).forEach(function (it, ii) {
@@ -732,7 +744,7 @@
     (items || []).forEach(function (it, ii) {
       var p = path + '.' + ii;
       if (it.label != null) {
-        html += '<div class="radial-n-item" data-mp-path="' + p + '">' + esc(it.label) + '</div>';
+        html += '<div class="radial-n-item" data-mp-path="' + p + '">' + mindLabelHtml(it.label) + '</div>';
       }
       if (it.table) {
         html += mindBuildTable(it.table, p);
@@ -750,7 +762,7 @@
     (branch.items || []).forEach(function (it, ii) {
       var p = 'b.' + bi + '.' + ii;
       if (it.label != null) {
-        top.push('<div class="radial-c-item" data-mp-path="' + p + '">' + esc(it.label) + '</div>');
+        top.push('<div class="radial-c-item" data-mp-path="' + p + '">' + mindLabelHtml(it.label) + '</div>');
       }
       if (it.table) {
         top.push(mindBuildTable(it.table, p));
@@ -799,7 +811,7 @@
         var pal = MIND_COLORS[bi % MIND_COLORS.length];
         var b = branches[bi];
         html += '<div class="radial-branch" data-branch-idx="' + bi + '" style="--mc:' + pal.c + ';--mcb:' + pal.b + '">' +
-          '<div class="radial-node" data-mp-path="b.' + bi + '">' + esc(b.label || '') + '</div>' +
+          '<div class="radial-node" data-mp-path="b.' + bi + '">' + mindLabelHtml(b.label || '') + '</div>' +
           radialBuildCard(b, bi) +
         '</div>';
       });
@@ -819,7 +831,7 @@
   function btreeBuildLeaf(item, path) {
     var inner = '';
     if (item.label != null) {
-      inner += '<div class="btree-leaf-label" data-mp-path="' + path + '">' + esc(item.label) + '</div>';
+      inner += '<div class="btree-leaf-label" data-mp-path="' + path + '">' + mindLabelHtml(item.label) + '</div>';
     }
     if (item.table) {
       inner += mindBuildTable(item.table, path);
@@ -827,29 +839,44 @@
     return '<div class="radial-card">' + (inner || '<div class="kn-empty">（空）</div>') + '</div>';
   }
 
-  function btreeBuildChildren(children, path) {
+  function btreeBuildChildren(children, path, colorIdx) {
     if (!children.length) return '';
     if (children.length === 1) {
-      return btreeBuildNode(children[0], path + '.0');
+      return btreeBuildNode(children[0], path + '.0', false, (colorIdx + 1) % MIND_COLORS.length);
     }
-    return '<div class="btree-brace"><div class="btree-stack">' +
-      children.map(function (c, ci) { return btreeBuildNode(c, path + '.' + ci); }).join('') +
+    // XMind 式分叉：从父框右侧同一点出发，N 条三次贝塞尔各自平滑连到子框左侧中心。
+    // 曲线由 alignBraceTips 现算——每条子行一条独立 path；每个子节点带自己的主题色
+    //（同辈互不相同、与父不同）。连线颜色走「2级领色」：.btree-node 上的 --bc 继承
+    // 自最近的一级分支祖先，曲线一律取终点行的 --bc（方框/文字仍用各自 --mc）。
+    return '<div class="btree-brace"><svg class="btree-arc" aria-hidden="true"></svg><div class="btree-stack">' +
+      children.map(function (c, ci) { return btreeBuildNode(c, path + '.' + ci, true, (colorIdx + ci + 1) % MIND_COLORS.length); }).join('') +
       '</div></div>';
   }
 
-  function btreeBuildNode(node, path) {
+  function btreeBuildNode(node, path, elbow, colorIdx) {
     var kids = node.items || [];
     var boxClass = path.indexOf('b.') === 0 && path.split('.').length === 2 ? 'btree-box btree-l1' : 'btree-box';
+    // 叶子（无子分支、无表格）：详情方框，参与同列等宽撑开（equalizeLeafBoxes）
+    if (!kids.length && !node.table) boxClass += ' btree-leaf';
     // 详情卡（表格）必须与花括号同级：它属于本节点的内容，不能塞进标签那一列，
     // 否则会把标签挤偏、并让 .btree-node > .btree-box 这个选择器失效。
-    var html = '<div class="btree-node">' +
-      '<div class="' + boxClass + '" data-mp-path="' + path + '">' + esc(node.label != null ? node.label : '') + '</div>';
+    // 一级节点沿用 btree-root 的主题色；更深节点把自己的主题色写在行上（框/卡/子树全继承）。
+    var depth = path.split('.').length;
+    var style = '';
+    if (colorIdx != null && depth >= 2) {
+      var pal = MIND_COLORS[colorIdx % MIND_COLORS.length];
+      // --mc = 本节点自己的主题色（方框/文字）；--bc = 领线色，取最近的一级分支祖先，
+      // CSS 继承自动覆盖整棵子树——2级以下所有分叉曲线都随一级分支单色。
+      style = ' style="--mc:' + pal.c + ';--mcb:' + pal.b + (depth === 2 ? ';--bc:' + pal.c : '') + '"';
+    }
+    var html = '<div class="btree-node"' + style + '>' +
+      '<div class="' + boxClass + '" data-mp-path="' + path + '">' + mindLabelHtml(node.label != null ? node.label : '') + '</div>';
     // 表格与子分支可以并存：详情卡留在本列，子树继续向右展开
     if (node.table) {
       html += btreeBuildLeaf({ label: null, table: node.table }, path);
     }
     if (kids.length) {
-      html += btreeBuildChildren(kids, path);
+      html += btreeBuildChildren(kids, path, colorIdx);
     }
     return html + '</div>';
   }
@@ -872,10 +899,11 @@
     return h;
   }
 
-  /* 与 srcdoc 内 autoOrientNodes 同一阈值：分支超过一页高度就单独成页，
-     否则分页只看估算高度会把最宽的那支挤到下一页却仍留溢出。 */
+  /* 分页预算按「一页装下」实测口径标定：3.1 六分支合计 ≈477 有效单位、实测 847px，
+     恰好低于一页树预算 855px；预算 480 ≈ 一页真实容量（480×2.2 原始单位 ≈ 897px），
+     更大的导图仍会自动分页。 */
   function btreePaginate(branches) {
-    var budget = 150;
+    var budget = 480;
     var pages = [], cur = { idx: [], h: 0 };
     branches.forEach(function (b, bi) {
       var h = btreeEstimateHeight(b) / 2.2 + 4;
@@ -898,14 +926,22 @@
     }
     var pages = btreePaginate(branches);
     var html = '';
+    var titleText = (data && data.title) || knowledge || '';
     pages.forEach(function (pg, pi) {
       html += '<div class="sheet">' + lectureHeadHtml(head, '知识梳理');
       html += '<div class="btree-page">';
+      // 最左一列：上级主标题（竖排、略深略粗），右侧分叉曲线连到每个一级节点。
+      // 曲线由 srcdoc 内联的 alignMasterArcs 现算（与知识梳理 XMind 分叉同一画法）。
+      html += '<div class="btree-master">' +
+        '<div class="btree-master-title" data-mp-path="t" title="点击编辑中心主题">' + esc(titleText) + '</div>' +
+        '<svg class="btree-master-arc" aria-hidden="true"></svg>' +
+        '<div class="btree-master-body">';
       pg.idx.forEach(function (bi) {
         var pal = MIND_COLORS[bi % MIND_COLORS.length];
         html += '<div class="btree-root" style="--mc:' + pal.c + ';--mcb:' + pal.b + '">' +
-          btreeBuildNode(branches[bi], 'b.' + bi) + '</div>';
+          btreeBuildNode(branches[bi], 'b.' + bi, false, bi % MIND_COLORS.length) + '</div>';
       });
+      html += '</div></div>';
       html += '</div>';
       html += '<div class="page-foot"><span class="pg"></span></div></div>';
     });
@@ -971,6 +1007,13 @@
     });
   }
 
+  function applyCoverTitleInFrame(text) {
+    var frame = $('lecturePreview');
+    if (!frame || !frame.contentWindow || typeof frame.contentWindow.__mathbankUpdateCoverTitle !== 'function') return false;
+    try { return !!frame.contentWindow.__mathbankUpdateCoverTitle(text); }
+    catch (e) { return false; }
+  }
+
   function saveCoverTitle(text) {
     if (ST.editLocked) return;
     var clean = String(text || '').trim().slice(0, 200);
@@ -978,7 +1021,8 @@
     ST.pendingCoverTitle = clean;
     updatePendingUI();
     toast('封面标题已暂存（点「固化到知识库」写入底层）', 'success');
-    refreshPreview();
+    // 文字型：就地改 iframe 里的封面标题节点，滚动不动；改不到才重建
+    if (!applyCoverTitleInFrame(clean)) refreshPreview();
   }
 
   function buildMap(section, headTitle) {
@@ -1033,10 +1077,71 @@
       '<div class="q-body">' + content + '</div>' + ans + '</div>';
   }
 
+  /* pit/method 修订稿里 ①②③… 分点挤在同一行：渲染层在每个序号前插 <br>（首个除外）。
+     数据层保持干净单段文本，序号格式统一。只在标签外文本上替换——
+     公式 \(..\) 内部、属性、标签名一律不碰（数学态占位保护）。 */
+  function circledBreaks(html) {
+    var text = String(html || '');
+    var CIRCLED = /[②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳]/;
+    var parts = text.split(/(\\\(.*?\\\)|<[^>]*>)/g); // 数学片段与标签原样保留
+    for (var i = 0; i < parts.length; i++) {
+      var p = parts[i];
+      if (!p || p.charAt(0) === '<' || p.indexOf('\\(') === 0) continue;
+      parts[i] = p.replace(/([②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳])/g, '<br>$1');
+    }
+    return parts.join('').replace(/^(?:<br>)+/, '');
+  }
+
+  /* 修订稿（pit/method）是带标签的 HTML，\(..\) 数学段里常有裸 < >：
+     浏览器解析时 `0<a` 会被当成未知标签、`<1\)` 被当属性吞掉，KaTeX 再也
+     看不到这段公式。处理与题目正文管线同一口径：配对完整的 \(..\)/$$..$$/
+     \[..\]/$..$ 数学段把裸 < > 换成 \lt \gt（KaTeX 认、HTML 不切标签），
+     段外的裸 <（含未配对定界符残留）转 &lt;；真标签如 <p> <span class="key">
+     原样保留——其属性由宿主 DOMPurify 白名单兜底，讲义不得放行内联事件。 */
+  function renderRevisionHtml(html) {
+    var s = String(html || '');
+    // 与 circledBreaks 同款切段：数学段 \(..\) 原样保留并做 \lt \gt 转换，
+    // 其余文本段转义裸 < >。标签**边界**（开闭尖括号）一律不动——DOMPurify
+    // 靠它识别标签；但标签名之后的任何 < >（含 </script<x> 这类闭合伪装、
+    // 以及属性值里的裸尖括号）全部实体化，浏览器只会当文本，脚本永远不会执行。
+    var parts = s.split(/(\\\(.*?\\\)|<\/?[a-zA-Z][^>]*>|<!--[\s\S]*?-->|<![^>]*>)/g);
+    return parts.map(function (p) {
+      if (!p) return '';
+      if (p.indexOf('\\(') === 0) {                             // 数学段：\lt \gt
+        return p.replace(/\\</g, '@@L@@').replace(/</g, '\\lt ').replace(/@@L@@/g, '\\<')
+          .replace(/\\>/g, '@@G@@').replace(/>/g, '\\gt ').replace(/@@G@@/g, '\\>');
+      }
+      if (/^<\/?[a-zA-Z]/.test(p)) {                            // 真标签：边界保留、属性净化
+        // 修订稿白名单只有排版标签；script/iframe/style/svg 等一律整段实体化，
+        // 属性里只留 class/title（onerror 之类内联事件直接剥掉）。
+        var tagName = /^<\/?([a-zA-Z][a-zA-Z0-9]*)/.exec(p)[1].toLowerCase();
+        if (['p', 'br', 'strong', 'b', 'em', 'i', 'span', 'ul', 'ol', 'li',
+             'table', 'thead', 'tbody', 'tr', 'th', 'td', 'img', 'sub', 'sup',
+             'code', 'pre', 'hr', 'div'].indexOf(tagName) < 0) {
+          return p.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        }
+        return p.replace(/\s+on[a-z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '');
+      }
+      if (p.charAt(0) === '<' && p.charAt(p.length - 1) === '>') {
+        // 注释/声明/未知构造整段实体化（修订稿里没有合法用途，绝不能原样进 DOM）
+        return p.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      }
+      return p.replace(/&(?![a-zA-Z]+;|#\d+;)/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }).join('');
+  }
+
   function buildTopicSheet(topicCfg, idx, notes, compulsory, chapter, knowledge, topicNo, outlineExample, headTitle) {
     var tid = topicCfg.topic_id || '';
     var pit = tid ? notes[noteKey('pit', compulsory, chapter, knowledge, tid)] : '';
     var method = tid ? notes[noteKey('method', compulsory, chapter, knowledge, tid)] : '';
+    pit = circledBreaks(renderRevisionHtml(pit));
+    method = circledBreaks(renderRevisionHtml(method));
+    // 内容里已有 ①②③ 自编号时，去掉 CSS counter 的外层「1. 2.」编号，避免双重编号；
+    // 序号检测只看文本（标签与 \(..\) 数学段剥掉后），不误吞公式里的字符。
+    var plainPit = String(pit || '').replace(/\\\(.*?\\\)/g, '').replace(/<[^>]*>/g, '');
+    var plainMethod = String(method || '').replace(/\\\(.*?\\\)/g, '').replace(/<[^>]*>/g, '');
+    var pitCls = /[①-⑳]/.test(plainPit) ? 'km-content km-nonum' : 'km-content';
+    var methodCls = /[①-⑳]/.test(plainMethod) ? 'km-content km-nonum' : 'km-content';
     var pitEmpty = tid ? '<span class="km-empty">（待补充）</span>'
       : '<span class="km-empty">（该考向缺少考点标识，修订稿无法定位，请重新加载小节后再编辑）</span>';
     // 无修订稿时回落到大纲自带的例题说明，并显式标注未修订——
@@ -1046,8 +1151,8 @@
     var html = '<div class="sheet" data-answer-page="true"><div class="page-head"><span class="ph-title">' + esc(headTitle || '') + '</span><span class="ph-quote"></span></div>';
     html += '<div class="subsection-title">考向' + cnNumeral(topicNo || (idx + 1)) + '　' + esc(topicCfg.name) + '</div>';
     html += '<div class="km-box">';
-    html += '<div class="km-item km-pit"><div class="km-label">易错点</div><div class="km-content">' + (pit || pitEmpty) + '</div></div>';
-    html += '<div class="km-item km-method"><div class="km-label">解题方法</div><div class="km-content">' + (method || methodDefault || pitEmpty) + '</div></div>';
+    html += '<div class="km-item km-pit"><div class="km-label">易错点</div><div class="' + pitCls + '">' + (pit || pitEmpty) + '</div></div>';
+    html += '<div class="km-item km-method"><div class="km-label">解题方法</div><div class="' + methodCls + '">' + (method || methodDefault || pitEmpty) + '</div></div>';
     html += '</div>';
     // 编号口径与 lecture_export.py 镜像：例<中文考向序>-<考向内例题序>；
     // 变式/趁热打铁为纯裸号、每个考向归零。板块头带字，题目不带前缀。
@@ -1329,6 +1434,8 @@
       'function pass(){var changed=false;' +
       'document.querySelectorAll(".btree-node").forEach(function(n){' +
       'var box=n.querySelector(":scope > .btree-box");if(!box)return;' +
+      // 一级节点（含主标题分叉）永不竖排：框高 = 内容 + padding，居中悬浮于分支点
+      'if(box.classList.contains("btree-l1")){if(box.classList.contains("btree-vertical")){box.classList.remove("btree-vertical");changed=true;}return;}' +
       'var sibs=n.parentElement?Array.prototype.filter.call(n.parentElement.children,function(c){return c!==n;}):[];' +
       'var sibH=0;sibs.forEach(function(s){sibH+=s.offsetHeight+6;});' +
       'var want=sibH>TH;if(want!==box.classList.contains("btree-vertical")){changed=true;}' +
@@ -1343,20 +1450,140 @@
       'document.querySelectorAll(".btree-brace").forEach(function(brace){' +
       'var node=brace.parentElement;if(!node)return;' +
       'var box=node.querySelector(":scope > .btree-box");if(!box)return;' +
-      'var first = brace.querySelector(":scope > .btree-stack > .btree-node, :scope > .btree-node");' +
-      'if(!first)return;' +
       // 一律用 rect（渲染真值）：offsetTop 的基准是 offsetParent，而嵌套层里最近的定位祖先
       // 常常是另一个 .btree-brace，两者不同基准相减就是错的；offsetHeight 还是取整值。
-      // .sheet{overflow:hidden} 的裁剪只影响超出页面的分支，那些节点本身不参与本行排版。
-      'var fr = brace.getBoundingClientRect(); var cr = first.getBoundingClientRect();' +
-      'if(!fr.height||!cr.height){brace.style.setProperty("--tip","none");return;}' +
-      'var off=(cr.top-fr.top)+(cr.height/2);' +
-      'brace.style.setProperty("--tip",off.toFixed(2)+"px");' +
+      'var fr=brace.getBoundingClientRect(), br=box.getBoundingClientRect();' +
+      'var stack=brace.querySelector(":scope > .btree-stack");' +
+      'var rowNodes=stack?Array.prototype.filter.call(stack.children,function(c){return c.nodeType===1;}).slice():[node.querySelector(":scope > .btree-node")].filter(Boolean);' +
+      'rowNodes=rowNodes.filter(function(n){return n&&n.getBoundingClientRect().height;});' +
+      'if(!fr.height||!rowNodes.length){return;}' +
+      // XMind 式分叉：起点 = 父框右侧同一点（父框中心与内容中心的均值 y，保持上轮对齐），
+      // 每条子行一条独立三次贝塞尔：先水平向右 EXIT，再平滑弯向子框左侧中心（终点切线水平）。
+      'var MM=96/25.4, EXIT=4*MM, LW=1.2;' +
+      'var y0=((br.top+br.height/2)+(fr.top+fr.bottom)/2)/2-fr.top;' +
+      'var x0=br.right-fr.left;' +
+      'var svg=brace.querySelector(":scope > .btree-arc");if(!svg)return;' +
+      'svg.setAttribute("width",fr.width.toFixed(2));svg.setAttribute("height",fr.height.toFixed(2));' +
+      'svg.setAttribute("viewBox","0 0 "+fr.width.toFixed(2)+" "+fr.height.toFixed(2));' +
+      'var paths=svg.querySelectorAll("path");' +
+      'rowNodes.forEach(function(row,idx){' +
+      'var cb=row.querySelector(":scope > .btree-box");if(!cb)return;' +
+      'var cr=cb.getBoundingClientRect();' +
+      'var x1=cr.left-fr.left, y1=cr.top+cr.height/2-fr.top;' +
+      'var d="M "+x0.toFixed(2)+" "+y0.toFixed(2)+' +
+      '" C "+(x0+EXIT).toFixed(2)+" "+y0.toFixed(2)+" "+(x1-EXIT).toFixed(2)+" "+y1.toFixed(2)+" "+x1.toFixed(2)+" "+y1.toFixed(2);' +
+      'var path=paths[idx];' +
+      'if(!path){path=document.createElementNS("http://www.w3.org/2000/svg","path");' +
+      'path.setAttribute("stroke-linecap","round");svg.appendChild(path);}' +
+      'path.setAttribute("d",d);path.setAttribute("stroke-width",LW);' +
+      // 曲线颜色走「2级领色」：终点行的 --bc（继承自最近的一级分支祖先）。
+      // 必须写 inline style：CSS 规则 .btree-arc path{stroke:var(--mc)} 会盖过表现属性 setAttribute。
+      'var bc=getComputedStyle(row).getPropertyValue("--bc");' +
+      'if(bc&&bc.trim())path.style.stroke=bc.trim();' +
+      '});' +
+      // 子行变少时清掉多余的旧 path，避免残留短线
+      'var cur=svg.querySelectorAll("path");' +
+      'while(cur.length>rowNodes.length){svg.removeChild(cur[cur.length-1]);cur=svg.querySelectorAll("path");}' +
       '});}' +
+      // 主标题分叉：从主标题框右侧中心（同一点）各画一条三次贝塞尔到每个一级节点左侧中心。
+      'function alignMasterArcs(){' +
+      'document.querySelectorAll(".btree-master").forEach(function(m){' +
+      'var title=m.querySelector(":scope > .btree-master-title");if(!title)return;' +
+      'var svg=m.querySelector(":scope > .btree-master-arc");if(!svg)return;' +
+      'var body=m.querySelector(":scope > .btree-master-body");if(!body)return;' +
+      'var roots=Array.prototype.filter.call(body.children,function(c){return c.nodeType===1;});' +
+      'if(!roots.length)return;' +
+      'var mr=m.getBoundingClientRect(), tr=title.getBoundingClientRect();' +
+      'var MM=96/25.4, EXIT=4*MM, LW=1.2;' +
+      'var x0=tr.right-mr.left, y0=tr.top+tr.height/2-mr.top;' +
+      'svg.setAttribute("width",mr.width.toFixed(2));svg.setAttribute("height",mr.height.toFixed(2));' +
+      'svg.setAttribute("viewBox","0 0 "+mr.width.toFixed(2)+" "+mr.height.toFixed(2));' +
+      'var paths=svg.querySelectorAll("path");' +
+      'roots.forEach(function(root,idx){' +
+      'var box=root.querySelector(":scope > .btree-node > .btree-box");if(!box)return;' +
+      'var cr=box.getBoundingClientRect();' +
+      'var x1=cr.left-mr.left, y1=cr.top+cr.height/2-mr.top;' +
+      'var d="M "+x0.toFixed(2)+" "+y0.toFixed(2)+" C "+(x0+EXIT).toFixed(2)+" "+y0.toFixed(2)+" "+(x1-EXIT).toFixed(2)+" "+y1.toFixed(2)+" "+x1.toFixed(2)+" "+y1.toFixed(2);' +
+      'var path=paths[idx];' +
+      'if(!path){path=document.createElementNS("http://www.w3.org/2000/svg","path");' +
+      'path.setAttribute("stroke-linecap","round");svg.appendChild(path);}' +
+      'path.setAttribute("d",d);path.setAttribute("stroke-width",LW);' +
+      // 主标题分叉曲线颜色跟随对应一级节点主题色（inline style 盖过 CSS 回退）
+      'var mc2=getComputedStyle(box).getPropertyValue("--mc");' +
+      'if(mc2&&mc2.trim())path.style.stroke=mc2.trim();' +
+      '});' +
+      'var cur=svg.querySelectorAll("path");' +
+      'while(cur.length>roots.length){svg.removeChild(cur[cur.length-1]);cur=svg.querySelectorAll("path");}' +
+      '});}' +
+      // 详情方框等宽：同列（同一 stack）的叶子框按最长内容撑开同宽，用可用空间封顶不溢出；
+      // 竖排框（autoOrientNodes 判定）不参与，保持自身 max-width:none 的竖排宽度。
+      'function equalizeLeafBoxes(){' +
+      'var MM2=96/25.4;' +
+      'document.querySelectorAll(".btree-stack").forEach(function(stack){' +
+      'var rows=Array.prototype.filter.call(stack.children,function(c){return c.nodeType===1;});' +
+      'var leaves=[];' +
+      'rows.forEach(function(row){' +
+      'var box=row.querySelector(":scope > .btree-box");' +
+      'if(!box || !box.classList.contains("btree-leaf"))return;' +
+      // 竖排框清掉可能残留的等宽 px，保持竖排自适宽度
+      'if(box.classList.contains("btree-vertical")){box.style.width="auto";return;}' +
+      'leaves.push({box:box,row:row});' +
+      '});' +
+      'if(!leaves.length)return;' +
+      // 同一父节点（同列 stack）下的所有叶子卡片：右边缘统一顶到「该列可用宽的最右缘」。
+      // 同列行框左缘相同（同一 stack），宽度取到 stack 右缘即右边缘齐平；
+      // 再对页面内容右缘（sheet 右 − 18mm 内边距）封顶，保证不溢出 A4。
+      'var stackR=stack.getBoundingClientRect().right;' +
+      'var sheet=stack.closest(".sheet");' +
+      'var limit=sheet?sheet.getBoundingClientRect().right-18*MM2:stackR;' +
+      'var colR=Math.min(stackR,limit);' +
+      'leaves.forEach(function(l){' +
+      'var br=l.box.getBoundingClientRect();' +
+      'var w=Math.max(colR-br.left, 30);' +
+      'l.box.style.width=w.toFixed(2)+"px";' +
+      '});' +
+      '});' +
+      // 不在 stack 里的叶子（单孩子链）：同样按页面内容右缘封顶，防溢出
+      'document.querySelectorAll(".btree-box.btree-leaf").forEach(function(box){' +
+      'if(box.classList.contains("btree-vertical")||box.style.width)return;' +
+      'var sheet=box.closest(".sheet");if(!sheet)return;' +
+      'var lim=sheet.getBoundingClientRect().right-18*MM2;' +
+      'var br=box.getBoundingClientRect();' +
+      'var w=Math.min(br.width, Math.max(lim-br.left-1*MM2, 30));' +
+      'if(w<br.width-0.5)box.style.width=w.toFixed(2)+"px";' +
+      '});' +
+      // 等宽可能改变叶子框高度（行数减少）→ 分叉曲线终点是框左侧中心，重收一次
+      'if(typeof alignBraceTips==="function")alignBraceTips();' +
+      'if(typeof alignMasterArcs==="function")alignMasterArcs();' +
+      '}' +
       'if(document.readyState==="loading"){document.addEventListener("DOMContentLoaded",alignBraceTips);}else{alignBraceTips();}' +
       // 花括号尖端依赖最终几何：竖排切换、KaTeX 排版都可能再改高度，
       // 所以 load（内联的 autoOrientNodes / renderMathInElement 都跑完）之后再收一次。
       'window.addEventListener("load",alignBraceTips);' +
+      'if(document.readyState==="loading"){document.addEventListener("DOMContentLoaded",alignMasterArcs);}else{alignMasterArcs();}' +
+      'window.addEventListener("load",alignMasterArcs);' +
+      'if(document.readyState==="loading"){document.addEventListener("DOMContentLoaded",equalizeLeafBoxes);}else{equalizeLeafBoxes();}' +
+      'window.addEventListener("load",equalizeLeafBoxes);' +
+      // 局部更新入口：保存单个知识节点文字后，父页面只改这一个节点（不重建 iframe）。
+      // text 已是父页面 mindLabelHtml 同款产物（先 esc 转义、再把真换行换成 <br>），
+      // 这里只负责写入；再按初始渲染同款分隔符局部跑 KaTeX，
+      // 最后重收等宽与分叉曲线（框高可能因换行数变化），返回 true 表示改到了。
+      'window.__mathbankUpdateNode=function(path,text){' +
+      'var el=document.querySelector("[data-mp-path=\\\""+path+"\\\"]");' +
+      'if(!el)return false;' +
+      'el.innerHTML=text;' +
+      'if(window.renderMathInElement){try{renderMathInElement(el,{delimiters:[{left:"$$",right:"$$",display:true},{left:"\\\\[",right:"\\\\]",display:true},{left:"\\\\(",right:"\\\\)",display:false}],throwOnError:false});}catch(e){}}' +
+      'if(typeof equalizeLeafBoxes==="function")equalizeLeafBoxes();' +
+      'else{if(typeof alignBraceTips==="function")alignBraceTips();if(typeof alignMasterArcs==="function")alignMasterArcs();}' +
+      'return true;' +
+      '};' +
+      // 封面标题局部更新（纯文字，无需 KaTeX/重排）
+      'window.__mathbankUpdateCoverTitle=function(text){' +
+      'var el=document.querySelector("[data-cover-edit=\\\"title\\\"]");' +
+      'if(!el)return false;' +
+      'el.textContent=text;' +
+      'return true;' +
+      '};' +
       '<\/script></body></html>';
     return html;
   }
@@ -1381,7 +1608,7 @@
       'body.view-yuan .cover-ver{display:none}',
       /* 知识梳理 */
       '.chapter-info{font-size:24px;font-weight:700;color:#1f3a5f;text-align:center;margin-bottom:2mm}',
-      '.chapter-block{font-size:19px;font-weight:700;color:#1f3a5f;text-align:left;margin:0 0 5mm}',
+      '.chapter-block{font-size:19px;font-weight:700;color:#1f3a5f;text-align:left;margin:0 0 2mm}',
       '.section-title{font-size:22px;font-weight:700;color:#1e3a8a;text-align:center;margin:4mm 0 6mm;position:relative}',
       '.knowledge{font-size:14px;line-height:1.9}',
       '.knowledge .key{font-weight:700;color:#1e3a8a}',
@@ -1426,9 +1653,9 @@
       '.km-method .km-content{border-left:3px solid #3b82f6;padding-left:3mm}',
       '.km-content p:first-child{margin-top:0}',
       '.km-content p:last-child{margin-bottom:0}',
-      '.km-pit .km-content{counter-reset:pit}',
-      '.km-pit .km-content > p{counter-increment:pit;margin:1.5mm 0}',
-      '.km-pit .km-content > p::before{content:counter(pit) ". ";font-weight:700;color:#b45309;margin-right:0.5mm}',
+      '.km-pit .km-content:not(.km-nonum){counter-reset:pit}',
+      '.km-pit .km-content:not(.km-nonum) > p{counter-increment:pit;margin:1.5mm 0}',
+      '.km-pit .km-content:not(.km-nonum) > p::before{content:counter(pit) ". ";font-weight:700;color:#b45309;margin-right:0.5mm}',
       '.km-item .km-content .key{font-weight:700;color:#1e3a8a}',
       '.km-content > .km-empty{margin:0}',
       '.km-empty{color:#94a3b8}',
@@ -1472,8 +1699,8 @@
       '.mind-item:hover{outline:1.5px solid var(--mc)}',
       '.mind-item-children{margin-left:6mm;padding-left:4mm;border-left:1.5px dashed var(--mc);display:flex;flex-direction:column;gap:1.8mm}',
       '.mind-table-wrap{margin:1mm 0}',
-      '.mind-table{width:100%;border-collapse:collapse;font-size:12.5px;line-height:1.5}',
-      '.mind-table td{border:1px solid #cbd5e1;padding:1.2mm 2mm;cursor:pointer;background:#fff}',
+      '.mind-table{width:100%;border-collapse:collapse;font-size:12.5px;line-height:1.3}',
+      '.mind-table td{border:1px solid #cbd5e1;padding:0.5mm 1.5mm;cursor:pointer;background:#fff}',
       '.mind-table td:hover{outline:1.5px solid var(--mc);background:#f8fafc}',
       '.mind-table tr:first-child td{background:#f1f5f9;font-weight:700}',
       /* 放射状思维导图 */
@@ -1483,7 +1710,7 @@
       '.radial-branch{position:relative;display:flex;align-items:flex-start;gap:4mm;margin:0 0 5mm calc(' + RADIAL_SPINE_X + ' + ' + RADIAL_SPINE_W + ' / 2);z-index:1}',
       '.radial-node{flex:none;width:30mm;background:var(--mcb);color:#1e293b;border:1px solid var(--mc);border-left:3.5mm solid var(--mc);border-radius:1.5mm;border-top-left-radius:2mm;border-bottom-left-radius:2mm;padding:2mm 2.5mm;font-size:14px;font-weight:700;line-height:1.4;cursor:pointer;box-shadow:0 1px 3px rgba(15,23,42,.10)}',
       '.radial-node:hover{outline:2px solid var(--mc)}',
-      '.radial-card{flex:1;min-width:0;background:var(--mcb);border:1px solid var(--mc);border-radius:2mm;padding:2.5mm 3.5mm;box-shadow:0 1px 3px rgba(0,0,0,0.06)}',
+      '.radial-card{flex:1;min-width:0;background:var(--mcb);border:1px solid var(--mc);border-radius:2mm;padding:1.5mm 2.5mm;box-shadow:0 1px 3px rgba(0,0,0,0.06)}',
       '.radial-c-item{font-size:13.5px;line-height:1.7;font-weight:600;color:#1e293b;padding:0.8mm 0;cursor:pointer;border-bottom:1px dashed rgba(100,116,139,.25)}',
       '.radial-c-item:last-child{border-bottom:none}',
       '.radial-nested{margin:1.5mm 0 1.5mm 2mm;padding-left:4mm;border-left:2px solid var(--mc)}',
@@ -1492,17 +1719,33 @@
       '.radial-n-item{font-size:13px;line-height:1.65;color:#334155;padding:0.8mm 0;cursor:pointer}',
       '.radial-n-item::before{content:none}',
       '.radial-n-item:hover,.radial-c-item:hover{background:rgba(255,255,255,.65)}',
-      /* 多层花括号树 */
-      '.btree-page{padding:0 0 4mm}',
-      '.btree-root{margin-bottom:6mm}',
-      '.btree-node{display:flex;align-items:center;gap:2.5mm}',
-      '.btree-brace{position:relative;flex:1;min-width:0;padding-left:10mm;display:flex;align-items:center}',
-      '.btree-box{flex:none;max-width:42mm;background:var(--mcb);border:1px solid var(--mc);border-left:3.5mm solid var(--mc);border-top-left-radius:2mm;border-bottom-left-radius:2mm;border-radius:1.5mm;padding:1.6mm 2.5mm;font-size:13.5px;font-weight:700;line-height:1.45;color:#1e293b;cursor:pointer;box-shadow:0 1px 3px rgba(15,23,42,.10);word-break:break-word}',
-      '.btree-box.btree-l1{font-size:14.5px;padding:2mm 2.5mm}',
+      /* 多层花括号树（一页装下口径：横向空间省给详情框，纵向间距收紧） */
+      '.btree-page{padding:0 0 1.5mm}',
+      '.btree-root{margin-bottom:1.5mm}',
+      /* 最左主标题列：竖排、深色底白字（同蓝色系、比一级节点更深更粗），
+         右侧分叉曲线（.btree-master-arc）由 alignMasterArcs 现算 */
+      '.btree-master{position:relative;display:flex;align-items:center}',
+      '.btree-master-title{flex:none;display:flex;align-items:center;justify-content:center;writing-mode:vertical-rl;background:#1e3a8a;color:#fff;font-weight:800;font-size:15px;letter-spacing:2px;padding:3mm 1.2mm;border-radius:2mm;box-shadow:0 2px 6px rgba(30,58,138,.35);cursor:pointer;word-break:break-all}',
+      '.btree-master-title:hover{outline:2px solid #1e3a8a}',
+      '.btree-master-arc{position:absolute;left:0;top:0;overflow:visible;pointer-events:none;z-index:1}',
+      '.btree-master-arc path{stroke:#1e3a8a;fill:none;stroke-width:1.2px;stroke-linecap:round;stroke-linejoin:round}',
+      '.btree-master-body{flex:1;min-width:0;padding-left:8mm}',
+      '.btree-node{display:flex;align-items:center;gap:2mm}',
+      '.btree-brace{position:relative;flex:1;min-width:0;padding-left:8mm;display:flex;align-items:center}',
+      /* 左侧粗色条走 --bc（2级领色，CSS 继承罩住整棵子树）；--bc 缺席时回退自身 --mc */
+      '.btree-box{flex:none;max-width:42mm;background:var(--mcb);border:1px solid var(--mc);border-left:3.5mm solid var(--bc,var(--mc));border-top-left-radius:2mm;border-bottom-left-radius:2mm;border-radius:1.5mm;padding:0.6mm 1.5mm;font-size:13.5px;font-weight:700;line-height:1.3;color:#1e293b;cursor:pointer;box-shadow:0 1px 3px rgba(15,23,42,.10);word-break:break-word}',
+      /* 详情方框（叶子）：去掉 42mm 上限，由 equalizeLeafBoxes 按同列最长内容撑开同宽 */
+      '.btree-box.btree-leaf{max-width:none}',
+      /* 一级节点：内容短，压掉旧 mind-branch-label 的 min-width:30mm/max-width:34mm，
+         省下的横向空间全给详情框（min-width:0 防 flex 自动最小尺寸撑开） */
+      '.btree-box.btree-l1{min-width:0;max-width:none;height:auto;align-self:center;font-size:14.5px;padding:1.2mm 2mm}',
       '.btree-box.btree-vertical{writing-mode:vertical-rl;max-width:none;max-height:60mm;text-orientation:upright;letter-spacing:1px}',
-      '.btree-brace::before{content:"";position:absolute;left:1mm;top:0;bottom:0;width:7mm;border:2.5px solid var(--mc);border-right:none;border-radius:4mm 0 0 4mm}',
-      '.btree-brace::after{content:"";position:absolute;left:7.5mm;top:var(--tip,calc(50% - 1px));width:3mm;height:2.5px;background:var(--mc);transform:translateY(-50%)}',
-      '.btree-stack{display:flex;flex-direction:column;gap:2.5mm;width:100%;min-width:0}',
+      /* XMind 式分叉曲线：每条子行一条三次贝塞尔，由 alignBraceTips 现算，
+         pointer-events:none 保证不挡点击热区。
+         path 必须在这里给 stroke：SVG 默认 stroke:none，只设 stroke-width 什么都不画。 */
+      '.btree-arc{position:absolute;left:0;top:0;overflow:visible;pointer-events:none;z-index:1}',
+      '.btree-arc path{stroke:var(--mc);fill:none;stroke-width:1.2px;stroke-linecap:round;stroke-linejoin:round}',
+      '.btree-stack{display:flex;flex-direction:column;gap:0.6mm;width:100%;min-width:0}',
       '.btree-stack > .btree-node:last-child{margin-bottom:0}',
     ].join('\n');
   }
@@ -2346,16 +2589,21 @@
       if (!mind || !mind.data) { closeNoteModal(); return; }
       var node = mindNodeAt(mind.data, ST.noteTarget.mindPath);
       if (!node) { closeNoteModal(); return; }
+      var targetPath = ST.noteTarget.mindPath;
       if (node.kind === 'table') node.table[node.r][node.c] = content;
       else node.ref[node.prop] = content;
       var serialized = '@mindmap\n' + JSON.stringify(mind.data, null, 1);
       mind.raw = serialized;
+      // 同口径局部更新：先 esc 再换 <br>（与初始渲染共用 mindLabelHtml，转义在前即 XSS 边界）；
+      // 表格单元格的 <td data-mp-path> 与 label 节点一样走这条链
+      var patchPath = targetPath;
+      var patchHtml = mindLabelHtml(content);
       var payload = {
         note_type: 'knowledge',
         compulsory: coords.compulsory, chapter: coords.chapter, knowledge: coords.knowledge,
         content: serialized
       };
-      stageNote(payload);
+      stageNote(payload, { mindPath: patchPath, html: patchHtml });
       return;
     }
     var payload = {
@@ -2367,13 +2615,27 @@
     stageNote(payload);
   }
 
+  /* 只改 iframe 里被编辑的那一个节点：不重建、不滚回顶部。
+     改不到（iframe 未就绪/节点不在当前页）才回退整页刷新。 */
+  function applyNotePatchInFrame(mindPath, html) {
+    var frame = $('lecturePreview');
+    if (!frame || !frame.contentWindow || typeof frame.contentWindow.__mathbankUpdateNode !== 'function') return false;
+    try { return !!frame.contentWindow.__mathbankUpdateNode(mindPath, html); }
+    catch (e) { return false; }
+  }
+
   /* 暂存进内存：预览实时生效，只有点「固化到知识库」才写库。 */
-  function stageNote(payload) {
+  function stageNote(payload, patch) {
     var key = noteKey(payload.note_type, payload.compulsory, payload.chapter, payload.knowledge, payload.topic_id || '');
     ST.pendingNotes[key] = payload;
+    // 单节点文字改动记录 patch，供固化时局部更新（不重建 iframe）
+    if (patch && patch.mindPath) ST.pendingPatches[key] = { mindPath: patch.mindPath, html: patch.html };
     closeNoteModal();
     toast('已暂存（点「固化到知识库」写入底层）', 'success');
     updatePendingUI();
+    // 单节点文字保存：就地改该节点，滚动与其余内容完全不动；
+    // 改结构（增删节点/拖拽）不在这里，仍走 refreshPreview 全量重建。
+    if (patch && patch.mindPath && applyNotePatchInFrame(patch.mindPath, patch.html)) return;
     refreshPreview();
   }
 
@@ -2392,6 +2654,7 @@
   function clearPending() {
     ST.pendingNotes = {};
     ST.pendingCoverTitle = null;
+    ST.pendingPatches = {};
     // 缓存里混着上一次的临时内容，不清就会在下次刷新前一直显示已丢弃的改动
     ST.previewData = null;
     updatePendingUI();
@@ -2446,9 +2709,19 @@
       }));
     }
     Promise.all(tasks).then(function () {
+      // 固化成功：pending 里全部是「单节点文字」型改动时，逐个局部更新（滚动不动），
+      // 不重建 iframe；封面标题在暂存时已就地更新过，无需再动。
+      // 含整块知识/易错点等结构性改动或任一局部失败 → 重建保底。
+      var patches = [];
+      Object.keys(ST.pendingNotes).forEach(function (k) {
+        if (ST.pendingPatches[k]) patches.push(ST.pendingPatches[k]);
+      });
+      var onlyText = patches.length === keys.length;
+      var allApplied = onlyText &&
+        patches.every(function (p) { return applyNotePatchInFrame(p.mindPath, p.html); });
       clearPending();
       toast('已固化 ' + total + ' 项改动到知识库', 'success');
-      refreshPreview();
+      if (!allApplied) refreshPreview();
     }).catch(function (e) {
       toast('固化失败：' + e.message + '（部分可能已写入）', 'error');
       refreshPreview();

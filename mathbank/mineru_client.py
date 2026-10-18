@@ -44,10 +44,14 @@ def get_api_base() -> str:
         return raw.rstrip("/")
     return DEFAULT_API_BASE
 
-# 上传/轮询的超时（秒）
+# 上传/轮询/下载的超时（秒）
 UPLOAD_TIMEOUT = 120
 POLL_TIMEOUT = 900
 POLL_INTERVAL = 3.0
+# 下载结果 zip 的 read timeout。大 PDF（多页）结果包较大，云端传输耗时，
+# 原 180s 在 17+ 页 PDF 上会触发 HTTPSConnectionPool Read timed out。
+# 调大到 600s（10 分钟）以容纳大文件下载。
+DOWNLOAD_READ_TIMEOUT = 600
 
 _TOKEN_ENV = "MINERU_API_TOKEN"
 
@@ -183,7 +187,7 @@ def download_zip(zip_url: str, target_dir: str | Path) -> Path:
     target = Path(target_dir)
     target.mkdir(parents=True, exist_ok=True)
     archive = target / "mineru_result.zip"
-    response = _request("GET", zip_url, timeout=180, stream=True)
+    response = _request("GET", zip_url, timeout=DOWNLOAD_READ_TIMEOUT, stream=True)
     if response.status_code >= 400:
         raise MineruError(f"下载解析结果失败：HTTP {response.status_code}")
     with archive.open("wb") as handle:
@@ -448,6 +452,16 @@ _STRIP_MIN_EDGE_RATIO = 0.08
 _STRIP_EXTREME_ASPECT = 10.0
 _STRIP_GRAY_PEAK = 245
 
+# 「大字水印」（学科网/学校校徽那种浅灰大字铺满整页）：图上**没有任何黑色墨迹**、
+# 边缘极稀。上面那条水印判据（大面积 + 白占比 ≥0.80 + 面积 ≥12 万）抓不到它——
+# 水印铺满后白色占比会掉到 0.6 左右，而 MinerU 常常只截到水印的一角、面积也很小。
+# 实测（大庆实验中学卷）：纯水印图 black=0.000、edge=0.0059；而所有真图形
+# （抛物线/天平/函数图）black≥0.007、edge≥0.09 —— 差 4~15 倍，判据留足余量。
+# 依据：数学图形必有黑色描边（坐标轴、曲线、字母），「黑色≈0」意味着图上只有
+# 浅色块，那不是图形。
+_GRAY_WATERMARK_MAX_EDGE_RATIO = 0.02
+_GRAY_WATERMARK_MAX_BLACK_RATIO = 0.002
+
 
 def _compute_mineru_image_features(path: str) -> dict | None:
     """计算单张 MinerU 图片的像素特征，失败时返回 None（调用方应保留原图）。"""
@@ -534,6 +548,12 @@ def classify_mineru_decoration_image(path: str) -> str:
         and aspect <= _WATERMARK_MAX_ASPECT
         and area >= _WATERMARK_MIN_AREA
     ):
+        return "水印"
+
+    # 2b. 「大字水印」：图上没有任何黑色墨迹、边缘极稀（见常量处说明）。
+    #     ⚠️ 必须**两个条件同时**满足：只按「边缘少」一刀切会误杀低边缘的合法图，
+    #     所以拿「黑色墨迹≈0」当锚点 —— 实测真图形 black 最低 0.007，是阈值的 3.5 倍。
+    if edge <= _GRAY_WATERMARK_MAX_EDGE_RATIO and black <= _GRAY_WATERMARK_MAX_BLACK_RATIO:
         return "水印"
 
     # 3. 页眉页脚条 / 公式行碎片 / 答案表格：细长、边缘丰富、灰底或极宽

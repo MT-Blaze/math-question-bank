@@ -254,7 +254,7 @@ def mindmap_to_latex(data: dict) -> tuple[str, list[str]]:
         lines.append("\\begin{tabular}{|%s|}" % ("l" * cols))
         lines.append("\\hline")
         for row in table:
-            cells = [escape_text(str(cell or "")) for cell in (row or [])]
+            cells = [escape_text(str(cell or "")).replace("\n", r"\newline ") for cell in (row or [])]
             cells += [""] * (cols - len(cells))
             lines.append("  %s \\\\" % " & ".join(cells))
             lines.append("  \\hline")
@@ -267,7 +267,8 @@ def mindmap_to_latex(data: dict) -> tuple[str, list[str]]:
                 continue
             label = str(item.get("label") or "").strip()
             if label:
-                lines.append("%s\\item %s" % (pad, escape_text(label)))
+                # 用户敲的真换行 → LaTeX 硬换行（escape_text 不动 \n）
+                lines.append("%s\\item %s" % (pad, escape_text(label).replace("\n", r"\newline ")))
             if item.get("table"):
                 emit_table(item["table"])
             children = item.get("items") or []
@@ -287,9 +288,41 @@ def mindmap_to_latex(data: dict) -> tuple[str, list[str]]:
     return "\n".join(lines), ["思维导图的分支配色与连线布局未保留，已改为层级列表"]
 
 
+def _lt_gt_in_math(text: str) -> str:
+    r"""数学区（\(..\)、$$..$$、\[..\]）内的裸 < > 换成 \lt \gt。
+
+    与前端正文管线同一口径：`0<a` 里的 `<a` 会被 HTML 解析器当成未知标签开
+    （Python html.parser / 浏览器同款行为），整段公式就此丢失；\lt/\gt 则
+    任何一侧都安全。已有的 ``\<`` ``\>`` 转义写法原样保留。"""
+    def repl(match: "re.Match[str]") -> str:
+        seg = match.group(0)
+        for opening, closing in ((r"\(", r"\)"), ("$$", "$$"), (r"\[", r"\]")):
+            if seg.startswith(opening):
+                body = seg[len(opening):-len(closing)]
+                body = body.replace(r"\<", "@@L@@").replace("<", r"\lt ").replace("@@L@", r"\<")
+                body = body.replace(r"\>", "@@G@@").replace(">", r"\gt ").replace("@@G@", r"\>")
+                return opening + body + closing
+        return seg
+
+    # 定界符逐个单独跑一遍 re.sub——把 \[ 写进字符类会触发 Python 的
+    # nested-set FutureWarning，分开写既无告警又等价。
+    out = re.sub(r"\\\(.*?\\\)", repl, text or "")
+    out = re.sub(r"\$\$[\s\S]*?\$\$", repl, out)
+    out = re.sub(r"\\\[([^\[\]]*?)\\\]", repl, out)
+    return out
+
+
+def _preescape_note_math(html: str) -> str:
+    """修订稿/知识梳理 HTML 在进 html_to_latex **之前**先把数学段里的裸 < > 换掉。
+
+    html.parser（与浏览器同款行为）会把 `0<a` 里的 `<a` 当未知标签开、一路吞到
+    下一个 `>`，整段公式就此丢失；先转成 \\lt/\\gt 后解析器与 LaTeX 都安全。"""
+    return _lt_gt_in_math(html)
+
+
 def note_body_to_latex(content: str) -> tuple[str, list[str]]:
     """知识块正文分派：@mindmap 前缀走 JSON，其余按 HTML 处理。"""
-    text = str(content or "")
+    text = _preescape_note_math(str(content or ""))
     if text.startswith(MIND_PREFIX):
         try:
             data = json.loads(text[len(MIND_PREFIX):].strip())

@@ -63,6 +63,37 @@ from mathbank.paths import ENV_FILE, PROJECT_ROOT, SERVER_INSTANCE_ID
 router = APIRouter(tags=["settings"])
 
 
+def _load_custom_providers_from_env() -> list:
+    """读取 .env 中的 CUSTOM_PROVIDERS_JSON，返回自定义 OpenAI 兼容厂商列表。
+
+    仅做宽松校验：必须是 list[dict] 且每项含非空 name。解析失败或为空时返回 []。
+    """
+
+    raw = os.getenv("CUSTOM_PROVIDERS_JSON", "") or ""
+    if not raw.strip():
+        return []
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    result = []
+    for item in parsed:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        if not name:
+            continue
+        result.append({
+            "name": name,
+            "base_url": str(item.get("base_url") or "").strip(),
+            "api_key": str(item.get("api_key") or "").strip(),
+            "model": str(item.get("model") or "").strip(),
+        })
+    return result
+
+
 @router.get("/api/settings")
 def get_settings():
     ds_key = os.getenv("DEEPSEEK_API_KEY", "")
@@ -70,7 +101,12 @@ def get_settings():
     ali_key = os.getenv("ALI_BAILIAN_API_KEY", "")
     mineru_token = os.getenv("MINERU_API_TOKEN", "")
     mineru_api_base = os.getenv("MINERU_API_BASE", "")
-    
+
+    # 三家内置厂商可自定义的接口地址（Base URL）
+    ds_base = os.getenv("DEEPSEEK_API_BASE", "")
+    sf_base = os.getenv("SILICONFLOW_API_BASE", "")
+    ali_base = os.getenv("ALI_BAILIAN_API_BASE", "")
+
     # 兼容老版 ZHONGZHAN 环境变量
     zz_gpt_key = os.getenv("ZHONGZHAN_GPT_API_KEY") or os.getenv("ZHONGZHAN_API_KEY", "")
     zz_gpt_base = os.getenv("ZHONGZHAN_GPT_BASE_URL") or os.getenv("ZHONGZHAN_BASE_URL", "")
@@ -124,6 +160,10 @@ def get_settings():
         "zhongzhan_claude_ocr_model": zz_claude_ocr_model,
         "mineru_token": masked_mineru,
         "mineru_api_base": mineru_api_base,
+        "deepseek_base_url": ds_base,
+        "siliconflow_base_url": sf_base,
+        "ali_bailian_base_url": ali_base,
+        "custom_providers": _load_custom_providers_from_env(),
         "prefer_engine": prefer_engine,
         "siliconflow_model": sf_model,
         "ali_bailian_model": ali_model,
@@ -138,6 +178,9 @@ def save_settings(
     deepseek_key: str = Form(""),
     siliconflow_key: str = Form(""),
     ali_bailian_key: str = Form(""),
+    deepseek_base_url: str = Form(""),
+    siliconflow_base_url: str = Form(""),
+    ali_bailian_base_url: str = Form(""),
     zhongzhan_gpt_key: str = Form(""),
     zhongzhan_gpt_base_url: str = Form(""),
     zhongzhan_gpt_ocr_model: str = Form(""),
@@ -146,6 +189,7 @@ def save_settings(
     zhongzhan_claude_ocr_model: str = Form(""),
     mineru_token: str = Form(""),
     mineru_api_base: str = Form(""),
+    custom_providers: str = Form(""),
     prefer_engine: str = Form("siliconflow"),
     siliconflow_model: str = Form("Qwen/Qwen3-VL-8B-Instruct"),
     ali_bailian_model: str = Form("qwen3.7-flash"),
@@ -167,6 +211,10 @@ def save_settings(
             "zhongzhan_claude_ocr_model": zhongzhan_claude_ocr_model,
             "mineru_token": mineru_token,
             "mineru_api_base": mineru_api_base,
+            "custom_providers": custom_providers,
+            "deepseek_base_url": deepseek_base_url,
+            "siliconflow_base_url": siliconflow_base_url,
+            "ali_bailian_base_url": ali_bailian_base_url,
             "prefer_engine": prefer_engine,
             "siliconflow_model": siliconflow_model,
             "ali_bailian_model": ali_bailian_model,
@@ -208,6 +256,32 @@ def save_settings(
 
         if "••••" in mineru_token:
             mineru_token = os.getenv("MINERU_API_TOKEN", "")
+
+        # 校验并清洗自定义厂商 JSON（仅 OpenAI 兼容第三方，文本模型）
+        custom_providers_clean = ""
+        if custom_providers.strip():
+            try:
+                cp_list = json.loads(custom_providers)
+            except Exception as exc:
+                raise ValueError(f"自定义厂商配置不是合法 JSON: {exc}")
+            if not isinstance(cp_list, list):
+                raise ValueError("自定义厂商配置必须是 JSON 数组")
+            cleaned = []
+            for item in cp_list:
+                if not isinstance(item, dict):
+                    raise ValueError("自定义厂商配置每项必须是对象")
+                name = str(item.get("name") or "").strip()
+                if not name:
+                    raise ValueError("自定义厂商配置每项必须含 name")
+                cleaned.append({
+                    "name": name,
+                    "base_url": str(item.get("base_url") or "").strip(),
+                    "api_key": str(item.get("api_key") or "").strip(),
+                    "model": str(item.get("model") or "").strip(),
+                })
+            custom_providers_clean = json.dumps(
+                cleaned, ensure_ascii=False, separators=(",", ":")
+            )
             
         # Read current .env
         env_lines = []
@@ -227,6 +301,10 @@ def save_settings(
             "ZHONGZHAN_CLAUDE_OCR_MODEL": False,
             "MINERU_API_TOKEN": False,
             "MINERU_API_BASE": False,
+            "CUSTOM_PROVIDERS_JSON": False,
+            "DEEPSEEK_API_BASE": False,
+            "SILICONFLOW_API_BASE": False,
+            "ALI_BAILIAN_API_BASE": False,
             "OCR_PREFER_ENGINE": False,
             "SILICONFLOW_OCR_MODEL": False,
             "ALI_BAILIAN_OCR_MODEL": False,
@@ -276,6 +354,18 @@ def save_settings(
             elif line_strip.startswith("MINERU_API_BASE="):
                 new_lines.append(f"MINERU_API_BASE={mineru_api_base}\n")
                 keys_replaced["MINERU_API_BASE"] = True
+            elif line_strip.startswith("CUSTOM_PROVIDERS_JSON="):
+                new_lines.append(f"CUSTOM_PROVIDERS_JSON={custom_providers_clean}\n")
+                keys_replaced["CUSTOM_PROVIDERS_JSON"] = True
+            elif line_strip.startswith("DEEPSEEK_API_BASE="):
+                new_lines.append(f"DEEPSEEK_API_BASE={deepseek_base_url}\n")
+                keys_replaced["DEEPSEEK_API_BASE"] = True
+            elif line_strip.startswith("SILICONFLOW_API_BASE="):
+                new_lines.append(f"SILICONFLOW_API_BASE={siliconflow_base_url}\n")
+                keys_replaced["SILICONFLOW_API_BASE"] = True
+            elif line_strip.startswith("ALI_BAILIAN_API_BASE="):
+                new_lines.append(f"ALI_BAILIAN_API_BASE={ali_bailian_base_url}\n")
+                keys_replaced["ALI_BAILIAN_API_BASE"] = True
             elif line_strip.startswith("OCR_PREFER_ENGINE="):
                 new_lines.append(f"OCR_PREFER_ENGINE={prefer_engine}\n")
                 keys_replaced["OCR_PREFER_ENGINE"] = True
@@ -323,6 +413,14 @@ def save_settings(
             new_lines.append(f"MINERU_API_TOKEN={mineru_token}\n")
         if not keys_replaced["MINERU_API_BASE"]:
             new_lines.append(f"MINERU_API_BASE={mineru_api_base}\n")
+        if not keys_replaced["CUSTOM_PROVIDERS_JSON"]:
+            new_lines.append(f"CUSTOM_PROVIDERS_JSON={custom_providers_clean}\n")
+        if not keys_replaced["DEEPSEEK_API_BASE"]:
+            new_lines.append(f"DEEPSEEK_API_BASE={deepseek_base_url}\n")
+        if not keys_replaced["SILICONFLOW_API_BASE"]:
+            new_lines.append(f"SILICONFLOW_API_BASE={siliconflow_base_url}\n")
+        if not keys_replaced["ALI_BAILIAN_API_BASE"]:
+            new_lines.append(f"ALI_BAILIAN_API_BASE={ali_bailian_base_url}\n")
         if not keys_replaced["OCR_PREFER_ENGINE"]:
             new_lines.append(f"OCR_PREFER_ENGINE={prefer_engine}\n")
         if not keys_replaced["SILICONFLOW_OCR_MODEL"]:
@@ -356,6 +454,10 @@ def save_settings(
         
         os.environ["MINERU_API_TOKEN"] = mineru_token
         os.environ["MINERU_API_BASE"] = mineru_api_base
+        os.environ["CUSTOM_PROVIDERS_JSON"] = custom_providers_clean
+        os.environ["DEEPSEEK_API_BASE"] = deepseek_base_url
+        os.environ["SILICONFLOW_API_BASE"] = siliconflow_base_url
+        os.environ["ALI_BAILIAN_API_BASE"] = ali_bailian_base_url
 
         os.environ["OCR_PREFER_ENGINE"] = prefer_engine
         os.environ["SILICONFLOW_OCR_MODEL"] = siliconflow_model
@@ -895,18 +997,6 @@ def save_metadata_config(
         f"[Metadata] Saved new custom metadata to {metadata_module.METADATA_FILE} "
         f"(Detected version: {target_version})"
     )
-    # Web → TXT：把刚保存的考向回写到「考向树/」底层文件
-    try:
-        from mathbank.kaoxiang_tree import push_to_txt
-
-        pushed = push_to_txt(payload.get("curriculum") or {})
-        if pushed.get("changed"):
-            print(
-                "[KaoxiangTree] 已回写 "
-                f"{sum(1 for f in pushed.get('files', []) if f.get('action') == 'pushed')} 个考向树 TXT"
-            )
-    except Exception as exc:
-        print(f"[KaoxiangTree] 回写失败 (type={type(exc).__name__}): {exc}")
     schedule_database_export(background_tasks, operation="save_metadata")
     return {"status": "success", "message": "元数据配置保存成功！"}
 

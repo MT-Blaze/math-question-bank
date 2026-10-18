@@ -1,45 +1,32 @@
 # -*- coding: utf-8 -*-
-"""考向树 TXT 底层文件 ↔ Web 大纲双向同步。
+"""考向树 TXT ↔ Web 大纲的解析与渲染工具（TXT 同步链路已下线）。
 
-目录约定
+数据源唯一化
+------------
+考向树的唯一事实来源是 JSON：活跃大纲 `data_backup/custom_metadata.json`
+与教材预设 `mathbank/resources/curriculums/{A,B,S,G,H}.json`。项目不再读写
+``考向树/``，也不会因为外部文本文件而改写任何 JSON —— 历史上启动时的
+``auto_pull_if_needed(force=True)`` 会在 TXT 与 A.json 不一致时直接覆盖预设，
+这个隐患随同步链路一起删除。历史 TXT 已归档，不在项目目录内。
+
+保留能力
 --------
-项目根目录下的 ``考向树/`` 存放用户可直接编辑的考向树纯文本，文件名形如::
-
-    必修一 第一章 集合与常用逻辑用语.txt        （册次 + 章标题）
-
-文本版式为「章 → 节 → L1~L5 难度层 → 考向（含序号与例题）」，同时兼容三种
-历史写法：
-
-* 带树线的（``├─`` / ``│`` / ``└─``，例：第一章、第二章）
-* 三级小节（``3.1.1 函数的表示与函数值``，例：第三章）
-* 纯空格缩进（例：第四章）
-
-同步方向
---------
-* **TXT → Web**：读取/启动时比对，TXT 与大纲不一致就以 TXT 为准重写对应章；
-* **Web → TXT**：任何写大纲的动作（设置页保存、AI 自动建考向）之后立即回写
-  TXT，保证两边始终互为镜像。
+* ``parse_tree_text`` / ``render_tree_text``：把 TXT 文本与结构化考向树互转，
+  供 ``scripts/check_kaoxiang_tree.py`` 这类只读合规检查复用；
+* ``status``：只读比对某个 TXT 目录与大纲，用于排查历史归档。
 
 考向的 ``level`` / ``no`` / ``example`` 以及节上的分组、层级标题都会原样
-保留，因此反复同步不会丢失信息。
-"""
+保留，因此反复解析不会丢失信息。"""
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import re
-from datetime import datetime
 
-from mathbank.asset_security import write_private_text_atomic
-from mathbank.paths import CURRICULUMS_DIR, IS_TESTING, SYSTEM_GENERATED_DIR, project_path
+from mathbank.paths import project_path
 from mathbank.topics_helper import topic_id_for
 
-KAOXIANG_DIR = project_path("考向树")
-DEFAULT_KAOXIANG_DIR = KAOXIANG_DIR
-STATE_FILE = SYSTEM_GENERATED_DIR / "kaoxiang_tree_state.json"
-PRESET_PATH = CURRICULUMS_DIR / "A.json"
 
 LEVELS = ("L1", "L2", "L3", "L4", "L5")
 DEFAULT_LEVEL_TITLES = {
@@ -55,7 +42,11 @@ _LINE_CHARS = "─━"
 _BRANCH_CHARS = "├└┬┼┌┐"
 
 _SECTION_RE = re.compile(r"^(\d+(?:[.．]\d+)*)\s*(.*)$")
-_KAOXIANG_RE = re.compile(r"^考向\s*(\d+)?\s*[:：]\s*(.*)$")
+# 「序号+冒号」整段可选：`考向3：某某` 与用户手打的裸行 `考向某某` 都要认。
+# 旧写法强制冒号，裸行匹配不上就落到「续行」分支，被拼进上一个考向的
+# example —— 手写进 TXT 的考向会静默消失。名字用 (.+?) 而非 (.*)，
+# 光杆 `考向` / `考向 ` 仍判为非考向，不会被当成空名条目。
+_KAOXIANG_RE = re.compile(r"^考向\s*(?:(\d+)\s*[:：]\s*)?(.+?)\s*$")
 _LEVEL_RE = re.compile(r"^L([1-5])\s*(.*)$", re.IGNORECASE)
 _CONT_KEYWORDS = "例|方法|规则|正向|逆向|要点|说明|易错|步骤"
 _CONTINUATION_RE = re.compile(r"^(%s)\s*[:：]\s*(.*)$" % _CONT_KEYWORDS)
@@ -217,8 +208,12 @@ def parse_tree_text(text: str) -> dict:
                 current = {"name": "未命名节", "topics": [], "level_titles": {}}
                 sections.append(current)
             order = kaoxiang_match.group(1)
-            name = (kaoxiang_match.group(2) or "").strip()
+            name = (kaoxiang_match.group(2) or "").strip().lstrip("：:").strip()
             if not name:
+                continue
+            # 纯数字名一律丢弃：裸行形态放宽后 `考向3` 会被读成名叫「3」的
+            # 考向，而它其实是用户漏了冒号。宁可忽略这一行，也不造出幽灵考点。
+            if name.isdigit():
                 continue
             current_topic = {
                 "no": int(order) if order and order.isdigit() else len(current["topics"]) + 1,
@@ -379,6 +374,56 @@ def _section_children(sec: dict):
     return nodes
 
 
+def _topics_with_render_defaults(sec: dict) -> list:
+    """渲染前补齐 `no`/`level`，保证每个考向都输出成可解析的行。
+
+    手动「新增考向」与 AI 自动建档往大纲里只写 `{id, name}`。缺 `no` 时
+    `_section_children` 会输出不带序号的裸行 `考向某某`，而 `parse_tree_text`
+    认不出这种形态，把它当上一行的续行拼进别人的 `example` —— 于是大纲写入
+    返回 200、TXT 也回写了，下一次以 TXT 为准的拉取却把这条考向彻底吞掉。
+
+    两个字段必须一起补：只补 `no` 的话该条目仍无 `level`，渲染按 L1 归组、
+    拉回后签名与大纲不等，`sync_to_txt` 每次保存都会重写一遍 TXT 文件。
+
+    只在渲染用的副本上补，绝不写回传入对象：大纲里的真实条目保持原样。
+    """
+
+    topics = [t for t in (sec.get("topics") or []) if isinstance(t, dict)]
+    prepared = []
+    for topic in topics:
+        level = str(topic.get("level") or "").strip().upper()
+        if level in LEVELS and _topic_no(topic) > 0:
+            prepared.append(topic)
+            continue
+        patched = dict(topic)
+        if level not in LEVELS:
+            patched["level"] = "L1"
+        if _topic_no(patched) <= 0:
+            patched["no"] = max([_topic_no(t) for t in topics] or [0]) + 1
+        prepared.append(patched)
+    return prepared
+
+
+def pull_stable_sections(sections: list) -> list:
+    """把大纲校正到「存进去就与 TXT 逐字节相等」的编号形态。
+
+    大纲里的 `no` 只有等于「L1→L5 归组后的连续序号」时，才和 `build_sections`
+    从 TXT 拉回的结果一致。新追加的考向若直接拿列表末尾号（比如 6），首次渲染
+    成 `考向6：某某`，TXT 拉回后它却是 L1 桶里的第 3 条，第二次渲染变成
+    `考向3：某某`。`_canonical_signature` 只看 `(level, name, example)`、不看
+    `no`，所以签名比对查不出这种错位——内容明明没变，用户每存一次大纲却被多
+    写一遍 TXT 文件。这里做一次纯内存 render→parse 把编号推到稳定点；
+    `build_sections` 按名字复用旧 id，因此不会凭空造出新考点。
+
+    只在大纲与 TXT 确实不一致时才被调用（`sync_to_txt` 已先比过签名）。
+    """
+
+    # 必须带 title：parse_tree_text 把第一行当章标题吃掉，缺了它整棵树会错位。
+    rendered = render_tree_text({"title": "编号校正", "sections": sections})
+    stable, _ = build_sections("", "", parse_tree_text(rendered), sections)
+    return stable
+
+
 def render_tree_text(tree: dict, style: str = "tree") -> str:
     """把考向树渲染成 TXT（默认与第一章范本完全一致的树线版式）。"""
 
@@ -397,10 +442,11 @@ def render_tree_text(tree: dict, style: str = "tree") -> str:
 
     section_nodes = []
     for group, members in grouped:
-        children = [
-            (str(sec.get("name") or "").strip(), _section_children(sec), True)
-            for sec in members
-        ]
+        children = []
+        for sec in members:
+            prepared = dict(sec)
+            prepared["topics"] = _topics_with_render_defaults(sec)
+            children.append((str(sec.get("name") or "").strip(), _section_children(prepared), True))
         if group:
             section_nodes.append((group, children, True))
         else:
@@ -560,58 +606,8 @@ def _signature_from_sections(sections) -> list:
 def _signature_from_parsed(parsed: dict) -> list:
     return _signature_from_sections(parsed.get("sections", []))
 
-
-def protected_topic_ids() -> set:
-    """已被题目引用的考向 id：TXT 里删掉的考向若仍被引用则保留，避免悬空。"""
-
-    ids = set()
-    try:
-        from mathbank.database import QuestionTopic, SessionLocal
-
-        db = SessionLocal()
-        try:
-            for (topic_id,) in db.query(QuestionTopic.topic_id).distinct():
-                if topic_id:
-                    ids.add(str(topic_id))
-        finally:
-            db.close()
-    except Exception as exc:  # 读不到库就退化为“不保护”，不影响同步本身
-        print(f"[KaoxiangTree] 读取题目考点引用失败 (type={type(exc).__name__}): {exc}")
-    return ids
-
-
-def _carry_over_referenced_topics(old_sections, new_sections, protected) -> int:
-    """TXT 里已删除、但仍被题目引用的考向原样保留（附在对应节末尾）。"""
-
-    if not protected:
-        return 0
-    kept_by_section: dict[str, list] = {}
-    for sec in old_sections or []:
-        if not isinstance(sec, dict):
-            continue
-        for topic in sec.get("topics", []) or []:
-            if isinstance(topic, dict) and str(topic.get("id") or "") in protected:
-                kept_by_section.setdefault(str(sec.get("name") or ""), []).append(topic)
-    if not kept_by_section:
-        return 0
-    carried = 0
-    for sec in new_sections:
-        sec_name = str(sec.get("name") or "")
-        existing = {
-            str(t.get("id") or "")
-            for t in sec.get("topics", [])
-            if isinstance(t, dict)
-        }
-        for topic in kept_by_section.get(sec_name, []):
-            if str(topic.get("id") or "") in existing:
-                continue
-            sec["topics"].append(dict(topic))
-            carried += 1
-    return carried
-
-
 # --------------------------------------------------------------------------
-# 同步入口
+# 只读诊断：TXT 与大纲的比对状态（TXT 同步链路已下线，仅供排查历史归档）
 # --------------------------------------------------------------------------
 def _count_topics(sections) -> int:
     return sum(
@@ -619,161 +615,16 @@ def _count_topics(sections) -> int:
     )
 
 
-def sync_from_txt(curriculum: dict, sources=None, protected=None) -> dict:
-    """TXT → 大纲。以 TXT 为准重写受管章（原地修改 curriculum）。
-
-    ``protected`` 是被题目引用的考向 id 集合；TXT 里删掉但仍在引用的考向会被
-    保留下来，避免出现没有考向指向的题目。
-    """
-
-    sources = load_sources() if sources is None else sources
-    if protected is None:
-        protected = protected_topic_ids()
-    report: dict = {"changed": False, "files": [], "carried_over": 0}
-    for source in sources:
-        compulsory = source.get("compulsory") or ""
-        chapter_key = match_chapter_key(
-            curriculum, compulsory, source.get("chapter_title", "")
-        )
-        entry = {
-            "filename": source.get("filename"),
-            "compulsory": compulsory,
-            "chapter": chapter_key,
-            "matched": bool(chapter_key),
-            "action": "skipped",
-            "before": 0,
-            "after": 0,
-            "added": 0,
-            "reused": 0,
-        }
-        if not chapter_key:
-            entry["action"] = "unmatched"
-            report["files"].append(entry)
-            continue
-
-        chapters = curriculum.setdefault(compulsory, {})
-        old_sections = chapters.get(chapter_key, []) or []
-        entry["before"] = _count_topics(old_sections)
-        if _canonical_signature(old_sections) == _canonical_signature(source['sections']):
-            entry["after"] = entry["before"]
-            entry["action"] = "in-sync"
-            report["files"].append(entry)
-            continue
-
-        new_sections, stats = build_sections(compulsory, chapter_key, source, old_sections)
-        report["carried_over"] += _carry_over_referenced_topics(
-            old_sections, new_sections, protected
-        )
-        chapters[chapter_key] = new_sections
-        entry.update(
-            {
-                "action": "pulled",
-                "after": _count_topics(new_sections),
-                "added": stats["added"],
-                "reused": stats["reused"],
-            }
-        )
-        report["changed"] = True
-        report["files"].append(entry)
-    return report
-
-
-def _txt_writes_allowed() -> bool:
-    """测试环境默认禁止改写项目里真实的考向树。
-
-    跑 pytest 时 IS_TESTING 为真，此时只有把 KAOXIANG_DIR 指向临时目录的
-    用例（显式 monkeypatch）才允许回写，避免其它用例的“保存大纲”把用户的
-    TXT 覆盖掉。
-    """
-
-    if not IS_TESTING:
-        return True
-    try:
-        return os.path.realpath(str(KAOXIANG_DIR)) != os.path.realpath(
-            str(DEFAULT_KAOXIANG_DIR)
-        )
-    except OSError:
-        return False
-
-
-def _same_tree(left: str, right: str) -> bool:
-    """忽略空行与尾随空格，比较两棵文本树是否等价。"""
-
-    def flat(text: str):
-        return [ln.rstrip() for ln in str(text or "").splitlines() if ln.strip()]
-
-    return flat(left) == flat(right)
-
-
-def sync_to_txt(curriculum: dict, sources=None) -> dict:
-    """大纲 → TXT。把受管章重新渲染回 ``考向树/``（内容不变则不落盘）。"""
-
-    sources = load_sources() if sources is None else sources
-    report: dict = {"changed": False, "files": []}
-    writable = _txt_writes_allowed()
-    for source in sources:
-        compulsory = source.get("compulsory") or ""
-        chapter_key = match_chapter_key(
-            curriculum, compulsory, source.get("chapter_title", "")
-        )
-        entry = {
-            "filename": source.get("filename"),
-            "chapter": chapter_key,
-            "matched": bool(chapter_key),
-            "action": "skipped",
-            "topics": 0,
-        }
-        if not chapter_key:
-            entry["action"] = "unmatched"
-            report["files"].append(entry)
-            continue
-        if not writable:
-            entry["action"] = "read-only"
-            report["files"].append(entry)
-            continue
-
-        sections = (curriculum.get(compulsory, {}) or {}).get(chapter_key, []) or []
-        entry["topics"] = _count_topics(sections)
-        try:
-            with open(source["path"], encoding="utf-8") as handle:
-                original = handle.read()
-        except OSError as exc:
-            entry["action"] = "error"
-            entry["error"] = str(exc)
-            report["files"].append(entry)
-            continue
-        # 内容一致就不动文件，保留用户原有的排版习惯
-        if _canonical_signature(parse_tree_text(original)["sections"]) == _canonical_signature(
-            sections
-        ):
-            entry["action"] = "in-sync"
-            report["files"].append(entry)
-            continue
-        rendered = render_tree_text(
-            {"title": source.get("chapter_title") or "", "sections": sections},
-            _tokenize(original)[1],
-        )
-        if _same_tree(original, rendered):
-            entry["action"] = "in-sync"
-            report["files"].append(entry)
-            continue
-        write_private_text_atomic(source["path"], rendered)
-        entry["action"] = "pushed"
-        report["changed"] = True
-        report["files"].append(entry)
-    return report
-
-
 def status(curriculum: dict | None = None) -> dict:
-    """返回每个受管 TXT 的同步状态，用于设置页展示。"""
+    """只读比对：列出 ``考向树/`` 下每个 TXT 与大纲的对应关系。
 
-    from mathbank import metadata as metadata_module  # 延迟导入，避免循环依赖
+    TXT 不再是数据源，本函数只为排查历史归档而保留（无产品入口）。
+    """
 
     if curriculum is None:
         curriculum = _load_metadata_cache().get("curriculum", {})
     sources = load_sources()
     files = []
-    state = _read_state()
     for source in sources:
         compulsory = source.get("compulsory") or ""
         key = match_chapter_key(curriculum, compulsory, source.get("chapter_title", ""))
@@ -795,199 +646,6 @@ def status(curriculum: dict | None = None) -> dict:
                 ),
                 "web_topics": _count_topics(sections),
                 "sections": len(source.get("sections", [])),
-                "synced_at": (state.get("files", {}) or {}).get(
-                    source.get("filename"), {}
-                ).get("synced_at", ""),
             }
         )
     return {"dir": str(KAOXIANG_DIR), "files": files, "count": len(files)}
-
-
-def _load_metadata_cache():
-    """取得活跃 metadata 字典；命令行/测试环境下按需从磁盘加载。"""
-
-    from mathbank import metadata as metadata_module
-
-    cache = metadata_module.get_metadata_cache()
-    if cache.get("curriculum"):
-        return cache
-    try:
-        with open(metadata_module.METADATA_FILE, encoding="utf-8") as handle:
-            loaded = json.load(handle)
-    except (OSError, ValueError):
-        return cache
-    if isinstance(loaded, dict) and loaded.get("curriculum"):
-        metadata_module.set_metadata_cache(loaded)
-        return loaded
-    return cache
-
-
-def _read_state() -> dict:
-    try:
-        with open(STATE_FILE, encoding="utf-8") as handle:
-            return json.load(handle)
-    except (OSError, ValueError):
-        return {}
-
-
-def _write_state(state: dict) -> None:
-    try:
-        os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
-        write_private_text_atomic(
-            STATE_FILE, json.dumps(state, ensure_ascii=False, indent=2)
-        )
-    except OSError as exc:
-        print(f"[KaoxiangTree] 同步状态写入失败: {exc}")
-
-
-def _hash(text: str) -> str:
-    return hashlib.sha1(str(text or "").encode("utf-8")).hexdigest()
-
-
-def _record_state(sources) -> None:
-    state = _read_state()
-    files_state = state.setdefault("files", {})
-    for source in sources:
-        try:
-            with open(source["path"], encoding="utf-8") as handle:
-                files_state[source["filename"]] = {
-                    "hash": _hash(handle.read()),
-                    "synced_at": datetime.now().isoformat(timespec="seconds"),
-                }
-        except OSError:
-            continue
-    _write_state(state)
-
-
-def push_to_txt(curriculum: dict | None = None) -> dict:
-    """Web → TXT：把当前大纲回写进 ``考向树/``（供保存与自动建档调用）。"""
-
-    if curriculum is None:
-        curriculum = _load_metadata_cache().get("curriculum", {})
-    if not curriculum:
-        return {"changed": False, "files": []}
-    sources = load_sources()
-    if not sources:
-        return {"changed": False, "files": []}
-    try:
-        report = sync_to_txt(curriculum, sources)
-    except Exception as exc:  # 回写失败绝不能影响主流程
-        print(f"[KaoxiangTree] 回写考向树失败 (type={type(exc).__name__}): {exc}")
-        return {"changed": False, "files": [], "error": str(exc)}
-    if report["changed"]:
-        _record_state(sources)
-    return report
-
-
-def pull_from_txt(write_preset: bool = True) -> dict:
-    """TXT → Web：以 TXT 为准刷新活跃大纲（默认同步到预设 A.json）。"""
-
-    from mathbank import metadata as metadata_module
-
-    ensure_tree_dir()
-    sources = load_sources()
-    if not sources:
-        return {"changed": False, "files": []}
-
-    cache = _load_metadata_cache()
-    curriculum = cache.setdefault("curriculum", {})
-    protected = protected_topic_ids()
-    report = sync_from_txt(curriculum, sources, protected)
-    if not report["changed"]:
-        return report
-
-    metadata_module.set_metadata_cache(cache)
-    from mathbank.curriculums import set_current_curriculum
-
-    set_current_curriculum(curriculum)
-    write_private_text_atomic(
-        metadata_module.METADATA_FILE, json.dumps(cache, ensure_ascii=False, indent=2)
-    )
-    metadata_module._record_metadata_mtime()
-
-    # 预设 A.json 是随包发布的种子，测试环境绝不改动它
-    if write_preset and not IS_TESTING and os.path.exists(PRESET_PATH):
-        try:
-            with open(PRESET_PATH, encoding="utf-8") as handle:
-                preset = json.load(handle)
-            preset_report = sync_from_txt(preset, sources, protected)
-            if preset_report["changed"]:
-                write_private_text_atomic(
-                    PRESET_PATH, json.dumps(preset, ensure_ascii=False, indent=2)
-                )
-            report["preset"] = preset_report
-        except (OSError, ValueError) as exc:
-            print(f"[KaoxiangTree] 预设大纲同步失败: {exc}")
-
-    _record_state(sources)
-    return report
-
-
-_MTIME_CACHE: dict[str, int] = {}
-
-
-def _sources_changed(sources) -> bool:
-    """以 mtime（纳秒）判断是否有 TXT 被外部改动过。"""
-
-    changed = False
-    for source in sources:
-        try:
-            mtime = os.stat(source["path"]).st_mtime_ns
-        except OSError:
-            continue
-        if _MTIME_CACHE.get(source["path"]) != mtime:
-            _MTIME_CACHE[source["path"]] = mtime
-            changed = True
-    return changed
-
-
-def auto_pull_if_needed(force: bool = False) -> dict:
-    """低成本的自动拉取：只有 TXT 真的被动过（或首次/强制）才比对内容。
-
-    供启动与常用接口调用；未发生变化时只做一次 stat，开销可忽略。
-    """
-
-    sources = load_sources()
-    if not sources:
-        return {"changed": False, "files": []}
-    if not force and not _sources_changed(sources):
-        return {"changed": False, "files": [], "skipped": True}
-    try:
-        return pull_from_txt()
-    except Exception as exc:  # 拉取失败不能让接口挂掉
-        print(f"[KaoxiangTree] 自动拉取考向树失败 (type={type(exc).__name__}): {exc}")
-        return {"changed": False, "files": [], "error": str(exc)}
-
-
-def _cli(argv: list[str]) -> int:
-    """命令行入口：``python -m mathbank.kaoxiang_tree [status|pull|push]``。"""
-
-    command = argv[1] if len(argv) > 1 else "status"
-    if command == "status":
-        info = status()
-        print(f"考向树目录：{info['dir']}（{info['count']} 个文件）")
-        for item in info["files"]:
-            flag = "已同步" if item["in_sync"] else ("未匹配" if not item["matched"] else "待同步")
-            print(
-                f"  [{flag}] {item['filename']} -> {item['chapter'] or '—'} "
-                f"(TXT {item['txt_topics']} 考向 / 网页 {item['web_topics']} 考向)"
-            )
-        return 0
-    if command == "pull":
-        report = pull_from_txt()
-    elif command == "push":
-        report = push_to_txt()
-    else:
-        print("用法：python -m mathbank.kaoxiang_tree [status|pull|push]")
-        return 2
-    print(f"方向：{command}  是否变更：{report.get('changed')}")
-    for item in report.get("files", []):
-        print(
-            f"  {item['action']}  {item['filename']}  "
-            f"{item.get('before', item.get('topics', ''))} -> {item.get('after', '')}"
-        )
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(_cli(__import__("sys").argv))

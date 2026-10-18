@@ -780,6 +780,10 @@ def normalize_math_text(value: str) -> str:
         text,
     )
     text = re.sub(r"\\[,;:!]", " ", text)
+    # 选择题作答括号同样是纯呈现元素（入库时统一补 \paren、导出时展开成字面括号），
+    # 不承载题目内容：指纹必须中性化它，否则「库里那道带 \paren、新查询不带」
+    # 会被误判成 possible_variant——同一道题再也查不出 exact。
+    text = re.sub(r"\\paren(?![A-Za-z@])", " ", text)
     text = text.replace(r"\(", " ").replace(r"\)", " ")
     text = text.replace(r"\[", " ").replace(r"\]", " ")
     text = text.replace("$", " ").replace("~", " ")

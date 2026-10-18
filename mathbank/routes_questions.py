@@ -13,7 +13,8 @@ import uuid
 from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException
 from fastapi.responses import JSONResponse
 from pathlib import Path
-from sqlalchemy import and_
+from sqlalchemy import and_, or_, cast, func
+from sqlalchemy import Integer as _SQLInteger
 from sqlalchemy.orm import Session
 from typing import Optional
 
@@ -26,6 +27,7 @@ from mathbank.asset_security import (
     normalize_upload_asset_reference,
     normalize_upload_asset_references,
     resolve_upload_asset,
+    trash_upload_asset,
 )
 from mathbank.database import (
     Paper,
@@ -49,6 +51,7 @@ from mathbank.metadata import (
     get_metadata_cache,
     schedule_database_export,
 )
+from mathbank.school_library import resolve_school_label
 from mathbank.question_duplicate_service import (
     batch_local_matches,
     exact_duplicate_ids,
@@ -85,7 +88,12 @@ from mathbank.question_metadata import (
     record_import_batch_question,
     record_tikz_versions,
 )
-from mathbank.latex_normalize import normalize_for_storage, normalize_stem_for_storage
+from mathbank.latex_normalize import (
+    _split_merged_choice_items,
+    normalize_choice_paren_macro,
+    normalize_for_storage,
+    normalize_stem_for_storage,
+)
 
 router = APIRouter()
 
@@ -225,6 +233,7 @@ def list_questions(
     page_size: int = 20,
     sort: str = "desc",
     tikz_pending: bool = False,
+    exclude_quality: str = None,
     db: Session = Depends(get_db)
 ):
     search_q = q or search
@@ -302,7 +311,6 @@ def list_questions(
             mode = "or" if str(topic_mode).lower() == "or" else "and"
             curriculum = get_metadata_cache().get("curriculum", {})
             if mode == "or":
-                from sqlalchemy import or_
                 or_clauses = []
                 for f in topic_filters:
                     slot_clauses = [
@@ -357,11 +365,23 @@ def list_questions(
             )
         )
 
-    order_columns = (
-        (Question.created_at.asc(), Question.id.asc())
-        if str(sort).lower() == "asc"
-        else (Question.created_at.desc(), Question.id.desc())
-    )
+    if exclude_quality == "bad":
+        # 默认视图排除烂题：质量档位 -1（tags 含「烂题」）。tags 为 NULL 时也要保留。
+        query = query.filter(or_(Question.tags.is_(None), ~Question.tags.like("%烂题%")))
+
+    if str(sort).lower() == "paper_no":
+        # 整卷浏览：按原题号自然序（提取前导数字），题号缺失的落后面。
+        order_columns = (
+            cast(func.substr(Question.paper_question_no, 1, 6), _SQLInteger),
+            Question.paper_question_no,
+            Question.id,
+        )
+    else:
+        order_columns = (
+            (Question.created_at.asc(), Question.id.asc())
+            if str(sort).lower() == "asc"
+            else (Question.created_at.desc(), Question.id.desc())
+        )
     if page is not None:
         safe_page_size = max(1, min(int(page_size), 100))
         total = query.count()
@@ -383,6 +403,8 @@ def list_questions(
                     **_decorate_topic_field(item.to_summary_dict()),
                     "seq_num": seq_map.get(item.id),
                     "topics": _decorate_topic_slots(topics_map.get(item.id, [])),
+                    "school_source_label": resolve_school_label(item.source_school_id) or None,
+                    "quality": _quality_level_of(item),
                 }
                 for item in questions
             ],
@@ -402,9 +424,154 @@ def list_questions(
             **_decorate_topic_field(item.to_summary_dict()),
             "seq_num": seq_map.get(item.id),
             "topics": _decorate_topic_slots(topics_map.get(item.id, [])),
+            "school_source_label": resolve_school_label(item.source_school_id) or None,
+            "quality": _quality_level_of(item),
         }
         for item in questions
     ]
+
+
+# ---------------------------------------------------------------------------
+# 按卷聚合 + 质量标签（"查看整套试卷"功能后端）
+# ---------------------------------------------------------------------------
+
+QUALITY_TOKENS = {"好题": 1, "经典": 2, "烂题": -1}
+QUALITY_BY_LEVEL = {0: "", 1: "好题", 2: "经典", -1: "烂题"}
+LEVEL_BY_TOKEN = {"": 0, "好题": 1, "经典": 2, "烂题": -1}
+
+
+def _quality_level_of(question) -> int:
+    """从 tags 文本推导质量档位（-1/0/1/2）。"""
+
+    for t in (question.tags or "").split(","):
+        t = t.strip()
+        if t in LEVEL_BY_TOKEN and LEVEL_BY_TOKEN[t] != 0:
+            return LEVEL_BY_TOKEN[t]
+    return 0
+
+
+@router.get("/api/questions/papers")
+def list_papers(
+    year: str = "",
+    exam_type: str = "",
+    grade: str = "",
+    region: str = "",
+    db: Session = Depends(get_db),
+):
+    """按卷名（Question.source）聚合，返回每套卷的题数/年份/学校/考试类型。
+
+    支持按年份 / 考试类型 / 年级 / 学校地区筛选（逗号分隔多选）。用于
+    "查看整套试卷"的分组树。
+    """
+
+    from mathbank.database import QuestionSource
+
+    base = (
+        db.query(Question.source, func.count(Question.id).label("cnt"))
+        .filter(Question.source.isnot(None), Question.source != "")
+    )
+
+    years = [f.strip() for f in (year or "").split(",") if f.strip()]
+    etypes = [f.strip() for f in (exam_type or "").split(",") if f.strip()]
+    grades = [f.strip() for f in (grade or "").split(",") if f.strip()]
+    regions = [f.strip() for f in (region or "").split(",") if f.strip()]
+
+    if years or etypes or grades or regions:
+        sub = db.query(QuestionSource.question_id)
+        if years:
+            sub = sub.filter(QuestionSource.year.in_(years))
+        if etypes:
+            sub = sub.filter(QuestionSource.exam_type.in_(etypes))
+        if grades:
+            sub = sub.filter(QuestionSource.grade.in_(grades))
+        if regions:
+            sub = sub.filter(or_(*[QuestionSource.region.like(f"%{r}%") for r in regions]))
+        matched = [r[0] for r in sub.distinct().all()]
+        if matched:
+            base = base.filter(Question.id.in_(matched))
+        else:
+            base = base.filter(Question.id == -1)
+
+    groups = base.group_by(Question.source).all()
+
+    result = []
+    for source, cnt in groups:
+        stats = (
+            db.query(
+                QuestionSource.year,
+                QuestionSource.region,
+                QuestionSource.exam_type,
+                func.count(QuestionSource.id),
+            )
+            .join(Question, Question.id == QuestionSource.question_id)
+            .filter(Question.source == source)
+            .group_by(
+                QuestionSource.year,
+                QuestionSource.region,
+                QuestionSource.exam_type,
+            )
+            .order_by(func.count(QuestionSource.id).desc())
+            .first()
+        )
+        result.append(
+            {
+                "source": source,
+                "count": cnt,
+                "year": (stats[0] if stats else "") or "",
+                "school": (stats[1] if stats else "") or "",
+                "exam_type": (stats[2] if stats else "") or "",
+            }
+        )
+
+    result.sort(
+        key=lambda g: (
+            -int(g["year"]) if str(g["year"]).isdigit() else 0,
+            -g["count"],
+        )
+    )
+    return {"groups": result}
+
+
+@router.post("/api/questions/{question_id}/quality")
+def set_question_quality(
+    question_id: int, payload: dict, db: Session = Depends(get_db)
+):
+    """设置单题质量档位：level ∈ {normal, good, classic, bad} 或数值 -1/0/1/2。
+
+    复用现有 tags 字段存质量 token（好题/经典/烂题），普通=无 token；
+    其余自定义标签原样保留。单击循环由前端计算下一档。
+    """
+
+    q = db.query(Question).filter(Question.id == question_id).first()
+    if q is None:
+        return JSONResponse(
+            content={"status": "error", "message": "题目不存在"}, status_code=404
+        )
+
+    raw = payload.get("level") if isinstance(payload, dict) else None
+    level_map = {"normal": 0, "good": 1, "classic": 2, "bad": -1}
+    if isinstance(raw, str) and raw in level_map:
+        level = level_map[raw]
+    else:
+        try:
+            level = int(raw)
+        except (TypeError, ValueError):
+            return JSONResponse(
+                content={"status": "error", "message": "level 无效"}, status_code=400
+            )
+    if level not in QUALITY_BY_LEVEL:
+        return JSONResponse(
+            content={"status": "error", "message": "level 超出范围"}, status_code=400
+        )
+
+    tags = [t.strip() for t in (q.tags or "").split(",") if t.strip()]
+    tags = [t for t in tags if t not in QUALITY_TOKENS]
+    token = QUALITY_BY_LEVEL.get(level, "")
+    if token:
+        tags.append(token)
+    sync_question_tags(db, q, ",".join(tags))
+    db.commit()
+    return {"status": "success", "question_id": question_id, "level": level}
 
 
 def _duplicate_payload_list(value, *, field_name: str, max_items: int = 50):
@@ -665,6 +832,9 @@ def get_question(question_id: int, db: Session = Depends(get_db)):
     q_dict["seq_num"] = seq_map.get(q.id)
     q_dict["topics"] = _decorate_topic_slots(load_question_topics(db, q.id, get_active_version_code()))
     q_dict["sources"] = _load_sources_sorted(db, q.id)
+    # 主来源学校：按 source_school_id 现查当前简称（词库删校/未建档回落 None，前端用 source 文本）
+    q_dict["school_source_label"] = resolve_school_label(q.source_school_id) or None
+    q_dict["quality"] = _quality_level_of(q)
     return q_dict
 
 
@@ -1140,8 +1310,9 @@ def create_question(
             r"[0-9a-f]{64}", duplicate_snapshot_hash
         ):
             raise ValueError("查重题目快照格式无效")
-        # 规范化填空题下划线为 \fillin 宏
+        # 规范化填空题下划线为 \fillin 宏；并把 AI 挤在同一 \item 的多选项拆开
         content = normalize_fillin_macro(content)
+        content = _split_merged_choice_items(content)
 
         (
             content,
@@ -1175,6 +1346,12 @@ def create_question(
         content, answer_markdown, paper_question_no = _normalize_pair_for_db(
             content, answer_markdown, question_type, paper_question_no
         )
+        # 选择题末尾的作答空括号统一成 \paren。**必须放在 _normalize_pair_for_db
+        # 之后**：只有它内部的 normalize_for_storage 跑完，纯文本选项行才被包装成
+        # \begin{choices}，此时补 \paren 才会落在题干末尾而不是选项行之后。
+        # 该顺序与 parsing_pipeline.apply_storage_normalization 完全一致，是
+        # 「三条录入路径入库源码逐字节相同」的必要条件（test_entry_path_latex_parity）。
+        content = normalize_choice_paren_macro(content, question_type)
 
         # 1. Fallback if third level is empty, default to chapter
         if not category_knowledge and category_chapter:
@@ -1203,7 +1380,7 @@ def create_question(
             exam_region=exam_region or "",
             exam_stage=exam_stage or "",
             video_url=video_url or "",
-            option_columns=_parse_int_or_default(option_columns, 1),
+            option_columns=_parse_int_or_default(option_columns, 0),
             analysis_methods=_normalize_analysis_methods(analysis_methods),
             difficulty_index=_parse_float_or_none(difficulty_index),
             cognitive_level=cognitive_level or "",
@@ -1406,8 +1583,9 @@ def update_question(
             r"[0-9a-f]{64}", duplicate_snapshot_hash
         ):
             raise ValueError("查重题目快照格式无效")
-        # 规范化填空题下划线为 \fillin 宏
+        # 规范化填空题下划线为 \fillin 宏；并把 AI 挤在同一 \item 的多选项拆开
         content = normalize_fillin_macro(content)
+        content = _split_merged_choice_items(content)
 
         (
             content,
@@ -1441,6 +1619,12 @@ def update_question(
         content, answer_markdown, paper_question_no = _normalize_pair_for_db(
             content, answer_markdown, question_type, paper_question_no
         )
+        # 选择题末尾的作答空括号统一成 \paren。**必须放在 _normalize_pair_for_db
+        # 之后**：只有它内部的 normalize_for_storage 跑完，纯文本选项行才被包装成
+        # \begin{choices}，此时补 \paren 才会落在题干末尾而不是选项行之后。
+        # 该顺序与 parsing_pipeline.apply_storage_normalization 完全一致，是
+        # 「三条录入路径入库源码逐字节相同」的必要条件（test_entry_path_latex_parity）。
+        content = normalize_choice_paren_macro(content, question_type)
 
         # 1. Fallback if third level is empty, default to chapter
         if not category_knowledge and category_chapter:
@@ -1472,7 +1656,7 @@ def update_question(
         db_question.exam_region = exam_region or ""
         db_question.exam_stage = exam_stage or ""
         db_question.video_url = video_url or ""
-        db_question.option_columns = _parse_int_or_default(option_columns, 1)
+        db_question.option_columns = _parse_int_or_default(option_columns, 0)
         db_question.analysis_methods = _normalize_analysis_methods(analysis_methods)
         db_question.difficulty_index = _parse_float_or_none(difficulty_index)
         db_question.cognitive_level = cognitive_level or ""
@@ -1827,40 +2011,19 @@ def rollback_question_asset_promotions(promotions: list[tuple[Path, Path]]) -> N
 
 
 def _referenced_question_assets(db: Session) -> set[Path]:
-    """Resolve every stored question image reference with one database query."""
+    """Resolve every stored question image reference with one database query.
 
-    resolved_references: set[Path] = set()
-    rows = db.query(
-        Question._image_paths,
-        Question.content,
-        Question.answer_markdown,
-    ).all()
-    for raw_paths, content, answer_markdown in rows:
-        references = []
-        try:
-            parsed = json.loads(raw_paths or "[]")
-            if isinstance(parsed, list):
-                references.extend(parsed)
-        except (TypeError, json.JSONDecodeError):
-            pass
-        references.extend(
-            re.findall(
-                r'/static/(?:uploads|test_uploads)/[a-zA-Z0-9_./-]+',
-                f"{content or ''}\n{answer_markdown or ''}",
-            )
-        )
-        for reference in references:
-            try:
-                resolved = resolve_upload_asset(
-                    reference,
-                    uploads_dir=UPLOAD_DIR,
-                    url_prefix=UPLOAD_DIR_REL,
-                    require_file=False,
-                )
-            except AssetSecurityError:
-                continue
-            resolved_references.add(resolved)
-    return resolved_references
+    ⚠️ 判据统一走 ``mathbank.image_references.collect_referenced_assets``：
+    早先这里只认带 ``/static/uploads/`` 前缀的引用，而「彻底 LaTeX 化」后
+    content 里存的是 ``\\includegraphics{裸文件名}``，导致已入库的插图被
+    判成孤儿删掉。共享实现同时覆盖 image_paths / content / answer_markdown
+    里的裸名与带前缀两种写法。
+    """
+    from mathbank.image_references import collect_referenced_assets
+
+    return collect_referenced_assets(
+        db, uploads_dir=UPLOAD_DIR, url_prefix=UPLOAD_DIR_REL
+    )
 
 
 def delete_unreferenced_question_assets(db: Session, references) -> int:
@@ -1887,8 +2050,9 @@ def delete_unreferenced_question_assets(db: Session, references) -> int:
     for candidate in candidates:
         try:
             if candidate.is_file() and candidate not in referenced:
-                candidate.unlink()
-                removed += 1
+                # 软删除：移入 .trash/ 保留 30 天，误删可恢复
+                if trash_upload_asset(candidate, UPLOAD_DIR):
+                    removed += 1
         except OSError:
             print("[Storage Cleanup] Skipped an unavailable legacy image path.")
     return removed

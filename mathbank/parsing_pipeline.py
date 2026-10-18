@@ -23,7 +23,11 @@ from main import (
     resolve_text_provider,
 )
 
-from mathbank.latex_normalize import normalize_for_storage, normalize_stem_for_storage
+from mathbank.latex_normalize import (
+    normalize_choice_paren_macro,
+    normalize_for_storage,
+    normalize_stem_for_storage,
+)
 from mathbank.output_fidelity import (
     check_split_output_fidelity,
     format_fidelity_log,
@@ -299,7 +303,209 @@ def _tmp_upload_dir() -> str:
         return TMP_UPLOAD_DIR
 
 
-def post_process_pdf_parsed_questions(parsed_questions: list, paper_title: str, task_id: str = None, ocr_results: list = None, source_text: str = "") -> list:
+# ─────────────────────────────────────────────────────────────────────────────
+# 逐题比对原卷：原卷该题无【详解】时，截断 AI 编造的解析段。
+# 仅「切分触发 + 没勾生成答案」时生效；源段找不到则保守跳过（不清不截）。
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _split_source_by_question_no(source_text: str) -> dict:
+    """把原卷 markdown 按题号切成 {题号: 该题原文段}。
+
+    题号形态：行首 N. / N． / N、（1-3 位数字）。
+    """
+    if not source_text:
+        return {}
+    import re
+    pattern = re.compile(r"(?m)^[ \t]*(\d{1,3})[ \t]*[.．、][ \t]*(?![0-9])")
+    matches = list(pattern.finditer(source_text))
+    result = {}
+    for i, m in enumerate(matches):
+        no = m.group(1)
+        start = m.start()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(source_text)
+        # 同题号取第一个（避免后半重印题干时取到重复段）
+        if no not in result:
+            result[no] = source_text[start:end]
+    return result
+
+
+_SOLUTION_MARKER_RE = re.compile(r"【详解】|【解析】|详解[：:]|解析[：:]")
+
+def _source_has_solution(source_segment: str) -> bool:
+    """源段里有没有解析标记（先剥 ## 前缀脏数据）。"""
+    if not source_segment:
+        return False
+    cleaned = re.sub(r"(?m)^[ \t]*#+[ \t]*", "", source_segment)
+    return bool(_SOLUTION_MARKER_RE.search(cleaned))
+
+
+def _match_source_segment(q: dict, index: int, segments: dict) -> str:
+    """给一道题找对应的源段。
+
+    优先用 paper_question_no；为空时用 1-based 序数兜底，
+    但必须通过「源段里能找到 AI 题干前几个汉字」的校验——
+    否则视为匹配失败（AI 重排/合并时保守跳过，不误判）。
+    """
+    if not segments:
+        return ""
+    no = str(q.get("paper_question_no") or "").strip()
+    if no and no in segments:
+        return segments[no]
+    # 序数兜底 + 文本校验
+    fallback = str(index + 1)
+    seg = segments.get(fallback)
+    if not seg:
+        return ""
+    content = (q.get("content") or "").strip()
+    # 取 AI 题干里的前若干汉字（去掉 LaTeX/标点），在源段里找
+    import re as _re
+    probe_match = _re.search(r"[\u4e00-\u9fa5]{4,}", content)
+    probe = probe_match.group(0)[:6] if probe_match else ""
+    if probe and probe in seg:
+        return seg
+    # 图片型题目兜底：题干/选项里引用的图片文件名命中源段 → 视为匹配。
+    # （图片型选项往往没有可校验的汉字题干，纯序数兜底会漏；这里用文件名交叉验证）
+    import os as _os
+    cand_images = set()
+    for p in (q.get("image_paths") or []):
+        if p:
+            cand_images.add(_os.path.basename(str(p)))
+    for m in _re.finditer(r"\\includegraphics(?:\[[^\]]*\])?\{([^}]+)\}", content):
+        cand_images.add(_os.path.basename(m.group(1)))
+    for name in cand_images:
+        if name and name in seg:
+            return seg
+    return ""   # 校验失败 → 保守跳过
+
+
+def _truncate_ai_solutions(parsed_questions: list, source_text: str,
+                           generate_answers_bool: bool) -> list:
+    """原卷该题无【详解】时，把 AI 返回的 answer_markdown 截到首个解析
+    标记之前，只留【答案】段。
+
+    仅处理：source_text 非空（= 切分触发）+ 没勾生成答案 + 能按题号
+    定位到源段。源段找不到 → 保守跳过（不清不截）。
+    """
+    if not source_text or generate_answers_bool:
+        return parsed_questions
+    segments = _split_source_by_question_no(source_text)
+    for index, q in enumerate(parsed_questions):
+        seg = _match_source_segment(q, index, segments)
+        if not seg:
+            continue
+        if _source_has_solution(seg):
+            continue
+        ans = q.get("answer_markdown") or ""
+        if not ans:
+            continue
+        m = _SOLUTION_MARKER_RE.search(ans)
+        if m:
+            q["answer_markdown"] = ans[:m.start()].rstrip()
+    return parsed_questions
+
+
+# 只认"行首单字母 + 可选标点"——大庆卷 Q3 的 A/B/C/D 各自成行。
+# 不认行内 "A. xxx B. xxx"（风险高，题干里"集合 A""点 B"会误判）。
+_OPTION_LABEL_LINE_RE = re.compile(
+    r"(?m)^[ \t]*([A-H])[ \t]*[.．、]?[ \t]*(?=\S|$)"
+)
+# 同一行后续若再出现别的选项标号（如 "A. 1 B. 2 C. 3 D. 4" 挤在一行），
+# 视为题干/干扰，整行不计——配合上面的行首判据实现"数不出就保守跳过"。
+_INLINE_LABEL_RE = re.compile(r"[A-H][.．、]")
+
+
+def _count_source_options(source_segment: str) -> int:
+    """从源段估选项数（行首 A-H 标号，取从 A 开始的最大连续编号）。
+
+    数不出（如选项挤在同一行、或行内混有别的标号）就返回 0，保守跳过，
+    避免把题干里的"集合 A""点 B"之类误判成选项而误报。
+    """
+    if not source_segment:
+        return 0
+    cleaned = re.sub(r"(?m)^[ \t]*#+[ \t]*", "", source_segment)
+    valid = set()
+    for m in _OPTION_LABEL_LINE_RE.finditer(cleaned):
+        line_start = cleaned.rfind("\n", 0, m.start()) + 1
+        line_end = cleaned.find("\n", m.start())
+        if line_end == -1:
+            line_end = len(cleaned)
+        after = cleaned[m.end():line_end]
+        if not _INLINE_LABEL_RE.search(after):
+            valid.add(m.group(1))
+    count = 0
+    for c in "ABCDEFGH":
+        if c in valid:
+            count += 1
+        else:
+            break
+    return count
+
+
+# Markdown 配图 `![](..)` 与 LaTeX 配图 `\includegraphics{..}` 两种形态都算。
+_IMAGE_REF_RE = re.compile(r"!\[[^\]]*\]\([^)]+\)|\\includegraphics(?:\[[^\]]*\])?\{[^}]+\}")
+
+
+def _count_segment_images(source_segment: str) -> int:
+    """源段里图片（Markdown/LaTeX 两种形态）的总数。
+
+    用于图片型选择题的「选项图守恒」校验：原卷 N 张配图、AI 输出 M 张，
+    N > M 即疑似漏图。图片型选项没有可校验的汉字题干，且标号常与图挤在一行
+    导致行首判据（_count_source_options）返回 0，用图片总数做并行判据兜住。
+    """
+    if not source_segment:
+        return 0
+    return len(_IMAGE_REF_RE.findall(source_segment))
+
+
+def _flag_missing_options(parsed_questions: list, source_text: str) -> list:
+    """源段选项数 > AI 输出 \\item 数时，往 review 字段写警告。
+
+    双判据（任一命中即告警），只针对选择题：
+    - 判据 A（文字型）：源段行首 A-H 标号数 > AI 的 \\item 数；
+    - 判据 B（图片型）：源段图片总数 > AI choices 环境内 \\includegraphics 数。
+      图片型选项的标号常与图挤在一行导致行首判据数不出（src_count=0），
+      用「图片守恒」并行判据兜住；ai_imgs>=1 说明本就是图片选项题，避免误报纯文字题。
+    警告幂等：已存在相同文案则不重复追加。
+    """
+    if not source_text:
+        return parsed_questions
+    segments = _split_source_by_question_no(source_text)
+    for index, q in enumerate(parsed_questions):
+        if q.get("question_type") not in ("single_choice", "multi_choice"):
+            continue
+        seg = _match_source_segment(q, index, segments)
+        if not seg:
+            continue
+        content = q.get("content") or ""
+        m = re.search(r"\\begin\{choices\}([\s\S]*?)\\end\{choices\}", content)
+        if not m:
+            continue
+        ai_count = len(re.findall(r"\\item\b", m.group(1)))
+        ai_imgs = len(re.findall(r"\\includegraphics", m.group(1)))
+
+        src_count = _count_source_options(seg)
+        src_imgs = _count_segment_images(seg)
+
+        warnings = []
+        if src_count >= 2 and ai_count < src_count:
+            warnings.append(
+                f"[自动检测] 选项疑似缺失：原卷 {src_count} 项，识别 {ai_count} 项，请核对补全。"
+            )
+        if src_imgs >= 2 and ai_imgs < src_imgs:
+            warnings.append(
+                f"[自动检测] 选项图疑似缺失：原卷 {src_imgs} 张配图，识别 {ai_imgs} 张，请核对补全。"
+            )
+        if not warnings:
+            continue
+        existing = (q.get("review") or "").strip()
+        for w in warnings:
+            if w not in existing:
+                existing = (existing + "\n" + w).strip() if existing else w
+        q["review"] = existing
+    return parsed_questions
+
+
+def post_process_pdf_parsed_questions(parsed_questions: list, paper_title: str, task_id: str = None, ocr_results: list = None, source_text: str = "", generate_answers_bool: bool = True) -> list:
     """PDF 专属解析卡片后处理：正则搜寻 /tmp/ 下的图片，以及将未解析的图n占位符智能映射回真实的裁剪插图图片，
     最后将其灌入 image_paths 数组中，并在 content 中静默清除以配合布局展示。支持文本重合度兜底映射，防大模型删除路径！
 
@@ -310,6 +516,16 @@ def post_process_pdf_parsed_questions(parsed_questions: list, paper_title: str, 
     import os
     import glob
 
+    # 0.5 逐题比对原卷：原卷该题无【详解】时，截断 AI 编造的解析段
+    # （仅切分触发 + 没勾生成答案时生效；源段找不到则保守跳过）。
+    parsed_questions = _truncate_ai_solutions(
+        parsed_questions, source_text, generate_answers_bool
+    )
+
+    # 0.6 逐题检测选项数：源段选项数 > AI 输出 \item 数时，往 review 写警告
+    # （仅选择题；源段数不出选项或 AI 无 choices 时保守跳过，不误报）。
+    parsed_questions = _flag_missing_options(parsed_questions, source_text)
+
     # 0. 规范化所有拆解题目的填空下划线为 \fillin 宏
     for q in parsed_questions:
         if q.get("content"):
@@ -319,10 +535,12 @@ def post_process_pdf_parsed_questions(parsed_questions: list, paper_title: str, 
         if am.strip():
             stripped = am.lstrip()
             if not stripped.startswith("【答案】"):
+                has_solution = bool(_SOLUTION_MARKER_RE.search(stripped))
                 if q.get("question_type") in ("detailed_answer",):
                     q["answer_markdown"] = "【答案】见解析\n\n" + am
-                else:
+                elif not has_solution:
                     q["answer_markdown"] = "【答案】" + stripped
+                # 有【详解】但无【答案】的题：保持原样，不补空【答案】
         # 每个【…】板块（答案/解析/分析/详解/点评…）独立成行，
         # 避免大模型把「【解析】【分析】」黏在同一行导致预览与导出拥挤。
         am = q.get("answer_markdown") or ""
@@ -756,17 +974,66 @@ def apply_storage_normalization(parsed_questions: list) -> list:
             lead_no, q["content"] = normalize_stem_for_storage(q["content"], q_type)
             if lead_no and not str(q.get("paper_question_no") or "").strip():
                 q["paper_question_no"] = lead_no
+            # 选择题末尾的作答空括号统一成 \paren（题库统一口径）。
+            # 必须放在 normalize_stem_for_storage **之后**：那时结构层已跑完
+            # （纯文本选项行已被包装成 \begin{choices}），补的 \paren 才会落在
+            # 题干末尾而不是选项行之后。
+            q["content"] = normalize_choice_paren_macro(q["content"], q_type)
         if q.get("answer_markdown"):
             # 解析（answer）不是选项，不传 question_type，避免把解析里的「A．」误转选项。
             q["answer_markdown"] = normalize_for_storage(q["answer_markdown"], is_answer=True)
     return parsed_questions
 
 
+# 整卷拆题是**非流式、一次性生成**：模型要读完整个卷面再一次性吐出全部题目 JSON，
+# 首字节（TTFB）往往是整个生成时间，远超 _post_bounded 默认的 30s 读上限。这里显式
+# 放宽单次读等待，避免把正常的长响应误判成超时（整体仍受 deadline_seconds 约束）。
+AI_SPLIT_READ_TIMEOUT_SECONDS = 240
+
+
+def _sanitize_answers(
+    parsed_questions: list,
+    generate_answers_bool: bool,
+    preserve_extracted_answers: bool = False,
+) -> list:
+    """静默净化答案字段（纯函数，便于单测）。
+
+    规则：
+    - 未勾选自动生成答案（generate_answers_bool is False）：
+        * 原卷自带答案并打了 ``[EXTRACTED_ORIGINAL]`` 标记 → 保留（清理标记）。
+        * preserve_extracted_answers=True（本次触发两段式切分，AI 输入就是原卷
+          「参考答案+详解」段，答案必然来自原卷）→ 即使没打标记也保留（清理标记）。
+        * 其余（AI 凭空生成、且无原卷依据）→ 强行清空为空字符串。
+    - 勾选了自动生成答案 → 一律保留（清理标记）。
+    """
+    marker = "[EXTRACTED_ORIGINAL]"
+    for q in parsed_questions:
+        ans = q.get("answer_markdown", "")
+        if not ans:
+            q["answer_markdown"] = ""
+            continue
+        if not generate_answers_bool:
+            if preserve_extracted_answers or marker in ans:
+                q["answer_markdown"] = ans.replace(marker, "").strip()
+            else:
+                q["answer_markdown"] = ""
+        else:
+            q["answer_markdown"] = ans.replace(marker, "").strip()
+    return parsed_questions
+
+
 def parse_paper_text_internal(
     latex_content: str,
-    generate_answers_bool: bool
+    generate_answers_bool: bool,
+    deadline_seconds=None,
+    cancel_check=None,
+    preserve_extracted_answers: bool = False,
 ) -> list:
-    """内部通用函数：调用选定的 LLM 接口，将 LaTeX 试卷内容解析拆分为结构化 JSON 卡片"""
+    """内部通用函数：调用选定的 LLM 接口，将 LaTeX 试卷内容解析拆分为结构化 JSON 卡片
+
+    ``deadline_seconds`` 约束整次拆题调用的墙上时钟上限，``cancel_check`` 在
+    读取响应时被轮询，使已取消的任务能立刻跳出慢响应、释放工作线程。
+    """
     parse_model = os.getenv("PREFER_PARSE_MODEL") or os.getenv("DEEPSEEK_PARSE_MODEL", "deepseek-flash")
     provider = resolve_text_provider(parse_model)
     api_key = provider.api_key
@@ -821,6 +1088,9 @@ def parse_paper_text_internal(
         data,
         timeout=180,
         provider_name=provider_name,
+        deadline_seconds=deadline_seconds,
+        cancel_check=cancel_check,
+        read_timeout=AI_SPLIT_READ_TIMEOUT_SECONDS,
     )
         
     res_json = response.json()
@@ -846,19 +1116,16 @@ def parse_paper_text_internal(
     else:
         raise Exception("AI 返回的 JSON 格式不正确，期望是一个数组或包含 questions 列表的对象。")
         
-    # 强制进行静默净化：若未勾选自动生成答案，则对于没有带有 [EXTRACTED_ORIGINAL] 的解析和解答，将其强行抹平为空。
-    for q in parsed_questions:
-        ans = q.get("answer_markdown", "")
-        if not ans:
-            q["answer_markdown"] = ""
-            continue
-        if not generate_answers_bool:
-            if "[EXTRACTED_ORIGINAL]" in ans:
-                q["answer_markdown"] = ans.replace("[EXTRACTED_ORIGINAL]", "").strip()
-            else:
-                q["answer_markdown"] = ""
-        else:
-            q["answer_markdown"] = ans.replace("[EXTRACTED_ORIGINAL]", "").strip()
+    # 强制进行静默净化：若未勾选自动生成答案，则对于没有带有 [EXTRACTED_ORIGINAL] 的
+    # 解析和解答，将其强行抹平为空。
+    # ⚠️ 例外：preserve_extracted_answers=True 时（本次任务触发了两段式切分，AI 的输入
+    #    就是原卷「参考答案+详解」段），AI 返回的答案必然来自原卷，即便它没按契约打
+    #    [EXTRACTED_ORIGINAL] 标记，也不能当作 AI 生成清空。
+    _sanitize_answers(
+        parsed_questions,
+        generate_answers_bool,
+        preserve_extracted_answers=preserve_extracted_answers,
+    )
 
     # ⚠️ 这里**不再**单独跑字符层补定界符与解析紧凑化：那两步已经并入
     # normalize_for_storage，由紧随其后的 post_process 第 8 步与写库边界统一执行。

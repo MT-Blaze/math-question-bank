@@ -1328,12 +1328,41 @@ def resolve_ocr_illustration_boxes(
 
 
 
+def _page_marker_page_index(local_index: int, ocr_results: list) -> int:
+    r"""把 ``ocr_results`` 的**局部下标**换算成 **0-based 绝对页号**。
+
+    ``ocr_results`` 只装本次选中的页（可能是 ``page_range`` 挑出来的一段），下标
+    与整本 PDF 的物理页号不是一回事；而下游一律按**绝对页号**办事 ——
+    裁剪图文件名 ``pdf_crop_{task}_{页}_{序}.png``、整页原图
+    ``pdf_page_{task}_{页}.png``、以及前端「源自第 N 页」全部读绝对页号。
+
+    页文本里本来就带了 ``<!-- MATHBANK_PDF_PAGE:{绝对页 1-based} -->`` 标记
+    （原生直提页与视觉 OCR 页都会拼），直接取它即可，零额外成本、也天然支持
+    非连续的页码范围。老数据或手工构造的列表取不到标记时才退回局部下标。
+    """
+
+    try:
+        text = ocr_results[local_index] or ""
+    except (IndexError, TypeError):  # pragma: no cover - 防御
+        return local_index
+    if not isinstance(text, str):
+        return local_index
+    match = re.search(r"MATHBANK_PDF_PAGE:(\d+)", text)
+    if not match:
+        return local_index
+    return max(0, int(match.group(1)) - 1)
+
+
 def find_source_page_by_overlap(q_text: str, ocr_results: list, min_overlap: int = 1) -> int:
     """利用 3-shingle（三字符切片）特征重合度，计算题目最可能所属的 PDF 原始物理页码。
 
-    返回 ``-1`` 表示没有任何一页达到 ``min_overlap``（默认 1，即要求真实重合）。
-    旧实现无论重合度多少都退回第 0 页，导致「与任何页都对不上」的题目被误判为
-    第 1 页，进而把该页全部插图挂过去（末题吞掉整卷图片的根因之一）。
+    返回 **0-based 绝对页号**；``-1`` 表示没有任何一页达到 ``min_overlap``
+    （默认 1，即要求真实重合）。旧实现无论重合度多少都退回第 0 页，导致
+    「与任何页都对不上」的题目被误判为第 1 页，进而把该页全部插图挂过去。
+
+    ⚠️ 返回的必须是**绝对页号**（见 :func:`_page_marker_page_index`）：曾经直接返回
+    ``enumerate`` 的局部下标，于是只要用了「页码范围」，题目的来源页就与裁剪图/
+    整页原图的编号错位一个偏移，插图兜底会整体错挂。
     """
     if not q_text or not ocr_results:
         return -1
@@ -1373,4 +1402,5 @@ def find_source_page_by_overlap(q_text: str, ocr_results: list, min_overlap: int
 
     if max_overlap < min_overlap:
         return -1
-    return best_page
+    # best_page 是 ocr_results 的局部下标，必须换算成绝对页号再交给下游。
+    return _page_marker_page_index(best_page, ocr_results)

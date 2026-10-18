@@ -270,29 +270,10 @@ def _flush_auto_topics() -> None:
                 METADATA_FILE,
                 json.dumps(METADATA_CACHE, ensure_ascii=False, indent=2),
             )
-            _push_curriculum_to_txt(curriculum)
     except Exception as exc:
         print(
             f"[Metadata] Auto topic write-back failed "
             f"(type={type(exc).__name__})."
-        )
-
-
-def _push_curriculum_to_txt(curriculum: dict) -> None:
-    """把刚写入的大纲回写到 ``考向树/`` 的 TXT 底层文件。
-
-    任何直接落盘的路径（自动建档、脚本修复）都要走这里，否则下一次以 TXT
-    为准的拉取会把这些改动覆盖掉。失败只记录日志，绝不阻断主流程。
-    """
-
-    try:
-        from mathbank.kaoxiang_tree import push_to_txt
-
-        push_to_txt(curriculum)
-    except Exception as exc:
-        print(
-            "[Metadata] 考向树 TXT 回写失败 "
-            f"(type={type(exc).__name__}): {exc}"
         )
 
 

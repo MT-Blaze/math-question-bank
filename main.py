@@ -44,6 +44,7 @@ from fastapi.staticfiles import StaticFiles
 
 
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 
 
 from sqlalchemy.orm import Session
@@ -356,6 +357,22 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# 2026-09-25 前端性能修复：首屏明文 2.46MB 实测零压缩（客户端带 Accept-Encoding: gzip
+# 也返回原文），只压 >1KB 的响应，小包压缩反而变大所以不碰。
+app.add_middleware(GZipMiddleware, minimum_size=1024)
+
+
+@app.middleware("http")
+async def static_cache_control_middleware(request: Request, call_next):
+    # 2026-09-25 前端性能修复：静态库（JS/CSS/图片/字体）缓存一天。
+    # JS/CSS 的 ?v= 是按文件 mtime 自动注入的（read_index），文件一改 URL 就变，
+    # 所以一天缓存不会发旧版。index.html 由 / 路由返回、不在 /static/ 下，
+    # 天然不受影响，保证部署后用户拿到的是新页面。
+    response = await call_next(request)
+    if request.url.path.startswith("/static/"):
+        response.headers.setdefault("Cache-Control", "public, max-age=86400")
+    return response
+
 
 LAST_ACTIVE_TIME = time.time()
 
@@ -393,17 +410,56 @@ def clean_orphaned_images():
         from mathbank.database import SessionLocal, Question
         db = SessionLocal()
         try:
-            # 1. 搜集数据库中所有题目引用的图片路径
-            questions = db.query(Question._image_paths).all()
-            referenced_images = set()
-            for (img_paths_str,) in questions:
-                if img_paths_str:
-                    try:
-                        paths = json.loads(img_paths_str)
-                        for path in paths:
-                            referenced_images.add(path.lstrip("/").lower())
-                    except Exception:
-                        pass
+            # 1. 搜集数据库中所有题目引用的图片路径。
+            # ⚠️ 判据必须与 routes_questions 的清理口径**完全一致**：历史上这里只查
+            #    Question._image_paths 字段，而「彻底 LaTeX 化」后图片引用几乎只以
+            #    裸文件名出现在 content 的 \includegraphics{...} 里（image_paths 常
+            #    为空数组），结果每次启动都把已入库题目的插图当成孤儿删掉。
+            #    现在统一走 mathbank.image_references 的共享实现。
+            from mathbank.asset_security import resolve_upload_asset, trash_upload_asset
+            from mathbank.image_references import collect_referenced_assets
+
+            referenced_assets = collect_referenced_assets(
+                db, uploads_dir=UPLOAD_DIR, url_prefix=UPLOAD_DIR_REL
+            )
+
+            # 未入库草稿的 TikZ 渲染图必须算「被引用」：它们只登记在题目 JSON 资产列
+            # （collect_referenced_assets 不扫这两列），保存前对已录题而言是孤儿。
+            # 启动清理每小时跑一次，实测发生过用户边录题边被后台清掉 tikz_*.png、
+            # 点保存报「插图文件不存在或不是普通文件」。
+            try:
+                from mathbank.database import Question as _QAsset
+
+                for _row in db.query(
+                    _QAsset.content_tikz_assets, _QAsset.answer_tikz_assets
+                ).all():
+                    for _field in _row:
+                        if not _field:
+                            continue
+                        try:
+                            _assets = json.loads(_field) if isinstance(_field, str) else _field
+                        except (TypeError, ValueError):
+                            continue
+                        for _asset in _assets if isinstance(_assets, list) else []:
+                            if not isinstance(_asset, dict):
+                                continue
+                            for _key in ("image_path", "reference_image_path"):
+                                _value = str(_asset.get(_key) or "").strip()
+                                if not _value:
+                                    continue
+                                try:
+                                    referenced_assets.add(
+                                        resolve_upload_asset(
+                                            _value,
+                                            uploads_dir=UPLOAD_DIR,
+                                            url_prefix=UPLOAD_DIR_REL,
+                                            require_file=False,
+                                        )
+                                    )
+                                except ValueError:
+                                    continue
+            except Exception:
+                pass  # 兜底扫描失败宁可少删不误删路径解析异常，也不阻断启动
 
             # 1b. 仍被任务记录持有的临时资产同样算"被引用"。
             # 契约是「完成结果保留 1 小时供前端导入」，到期由任务记录自己删除
@@ -411,7 +467,17 @@ def clean_orphaned_images():
             # 就会把用户刚拆完、还没保存入库的插图提前抹掉（"我的图怎么又没了"）。
             try:
                 for path in DOCUMENT_TASKS.live_temp_assets():
-                    referenced_images.add(path.lstrip("/").lower())
+                    try:
+                        referenced_assets.add(
+                            resolve_upload_asset(
+                                path,
+                                uploads_dir=UPLOAD_DIR,
+                                url_prefix=UPLOAD_DIR_REL,
+                                require_file=False,
+                            )
+                        )
+                    except ValueError:
+                        continue
             except Exception:
                 pass
                         
@@ -426,15 +492,28 @@ def clean_orphaned_images():
             
             # 清理 static/uploads/ 根目录下未引用的孤儿图片
             for filename in os.listdir(upload_dir):
+                # ⚠️ 回收站与临时目录本身绝不能当孤儿扫描/删除（否则递归自删）
+                if filename in ('.trash', 'tmp', '.gitkeep'):
+                    continue
                 full_path = os.path.join(upload_dir, filename)
                 if os.path.isfile(full_path) and not filename.startswith("."):
-                    local_rel_path = f"{UPLOAD_DIR_REL}/{filename}".lower()
-                    if local_rel_path not in referenced_images:
+                    try:
+                        asset = resolve_upload_asset(
+                            filename,
+                            uploads_dir=UPLOAD_DIR,
+                            url_prefix=UPLOAD_DIR_REL,
+                            require_file=False,
+                        )
+                    except ValueError:
+                        # 非安全白名单内的文件（非图片/名字不合法）不在清理职责内
+                        continue
+                    if asset not in referenced_assets:
                         try:
                             mtime = os.path.getmtime(full_path)
                             if now - mtime > one_hour_seconds:
-                                os.remove(full_path)
-                                cleaned_count += 1
+                                # 软删除：移入 .trash/ 保留 30 天，误删可恢复
+                                if trash_upload_asset(full_path, UPLOAD_DIR):
+                                    cleaned_count += 1
                         except Exception:
                             pass
 
@@ -444,16 +523,38 @@ def clean_orphaned_images():
                 for filename in os.listdir(tmp_dir):
                     full_path = os.path.join(tmp_dir, filename)
                     if os.path.isfile(full_path) and not filename.startswith("."):
-                        local_rel_path = f"{UPLOAD_DIR_REL}/tmp/{filename}".lower()
-                        if local_rel_path not in referenced_images:
+                        # tmp 子目录里的文件名可能是任务相关的相对路径，统一解析后比对
+                        try:
+                            asset = resolve_upload_asset(
+                                f"{UPLOAD_DIR_REL}/tmp/{filename}",
+                                uploads_dir=UPLOAD_DIR,
+                                url_prefix=UPLOAD_DIR_REL,
+                                require_file=False,
+                            )
+                        except ValueError:
+                            continue
+                        if asset not in referenced_assets:
                             try:
                                 mtime = os.path.getmtime(full_path)
-                                if now - mtime > 600:  # 超过 10 分钟未被使用的 tmp 切片立即清理
-                                    os.remove(full_path)
-                                    cleaned_count += 1
+                                if now - mtime > 600:  # 超过 10 分钟未被使用的 tmp 切片立即软删除
+                                    # 软删除：移入 .trash/ 保留 30 天，误删可恢复
+                                    if trash_upload_asset(full_path, UPLOAD_DIR):
+                                        cleaned_count += 1
                             except Exception:
                                 pass
                         
+            # 1c. 回收站到期清理：.trash/ 里超过 30 天的文件才物理删除（软删除的最终出口）
+            trash_dir = os.path.join(UPLOAD_DIR, ".trash")
+            if os.path.isdir(trash_dir):
+                thirty_days_ago = time.time() - 30 * 24 * 3600
+                for name in os.listdir(trash_dir):
+                    p = os.path.join(trash_dir, name)
+                    try:
+                        if os.path.isfile(p) and os.path.getmtime(p) < thirty_days_ago:
+                            os.remove(p)
+                    except OSError:
+                        pass
+
             if cleaned_count > 0:
                 print(f"[Storage Cleanup] 成功检测并清除 {cleaned_count} 个残留的旧临时图片与孤儿文件，磁盘无痕瘦身成功！")
         finally:
@@ -532,7 +633,9 @@ os.makedirs(TMP_UPLOAD_DIR, exist_ok=True)
 
 
 DOCUMENT_TASKS = TaskManager(
-    max_workers=2,
+    # 4 而非 2：只要有一个任务卡在慢响应上，2 个工人就会被占满、后续导入
+    # 全部排队饿死。放宽并发降低"一个任务堵死整条导入通道"的概率。
+    max_workers=4,
     max_queue=4,
     terminal_ttl_seconds=3600,
     temp_asset_cleanup=lambda paths: _delete_task_temp_assets(paths),
@@ -741,19 +844,6 @@ def normalize_fillin_macro(text: str) -> str:
 
 
 load_or_init_metadata()
-
-# 考向树 TXT 是底层文件：启动时先以 TXT 为准对齐一次活跃大纲。
-try:
-    from mathbank.kaoxiang_tree import auto_pull_if_needed
-
-    _kaoxiang_report = auto_pull_if_needed(force=True)
-    if _kaoxiang_report.get("changed"):
-        print(
-            "[KaoxiangTree] 已从考向树 TXT 同步 "
-            f"{len(_kaoxiang_report.get('files', []))} 个章节"
-        )
-except Exception as exc:  # 同步失败不能阻断启动
-    print(f"[KaoxiangTree] 启动同步失败 (type={type(exc).__name__}): {exc}")
 
 
 app.include_router(lesson_plans_router)
@@ -1080,10 +1170,10 @@ from mathbank import parsing_pipeline  # noqa: E402
 # ---- OCR 插图坐标裁图实现下沉（同上，main 保留同名薄包装）----
 from mathbank import illustration_crop  # noqa: E402
 
-# ---- 考向树 TXT 底层文件同步 ----
-from mathbank.routes_kaoxiang import router as kaoxiang_router
-app.include_router(kaoxiang_router)
-
 # ---- 导入批次 / TikZ 版本 / 双向细目表 ----
 from mathbank.routes_ops import router as ops_router
 app.include_router(ops_router)
+
+# ---- 第四录入方案：批量录入（教材/练习册 + 整卷），沿用望悠 session→plan→recognize→risk→commit→rollback 流水线 ----
+from mathbank.routes_import_batch import router as import_batch_router
+app.include_router(import_batch_router)

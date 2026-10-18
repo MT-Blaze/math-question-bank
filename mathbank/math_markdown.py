@@ -17,6 +17,19 @@ _MATH_COMMAND_RE = re.compile(r"\\([A-Za-z]+)")
 _MATH_MUL_STAR_RE = re.compile(r"(?<=[A-Za-z0-9)}\]])\*(?=[A-Za-z0-9({\[])")
 # 连续下划线（OCR/Word 常见的填空占位符）统一规范化为标准 LaTeX \fillin 宏。
 _FILLIN_UNDERSCORE_RE = re.compile(r"(?<!\\)_{3,}")
+# 转义后的连续下划线（AI 常把填空空位写成 `\_\_\_\_\_\_`，每个下划线都带反斜杠，
+# 上面那条 `(?<!\\)` 判据因此漏掉）同样归一为 \fillin。
+_FILLIN_ESCAPED_UNDERSCORE_RE = re.compile(r"(?:\\_){3,}")
+# \fillin 之后允许出现的「中文句末标点 → ASCII 半角」映射（待办 #16）。
+# 只服务于紧跟 \fillin 的那一个标点，中文正文里任何无关的标点都不在这个表里。
+_FILLIN_TRAILING_PUNCTUATION = {
+    "。": ".",
+    "，": ",",
+    "；": ";",
+    "！": "!",
+    "？": "?",
+    "．": ".",
+}
 _TABLE_ENVIRONMENTS = {
     "tabular", "tabular*", "tabularx", "longtable", "tblr", "longtblr", "talltblr",
 }
@@ -88,6 +101,22 @@ def _is_escaped(value: str, index: int) -> bool:
     while cursor >= 0 and value[cursor] == "\\":
         cursor -= 1
     return (index - cursor - 1) % 2 == 1
+
+
+def _find_matching_brace(value: str, start: int) -> int:
+    """返回 ``value[start]`` 这个 ``{`` 对应的 ``}`` 下标；找不到时给 -1。"""
+    depth = 0
+    k = start
+    n = len(value)
+    while k < n:
+        if value[k] == "{":
+            depth += 1
+        elif value[k] == "}":
+            depth -= 1
+            if depth == 0:
+                return k
+        k += 1
+    return -1
 
 
 def _replace_delimited_math(value: str, replace: Callable[[str], str]) -> str:
@@ -255,17 +284,103 @@ def _is_high_confidence_math(value: str) -> bool:
     return False
 
 
+def _trim_run_to_command_structure(core: str) -> str:
+    r"""把候选数学串裁到「最后一个完整的 LaTeX 命令结构」为止。
+
+    ``_MATH_RUN_RE`` 的字符类**只含 ASCII**，所以题干里的中文（以及任何非 ASCII）
+    天然是 run 的断点：``求 \underline{重点内容} 的值`` 会被切成
+    ``" \underline{"`` 与 ``"} "`` 两段。旧实现在这里直接把整段包成
+    ``$\underline{$``——反斜杠命令被从参数中间拦腰截断，定界符还多出一个，
+    实测 ``\text{甲乙丙}`` 变 ``$\text{$甲乙丙}成立``、``\sqrt{甲}`` 变
+    ``$\sqrt{$甲}``。
+
+    判据不看 ASCII 与否，只看**结构是否闭合**：从左往右按 LaTeX 语法走一遍
+    （控制词 + 可选 ``[...]`` + 可选 ``{...}``，花括号递归），要求末位落在
+    「深度 0 且刚吃完一个完整单元」的位置；不满足就回退到上一个这样的位置。
+    于是 ``\underline{``（缺右括号）整段不包，而 ``x=\frac{1}{2}``、
+    ``\sqrt{x}+1`` 这些本来就完整的写法一字不动。
+    """
+    n = len(core)
+    i = 0
+    last_complete = 0          # 末位落在该下标时，前面的内容是一段合法数学
+    while i < n:
+        char = core[i]
+        if char == "\\":
+            command = _MATH_COMMAND_RE.match(core, i)
+            if not command or _is_escaped(core, i):
+                return core[:last_complete]
+            i = command.end()
+            # 可选的 `[...]` 与 `{...}` 参数都属于这个命令的一部分。
+            while i < n and core[i] == "[":
+                close = core.find("]", i + 1)
+                if close < 0:
+                    return core[:last_complete]
+                i = close + 1
+            while i < n and core[i] == "{":
+                depth = 0
+                k = i
+                while k < n:
+                    if core[k] == "{":
+                        depth += 1
+                    elif core[k] == "}":
+                        depth -= 1
+                        if depth == 0:
+                            break
+                    k += 1
+                if k >= n:
+                    return core[:last_complete]   # 花括号没闭合 → 整个单元不完整
+                i = k + 1
+            last_complete = i
+            continue
+        if char in "^_":
+            i += 1
+            while i < n and core[i].isspace():
+                i += 1
+            if i < n and core[i] == "{":
+                close = _find_matching_brace(core, i)
+                if close < 0:
+                    return core[:last_complete]
+                i = close + 1
+            elif i < n and (core[i].isalnum() or core[i] == "\\"):
+                command = _MATH_COMMAND_RE.match(core, i)
+                i = command.end() if command else i + 1
+            else:
+                return core[:last_complete]
+            last_complete = i
+            continue
+        if char == "{":
+            close = _find_matching_brace(core, i)
+            if close < 0:
+                return core[:last_complete]
+            i = close + 1
+            last_complete = i
+            continue
+        if char == "}":
+            # 孤立的右括号：它属于 run 之外的结构，必须留在 $ 外面。
+            return core[:last_complete]
+        if char.isspace():
+            i += 1
+            continue
+        i += 1
+        last_complete = i
+    return core[:last_complete]
+
+
 def _wrap_math_run(match: re.Match[str]) -> str:
     raw = match.group(0)
     leading_length = len(raw) - len(raw.lstrip())
     trailing_length = len(raw) - len(raw.rstrip())
     leading = raw[:leading_length]
-    trailing = raw[len(raw) - trailing_length :] if trailing_length else ""
     core_end = len(raw) - trailing_length if trailing_length else len(raw)
     core = raw[leading_length:core_end]
-    if not core or not _is_high_confidence_math(core):
+    if not core:
         return raw
-    return f"{leading}${core}${trailing}"
+    wrapped = _trim_run_to_command_structure(core)
+    if not wrapped or not _is_high_confidence_math(wrapped):
+        return raw
+    # 尾部（含被裁掉的残缺片段与其后空白）原样留在 $ 之外，绝不吞字。
+    tail = raw[leading_length + len(wrapped):]
+    return f"{leading}${wrapped}${tail}"
 
 
 def _replace_star_with_cdot(match: re.Match[str]) -> str:
@@ -387,12 +502,51 @@ def restore_doubled_control_words(value: str) -> str:
     return _DOUBLED_CONTROL_WORD_RE.sub(r"\\", value)
 
 
+# ``\underline{...}`` 组内**只允许**出现这些成分时，它才是「填空占位横线」。
+# 交替项顺序有讲究：带参数的命令必须先于其前缀（``\\hspace*`` 在 ``\\hspace`` 之前、
+# ``\\qquad`` 在 ``\\quad`` 之前），否则正则会先吃掉短的那个、把 ``*`` 或剩余字母留在
+# 串里，误判成「有内容」。空花括号 ``{}`` 也算占位（``\underline{}`` 就是条裸横线）。
+# ``\\fillin`` 也在白名单里：``\underline{\fillin}`` 是历史入库形态（五种填空写法
+# 汇流用例钉着它），而且第 3 步跑之前第 2 步已把所有 ``\fillin[...]`` 削成裸形。
+_UNDERLINE_BLANK_TOKEN_RE = re.compile(
+    r"[ \t\r\n\xa0　_]+"
+    r"|\\hspace\*?\s*\{[^{}]*\}"
+    r"|\\qquad"
+    r"|\\quad"
+    r"|\\fillin"
+    r"|{}"
+)
+
+
+def _underline_group_is_blank(inner: str) -> bool:
+    r"""判断 ``\underline{inner}`` 的 inner 是否为纯占位（空白 / \hspace / \quad / _）。
+
+    必须**逐个 token 从位置 0 连续消费到串尾**。这里踩过一次坑：写成整串 ``*`` 量词
+    再判 ``match.end() in (0, len(inner))`` 看似等价，实则量词遇到第一个不匹配的字符时
+    会「成功停住」返回零宽匹配（``end == 0``），于是 ``\underline{x}`` 被当成纯占位照转
+    —— 判据形同虚设，而且失败方向仍是「继续吃内容」，比不加判据更难发现。
+    """
+    pos = 0
+    n = len(inner)
+    while pos < n:
+        match = _UNDERLINE_BLANK_TOKEN_RE.match(inner, pos)
+        if not match or match.end() == pos:
+            return False
+        pos = match.end()
+    return True
+
+
 def _strip_underline_group(text: str) -> str:
-    r"""把 \underline{...} 整体换成 \fillin，含嵌套花括号。
+    r"""把**纯占位**的 ``\underline{...}`` 换成 ``\fillin``，含嵌套花括号扫描。
 
     填空占位最常见的写法就是 ``\underline{\hspace{2em}}`` 这种带内层花括号的形态；
     早先用 ``[^}]*?`` 只吃到第一个 ``}``，会在 \fillin 后面留下一个游离的 ``}``，
     于是「手敲 \underline{\hspace{2em}}」与「直接写 \fillin」入库源码不一致。
+
+    ⚠️ 但**不能**无条件转换整组。数学里 ``\underline{M}``（重复数位/共轭）、
+    ``\underline{a+b}``、``\underline{x}`` 都是带实际内容的记号，一律换成 \fillin
+    等于静默吃掉题干内容。判据只看组内是否「纯占位」：是 → \fillin；
+    含任何字母、数字、运算符、中文 → 原样保留（连内层一起留，不递归处理）。
     """
     out: list[str] = []
     i = 0
@@ -415,7 +569,15 @@ def _strip_underline_group(text: str) -> str:
                             break
                     k += 1
                 if k < n:
-                    out.append("\\fillin")
+                    if _underline_group_is_blank(text[j + 1:k]):
+                        out.append("\\fillin")
+                    else:
+                        # 有实际内容：整段原样搬走，指针必须跟着跳过这组，
+                        # 否则会从内层重新扫描（\underline{a\underline{b}} 之类
+                        # 嵌套写法会被二次判定）。
+                        out.append(text[i:k + 1])
+                        i = k + 1
+                        continue
                     i = k + 1
                     continue
         out.append(text[i])
@@ -427,7 +589,8 @@ def normalize_fillin_macro(text: str) -> str:
     """将题干中的任何下划线格式（\\underline{...}、\\fillin[...]、连续划线 ___）一律统一规范化为最纯粹的 \\fillin 宏"""
     if not text or not isinstance(text, str):
         return text or ""
-    # 1. 替换连续下划线 ___ (3个及以上) 为 \fillin
+    # 1. 替换连续下划线 ___ (3个及以上) 为 \fillin；转义形态 \_\_\_ 一并处理
+    text = _FILLIN_ESCAPED_UNDERSCORE_RE.sub(r"\\fillin", text)
     text = _FILLIN_UNDERSCORE_RE.sub(r"\\fillin", text)
     # 2. 替换任何带参数的 \fillin[...] 为纯净的 \fillin
     text = re.sub(r'\\fillin\s*\[[^\]]*?\](?:\[[^\]]*?\])?', r'\\fillin', text)
@@ -435,6 +598,47 @@ def normalize_fillin_macro(text: str) -> str:
     text = _strip_underline_group(text)
     # 4. 清理可能残留的额外右花括号 }
     text = re.sub(r'\\fillin\}', r'\\fillin', text)
+    # 5. (待办 #3) 清理空的 \fillin{} / \fillin{ }，还原成裸 \fillin。
+    #    花括号组本身 \s*\{\s*\} 已经要求「空」，所以 \fillin{内容} 天然匹配不上；
+    #    后面这条负向断言只负责「{} 之后不能紧跟字母数字/汉字」，理由有二：
+    #      a. 真实语料是 `\fillin{}.`（id=67/68）、`\fillin{}。`——若用 `(?!\S)`
+    #         会因为紧邻非空白字符而整条漏掉，恰好放过要修的形态；
+    #      b. 反过来必须拦住 `\fillin{}个数为` 这种空花括号后直接粘连中文的写法，
+    #         否则会把花括号吃掉后变成 `\fillin个数为`（该形态属待办 #15 盘子，这里不许碰）。
+    text = re.sub(r'\\fillin\s*\{\s*\}(?![\w\u4e00-\u9fff])', r'\\fillin', text)
+    # 6. (待办 #16①) \fillin 之后紧贴（或隔空白）的中文句末标点统一转 ASCII。
+    #    三条子规则都只锚在 \fillin 上，所以中文正文里任何无关的 。，；！？ 都不会被碰到。
+    def _fillin_trailing_punctuation(match: re.Match[str]) -> str:
+        # 回调返回值替换的是「整条匹配」，不是某个命名组，所以前缀要用 group("head")
+        # 老老实实拼出来，不能只回一组。
+        punct = match.group("punctuation")
+        return match.group("head") + _FILLIN_TRAILING_PUNCTUATION[punct]
+
+    # 6a 紧贴、普通态：真实语料 id=205 ``\fillin。``
+    text = re.sub(
+        r'(?P<head>\\fillin)(?P<punctuation>[。，；！？．])',
+        _fillin_trailing_punctuation,
+        text,
+    )
+    # 6b 隔空白、普通态：真实语料 id=30 ``\fillin ？``。
+    #    刻意不含「，」——``\fillin ，`` 后面隔一个空格接正文时，把空格吃掉会粘连成
+    #    ``\fillin,然后``，属于非必要的风格改动，不如不动。
+    text = re.sub(
+        r'(?P<head>\\fillin)(?P<gap>\s*)(?P<punctuation>[。；！？．])',
+        _fillin_trailing_punctuation,
+        text,
+    )
+    # 6c 紧贴、数学态 ``$\fillin$``：真实语料 id=288。
+    #    同样不含「，」——``$\fillin$`` 后面那个逗号多半是正文的并列分隔符
+    #    （如「值域是 $\fillin$，定义域是 R。」），不是填空的附属标点。
+    text = re.sub(
+        r'(?P<head>\\fillin\$)(?P<punctuation>[。；！？．])',
+        _fillin_trailing_punctuation,
+        text,
+    )
+    # 7. (待办 #16②) `\fillin .`（空格 + 英文句点）归一为紧贴的 `\fillin.`。
+    #    放在第 6 步之后：中文句点已被翻成 ASCII，这里不会重复处理。
+    text = re.sub(r'\\fillin\s+\.', r'\\fillin.', text)
     return text
 
 

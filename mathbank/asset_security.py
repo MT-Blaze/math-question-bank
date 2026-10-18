@@ -9,12 +9,15 @@ type and symlink status.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import datetime
 import io
 import json
 import os
 from pathlib import Path, PurePosixPath
 import re
+import shutil
 import tempfile
+import time
 from typing import Iterable
 
 from PIL import Image, ImageOps, UnidentifiedImageError
@@ -393,8 +396,52 @@ def harden_private_path(path: str | os.PathLike, *, directory: bool = False) -> 
         pass
 
 
+# WinError 32（文件被另一进程/线程占用）与 WinError 5（共享违规下的拒绝访问）
+# 都可能是并发读者短暂打开目标文件造成的瞬时状态，重试即可自愈。
+_REPLACE_RETRYABLE_WINERRORS = (5, 32)
+_REPLACE_ATTEMPTS = 8
+_REPLACE_MAX_SLEEP_SECONDS = 0.3
+
+
+def _replace_backoff_seconds(attempt: int) -> float:
+    """指数退避：0.02s 起步、逐次翻倍、封顶 0.3s（总预算约 1.9s）。"""
+
+    return min(0.02 * (2 ** attempt), _REPLACE_MAX_SLEEP_SECONDS)
+
+
+def _replace_with_retry(source: str, target: Path) -> None:
+    """``os.replace`` 的退避重试包装，只吞「对方还开着文件」这类瞬时错误。
+
+    Windows 上任何读者把目标文件打开着（哪怕共享模式完全兼容），
+    rename-over 都会被挡下 WinError 5；本项目里典型读者是保存后排队的
+    后台导出与 `/api/categories` 的元数据热重载。失败时临时文件仍完整躺在
+    同一目录里，所以重试是安全的：要么这次替换成功，要么下一次接着换，
+    绝不会出现半写目标文件。非瞬时错误（权限真缺失、跨盘等）原样抛出，
+    不掩盖真实故障。
+    """
+
+    last_exc: OSError | None = None
+    for attempt in range(_REPLACE_ATTEMPTS):
+        try:
+            os.replace(source, target)
+            return
+        except OSError as exc:
+            if getattr(exc, "winerror", None) not in _REPLACE_RETRYABLE_WINERRORS:
+                raise
+            last_exc = exc
+        if attempt < _REPLACE_ATTEMPTS - 1:
+            time.sleep(_replace_backoff_seconds(attempt))
+    assert last_exc is not None
+    raise last_exc
+
+
 def write_private_text_atomic(path: str | os.PathLike, text: str) -> None:
-    """Atomically write UTF-8 text with owner-only permissions."""
+    """Atomically write UTF-8 text with owner-only permissions.
+
+    Windows 上 ``os.replace`` 会被「目标文件正被并发读取」挡下（WinError 5）：
+    后台导出/热重载只要在这一瞬打开着同一个文件，保存大纲就偶发 500。
+    replace 失败时临时文件仍在原地，重试不会造成半写，只对这一小段做退避重试。
+    """
 
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -412,7 +459,7 @@ def write_private_text_atomic(path: str | os.PathLike, text: str) -> None:
             handle.write(text)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temp_name, target)
+        _replace_with_retry(temp_name, target)
         harden_private_path(target)
     finally:
         if fd >= 0:
@@ -425,3 +472,31 @@ def write_private_text_atomic(path: str | os.PathLike, text: str) -> None:
                 os.remove(temp_name)
         except OSError:
             pass
+
+
+def trash_upload_asset(src_path, upload_dir):
+    """把上传资产软删除到回收站 {upload_dir}/.trash/，保留 30 天可恢复。
+
+    物理删除改软删除：误删 P0 的教训——清理判据一旦出错就永久丢数据。
+    upload_dir 必须是上传根目录（调用方传入，不要依赖全局常量，便于测试）。
+    返回 True 表示已移入回收站；文件不存在或移动失败返回 False（调用方按
+    原计数逻辑累加，不抛异常）。
+    """
+    try:
+        if not os.path.isfile(src_path):
+            return False
+        trash_dir = os.path.join(upload_dir, ".trash")
+        os.makedirs(trash_dir, exist_ok=True)
+        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        base = os.path.basename(str(src_path))
+        dest = os.path.join(trash_dir, f"{base}.{ts}")
+        # 同一秒内同名文件已存在时加后缀，避免 shutil.move 在 Windows 上抛错或静默覆盖
+        if os.path.exists(dest):
+            i = 1
+            while os.path.exists(os.path.join(trash_dir, f"{base}.{ts}_{i}")):
+                i += 1
+            dest = os.path.join(trash_dir, f"{base}.{ts}_{i}")
+        shutil.move(str(src_path), dest)
+        return True
+    except Exception:
+        return False

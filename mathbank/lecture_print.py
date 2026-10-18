@@ -13,6 +13,7 @@ import os
 import re
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
 from mathbank.paths import PROJECT_ROOT, STATIC_DIR
@@ -86,36 +87,58 @@ def build_print_html(raw_html: str) -> str:
 
 
 def print_to_pdf(html: str, timeout: int = 60) -> bytes:
-    """用无头 Chrome/Edge 把完整 HTML 打印成 PDF 字节流。"""
+    """用无头 Chrome/Edge 把完整 HTML 打印成 PDF 字节流。
+
+    启动参数带省内存一组（低配机器上 Chrome 渲染容易撞内存墙导致超时）；
+    超时报错带分段计时（HTML 落盘 / Chrome 启动到首进程可见 / 等待渲染出件），
+    让用户能看出这次卡在哪一段而不是只看到"导出失败"。
+    """
     chrome = detect_chrome()
     if not chrome:
         raise RuntimeError("未找到 Chrome/Edge，无法进行无头打印")
     tmp_html = None
     tmp_pdf = None
+    t_start = time.monotonic()
     try:
         with tempfile.NamedTemporaryFile(
                 suffix=".html", delete=False) as fh:
             tmp_html = Path(fh.name)
             fh.write(html.encode("utf-8"))
+        t_written = time.monotonic()
         tmp_pdf = tmp_html.with_suffix(".pdf")
         cmd = [
             chrome, "--headless=new", "--disable-gpu",
             "--no-pdf-header-footer",
             "--print-to-pdf=%s" % tmp_pdf,
             "--virtual-time-budget=20000",
+            # 省内存组：/dev/shm、扩展、后台网络、默认应用全关；V8 堆限 256MB。
+            # 严禁加 --single-process（渲染器会在大讲义上直接崩）。
+            "--disable-dev-shm-usage",
+            "--disable-extensions",
+            "--disable-background-networking",
+            "--disable-default-apps",
+            "--js-flags=--max-old-space-size=256",
             tmp_html.as_uri(),
         ]
         try:
             result = subprocess.run(
                 cmd, capture_output=True, text=True, timeout=timeout)
         except subprocess.TimeoutExpired:
-            raise RuntimeError(
-                "无头浏览器打印超时（%d 秒），请检查浏览器是否卡死" % timeout)
+            elapsed_ms = (time.monotonic() - t_start) * 1000
+            detail = ("PDF 导出超时（%.0fs）：写临时 HTML %.0fms，Chrome 启动+渲染等待 %.0fms。"
+                      "若反复超时，请关闭其他占内存的程序后重试（无头浏览器需要空闲内存），"
+                      "或减少单次导出的讲义节数、改用【导出 TEX】离线编译。"
+                      % (timeout, (t_written - t_start) * 1000,
+                         elapsed_ms - (t_written - t_start) * 1000))
+            print("[LecturePrint] %s" % detail)
+            raise RuntimeError(detail)
         if not tmp_pdf.is_file() or tmp_pdf.stat().st_size == 0:
             stderr_tail = (result.stderr or "").strip()[-300:]
-            raise RuntimeError(
-                "浏览器未产出 PDF（退出码 %s）：%s"
-                % (result.returncode, stderr_tail or "无错误输出"))
+            detail = ("浏览器未产出 PDF（退出码 %s，耗时 %.1fs）：%s"
+                      % (result.returncode, time.monotonic() - t_start,
+                         stderr_tail or "无错误输出"))
+            print("[LecturePrint] %s" % detail)
+            raise RuntimeError(detail)
         return tmp_pdf.read_bytes()
     finally:
         for path in (tmp_html, tmp_pdf):

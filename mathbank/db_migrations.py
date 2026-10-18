@@ -18,7 +18,7 @@ from mathbank.paths import SCHEMA_SNAPSHOT_DIR
 from mathbank.runtime_components import _sha256
 
 
-LATEST_SCHEMA_VERSION = 23
+LATEST_SCHEMA_VERSION = 25
 LEGACY_REQUIRED_TABLES = {
     "questions",
     "question_curriculums",
@@ -1133,7 +1133,7 @@ def _ensure_knowledge_tables(connection) -> dict[str, int]:
         ("exam_region", "VARCHAR(100) NOT NULL DEFAULT ''"),
         ("exam_stage", "VARCHAR(20) NOT NULL DEFAULT ''"),
         ("video_url", "TEXT NOT NULL DEFAULT ''"),
-        ("option_columns", "INTEGER NOT NULL DEFAULT 1"),
+        ("option_columns", "INTEGER NOT NULL DEFAULT 0"),
         ("analysis_methods", "TEXT NOT NULL DEFAULT '[]'"),
     ):
         if column not in q_columns:
@@ -1514,6 +1514,83 @@ def _upgrade_v22_paper_question_no(engine: Engine) -> dict[str, int]:
     return stats
 
 
+def _ensure_option_columns_semantics(connection) -> dict[str, int]:
+    """把 ``questions.option_columns`` 的旧语义值归一化到新语义（幂等）。
+
+    旧语义：固定列数，取值范围 1/2/3/4，且**列默认值就是 1**——
+    于是存量每一行都是 1，既可能是用户手选的「1 列」，也可能只是默认值。
+
+    新语义：``0`` = 自适应（交给 exam-zh 自动算列数），``1/2/4`` = 强制列数。
+    两者在 1 上直接冲突：不迁移的话，所有存量选择题会被压成强制单列竖排。
+
+    因为无法区分「手选 1」与「默认值 1」，取保守解：**一律刷成 0（自适应）**，
+    即维持改动前「文字/图片都交给 exam-zh 自己排」的实际观感。
+    ``2``/``4`` 在新旧语义下含义一致，原样保留；``3`` 也保留（exam-zh 支持）。
+    """
+    exists = connection.exec_driver_sql(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='questions'"
+    ).first()
+    if not exists:
+        return {}
+    columns = {
+        row[1]
+        for row in connection.exec_driver_sql('PRAGMA table_info("questions")').fetchall()
+    }
+    if "option_columns" not in columns:
+        return {}
+    result = connection.exec_driver_sql(
+        "UPDATE questions SET option_columns = 0 WHERE option_columns = 1"
+    )
+    return {"normalized_option_columns": int(result.rowcount or 0)}
+
+
+def _upgrade_v23_option_columns(engine: Engine) -> dict[str, int]:
+    """v23 -> v24: ``option_columns`` 语义改为「0=自适应」，存量 1 刷成 0。"""
+    stats: dict[str, int] = {}
+    with engine.begin() as connection:
+        stats.update(_ensure_option_columns_semantics(connection))
+        connection.exec_driver_sql(f"PRAGMA user_version={LATEST_SCHEMA_VERSION}")
+    return stats
+
+
+def _ensure_school_id_columns(connection) -> dict[str, int]:
+    """v24 -> v25：question_sources.school_id 与 questions.source_school_id（可空）。
+
+    学校 ID 化：schools.json 每条有确定性 id（sch_+sha1[:10]），来源记录改挂
+    school_id 后，教师改简称只需更新词库一处，显示层按 id 翻译自动跟随。
+    列一律可空——旧记录与手输地区不强制建档，回填由 scripts/backfill_school_ids 完成。
+    """
+    stats: dict[str, int] = {}
+    if connection.exec_driver_sql(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='question_sources'"
+    ).first():
+        qs_cols = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(question_sources)").all()}
+        if "school_id" not in qs_cols:
+            connection.exec_driver_sql("ALTER TABLE question_sources ADD COLUMN school_id VARCHAR(20)")
+            stats["added_question_sources_school_id"] = 1
+        if "idx_question_sources_school" not in {
+            row[1] for row in connection.exec_driver_sql("PRAGMA index_list(question_sources)").all()
+        }:
+            connection.exec_driver_sql(
+                "CREATE INDEX idx_question_sources_school ON question_sources(school_id)"
+            )
+            stats["added_question_sources_school_index"] = 1
+    q_cols = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(questions)").all()}
+    if "source_school_id" not in q_cols:
+        connection.exec_driver_sql("ALTER TABLE questions ADD COLUMN source_school_id VARCHAR(20)")
+        stats["added_questions_source_school_id"] = 1
+    return stats
+
+
+def _upgrade_v24_school_ids(engine: Engine) -> dict[str, int]:
+    """v24 -> v25: 学校 ID 化两列（见 _ensure_school_id_columns）。"""
+    stats: dict[str, int] = {}
+    with engine.begin() as connection:
+        stats.update(_ensure_school_id_columns(connection))
+        connection.exec_driver_sql(f"PRAGMA user_version={LATEST_SCHEMA_VERSION}")
+    return stats
+
+
 def _ensure_question_sources_table(connection) -> dict[str, int]:
     """Create question_sources (v21) if it does not exist."""
     stats = {}
@@ -1531,7 +1608,8 @@ def _ensure_question_sources_table(connection) -> dict[str, int]:
                 exam_type VARCHAR(50) NOT NULL DEFAULT '',
                 paper_title VARCHAR(200) NOT NULL DEFAULT '',
                 sort_order INTEGER NOT NULL DEFAULT 0,
-                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                school_id VARCHAR(20)
             )"""
         )
         stats["added_question_sources_table"] = 1
@@ -1543,6 +1621,8 @@ def _ensure_question_sources_table(connection) -> dict[str, int]:
             "CREATE INDEX idx_question_sources_question ON question_sources(question_id)"
         )
         stats["added_question_sources_question_index"] = 1
+    # v25：school_id 列与索引统一交给 _ensure_school_id_columns（含老表自愈）
+    stats.update(_ensure_school_id_columns(connection))
     return stats
 
 
@@ -1823,7 +1903,30 @@ def ensure_late_tables(connection) -> dict[str, int]:
     stats.update(_ensure_batch_and_tikz_tables(connection))
     stats.update(_ensure_lecture_tables(connection))
     stats.update(_ensure_question_sources_table(connection))
+    stats.update(_ensure_school_id_columns(connection))
+    stats.update(_ensure_paper_snapshot_column(connection))
     return stats
+
+
+def _ensure_paper_snapshot_column(connection) -> dict[str, int]:
+    """自愈 ``paper_questions.snapshot_json``（v14 引入），缺失时补回。
+
+    v0/v1 形态的库会先走 `_rebuild_relationship_tables()`，它按**旧 DDL** 重建 paper_questions
+    （不含 snapshot_json、FK 还是 CASCADE），而这条路径上没有任何后续步骤补列——只有 current==14
+    才跑 `_upgrade_v14_storage`。测试态的内存库正是这个形态：ORM 模型有这列、表里没有，
+    于是任何走 HTTP `/api/paper/save` 的用例都在 INSERT 上炸 500，整卷删除的不变式也无法被覆盖。
+    加列是纯增量操作，不动既有行（DEFAULT '{}'），对已含该列的真实库零影响。
+    """
+    columns = {
+        row[1]
+        for row in connection.exec_driver_sql("PRAGMA table_info(paper_questions)").fetchall()
+    }
+    if not columns or "snapshot_json" in columns:
+        return {}
+    connection.exec_driver_sql(
+        "ALTER TABLE paper_questions ADD COLUMN snapshot_json TEXT NOT NULL DEFAULT '{}'"
+    )
+    return {"added_paper_snapshot_column": 1}
 
 
 def _ensure_question_topics_table(connection) -> dict[str, int]:
@@ -1996,6 +2099,10 @@ def migrate_database(
         stats = _upgrade_v21_source_geo(engine)
     elif current == 22:
         stats = _upgrade_v22_paper_question_no(engine)
+    elif current == 23:
+        stats = _upgrade_v23_option_columns(engine)
+    elif current == 24:
+        stats = _upgrade_v24_school_ids(engine)
     else:
         stats = _upgrade_derived_schema(engine)
     # Every upgrade path must end with the tables/columns added in later
@@ -2004,6 +2111,12 @@ def migrate_database(
     with engine.begin() as connection:
         for key, value in ensure_late_tables(connection).items():
             stats[key] = int(stats.get(key, 0)) + int(value)
+        # 兜底：从 v<23 一步跳到 v24 的库不会进 v23 分支（各 _upgrade_vN 都直接
+        # 把 user_version 写成 LATEST），这里补跑一次相同的归一化。放在
+        # ensure_late_tables 之后，确保 option_columns 列此时已存在。
+        if current < 23:
+            for key, value in _ensure_option_columns_semantics(connection).items():
+                stats[key] = int(stats.get(key, 0)) + int(value)
     return {
         "from_version": current,
         "to_version": LATEST_SCHEMA_VERSION,

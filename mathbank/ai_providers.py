@@ -6,6 +6,7 @@ model name, and optional reasoning effort.
 """
 
 from dataclasses import dataclass, field
+import json
 import os
 import re
 from typing import Any, Dict, List, Mapping, Optional, Tuple
@@ -97,13 +98,27 @@ def resolve_provider_endpoint(
     """
 
     environment = os.environ if environ is None else environ
-    spec_key = _PROVIDER_ALIASES.get(str(provider or "").strip().lower())
+    provider = str(provider or "").strip().lower()
+    # 自定义厂商（cp_<slug>）通过外层 custom map 解析，不改动内置 _PROVIDER_SPECS。
+    if provider.startswith("cp_"):
+        slug = provider[len("cp_"):].upper()
+        custom = _load_custom_providers(environment)
+        cp = custom.get(slug)
+        if cp:
+            return (
+                "cp_" + cp["slug"].lower(),
+                cp["name"],
+                cp["base_url"] or None,
+                cp["api_key"] or None,
+            )
+        return None, None, None, None
+    spec_key = _PROVIDER_ALIASES.get(provider)
     if spec_key is None:
         return None, None, None, None
     spec = _PROVIDER_SPECS[spec_key]
 
     api_base = (
-        environment.get(spec.api_base_env, spec.default_api_base)
+        _env_base_url(environment, spec.api_base_env, spec.default_api_base)
         if spec.api_base_env
         else spec.default_api_base
     )
@@ -119,6 +134,54 @@ def resolve_provider_endpoint(
             default=spec.default_api_base,
         )
     return spec.code, spec.label, api_base, api_key
+
+
+def _slugify(name: str) -> str:
+    """把任意厂商名压成稳定大写字母数字 slug（如 TokenPlan → TOKENPLAN）。
+
+    用于生成不会与内置前缀冲突的自定义厂商模型前缀 ``CP_<SLUG>``。
+    """
+
+    return re.sub(r"[^A-Z0-9]", "", str(name or "").upper())
+
+
+def _load_custom_providers(
+    environ: Optional[Mapping[str, str]] = None,
+) -> Dict[str, Dict[str, str]]:
+    """从 CUSTOM_PROVIDERS_JSON 环境变量加载自定义 OpenAI 兼容厂商。
+
+    返回以 slug 为键的字典；解析失败或为空时返回 {}。该映射在每次调用时
+    重新读取（save_settings 后会即时更新 os.environ），因此无需额外缓存。
+    """
+
+    environment = os.environ if environ is None else environ
+    raw = environment.get("CUSTOM_PROVIDERS_JSON", "") or ""
+    if not raw.strip():
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        return {}
+    if not isinstance(parsed, list):
+        return {}
+    result: Dict[str, Dict[str, str]] = {}
+    for item in parsed:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        if not name:
+            continue
+        slug = _slugify(name)
+        if not slug:
+            continue
+        result[slug] = {
+            "name": name,
+            "slug": slug,
+            "base_url": str(item.get("base_url") or "").strip(),
+            "api_key": str(item.get("api_key") or "").strip(),
+            "model": str(item.get("model") or "").strip(),
+        }
+    return result
 
 
 def inject_reasoning_effort(
@@ -377,7 +440,7 @@ _PROVIDER_SPECS = {
         code="siliconflow",
         label="硅基流动",
         api_key_env="SILICONFLOW_API_KEY",
-        api_base_env=None,
+        api_base_env="SILICONFLOW_API_BASE",
         default_api_base="https://api.siliconflow.cn/v1",
     ),
     "BAILIAN": _ProviderSpec(
@@ -448,6 +511,24 @@ def resolve_text_provider(
     if "/" in raw_model:
         prefix, model_name = raw_model.split("/", 1)
         prefix = prefix.upper()
+        # 自定义厂商优先匹配：模型前缀 CP_<SLUG> 命中即走外层 custom map，
+        # 不改动内置 frozen 的 _PROVIDER_SPECS。
+        if prefix.startswith("CP_"):
+            slug = prefix[len("CP_"):]
+            custom = _load_custom_providers(environment)
+            cp = custom.get(slug)
+            if cp:
+                model_name, reasoning_effort = parse_model_and_effort(model_name)
+                return TextProviderConfig(
+                    provider_code="cp_" + cp["slug"].lower(),
+                    provider_label=cp["name"],
+                    api_key_env="",
+                    api_key=cp["api_key"] or None,
+                    api_base=cp["base_url"] or None,
+                    model_name=model_name or cp["model"] or "",
+                    reasoning_effort=reasoning_effort,
+                    raw_model=raw_model,
+                )
         spec = _PROVIDER_SPECS.get(prefix)
         if spec is None:
             # Preserve the previous route behavior for an unknown explicit
@@ -471,7 +552,7 @@ def resolve_text_provider(
 
     api_base = spec.default_api_base
     if spec.api_base_env:
-        api_base = environment.get(spec.api_base_env, spec.default_api_base)
+        api_base = _env_base_url(environment, spec.api_base_env, spec.default_api_base)
 
     return TextProviderConfig(
         provider_code=spec.code,
@@ -495,6 +576,24 @@ def _first_configured(
     return default
 
 
+def _env_base_url(
+    environment: Mapping[str, str], env_name: str, default: str
+) -> str:
+    """读取接口地址环境变量，空值（含空串/全空白）视为未配置并回退默认。
+
+    历史问题：`.env` 可能把 ``XXX_API_BASE=`` 写成空串，``os.environ`` 中该
+    键存在但值为空。``environment.get(env_name, default)`` 会返回空串而非默认，
+    导致内置厂商（DeepSeek/硅基流动/百炼）的接口地址被清空、模型拉取与解析失败。
+    中转站厂商已用 ``_first_configured`` 规避；此处统一让其它内置厂商也具备
+    “空值=未配置”的回退语义。
+    """
+
+    value = environment.get(env_name)
+    if value and str(value).strip():
+        return str(value).strip()
+    return default
+
+
 def resolve_ocr_provider(
     engine: str,
     environ: Optional[Mapping[str, str]] = None,
@@ -510,8 +609,13 @@ def resolve_ocr_provider(
             provider_label="阿里云百炼",
             api_key_env="ALI_BAILIAN_API_KEY",
             api_key=environment.get("ALI_BAILIAN_API_KEY"),
-            # Preserve the OCR flow's historical fixed compatible-mode URL.
-            api_base="https://dashscope.aliyuncs.com/compatible-mode/v1",
+            # 优先用用户在设置页自定义的接口地址（ALI_BAILIAN_API_BASE），
+            # 未设置（含空串）时回退到兼容模式默认地址。
+            api_base=_env_base_url(
+                environment,
+                "ALI_BAILIAN_API_BASE",
+                "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            ),
             model_name=environment.get("ALI_BAILIAN_OCR_MODEL", "qwen3.7-flash"),
             reasoning_effort=None,
             supports_image_input=True,
@@ -527,8 +631,8 @@ def resolve_ocr_provider(
             provider_label="中转站 B",
             api_key_env="ZHONGZHAN_CLAUDE_API_KEY",
             api_key=environment.get("ZHONGZHAN_CLAUDE_API_KEY"),
-            api_base=environment.get(
-                "ZHONGZHAN_CLAUDE_BASE_URL", "https://api.openai.com/v1"
+            api_base=_env_base_url(
+                environment, "ZHONGZHAN_CLAUDE_BASE_URL", "https://api.openai.com/v1"
             ),
             model_name=model_name,
             reasoning_effort=reasoning_effort,
@@ -569,7 +673,9 @@ def resolve_ocr_provider(
         provider_label="SiliconFlow",
         api_key_env="SILICONFLOW_API_KEY",
         api_key=environment.get("SILICONFLOW_API_KEY"),
-        api_base="https://api.siliconflow.cn/v1",
+        api_base=_env_base_url(
+            environment, "SILICONFLOW_API_BASE", "https://api.siliconflow.cn/v1"
+        ),
         model_name=environment.get(
             "SILICONFLOW_OCR_MODEL", "Qwen/Qwen3-VL-8B-Instruct"
         ),
@@ -643,7 +749,7 @@ def resolve_draw_provider(
     key_env = spec.api_key_env
     api_key = environment.get(key_env)
     api_base = (
-        environment.get(spec.api_base_env, spec.default_api_base)
+        _env_base_url(environment, spec.api_base_env, spec.default_api_base)
         if spec.api_base_env
         else spec.default_api_base
     )

@@ -28,6 +28,7 @@ from docx.oxml import OxmlElement, parse_xml
 from docx.oxml.ns import nsdecls, qn
 from docx.shared import Cm, Inches, Pt, RGBColor
 
+from mathbank.paper_helper import clean_choice_stem_parentheses, extract_choice_answer_letter
 from mathbank.runtime_components import find_usable_pandoc
 from mathbank.tex_helper import balanced_group
 
@@ -1356,7 +1357,9 @@ def _resolve_image_paths(question: dict, uploads_dir: str | Path | None) -> list
     return paths
 
 
-def _prepare_question(item: dict, uploads_dir: str | Path | None) -> PreparedQuestion:
+def _prepare_question(
+    item: dict, uploads_dir: str | Path | None, *, include_answers: bool = False
+) -> PreparedQuestion:
     question = dict(item.get("question", {}) or {})
     content = question.get("content", "") or ""
     choices: list[str] = []
@@ -1376,6 +1379,20 @@ def _prepare_question(item: dict, uploads_dir: str | Path | None) -> PreparedQue
     if not _should_preserve_inline_image_positions(stem):
         stem = IMAGE_PATTERN.sub("", stem)
     stem = re.sub(r"\\begin\{tikzpicture\}[\s\S]*?\\end\{tikzpicture\}", "", stem).strip()
+    # 选择题作答括号：题库源码里是 exam-zh 的 \paren，Word 出口不渲染该命令，
+    # 必须换成**字面**全角括号。顺带清洗存量老数据的末尾全角 （），两种形态统一。
+    #   学生版 → （　　）；教师版有答案字母 → （A）
+    #   ⚠️ Word **无法加粗**：_clean_plain_text 会把 \textbf{...} 剥成裸内容
+    #      （见 _clean_plain_text 的 textbf 剥离分支），所以教师版只能退成
+    #      不加粗的 （A）——这是已知限制，不是 bug。
+    if question.get("question_type") in ("single_choice", "multi_choice"):
+        _letter = (
+            extract_choice_answer_letter(question.get("answer_markdown", "") or "")
+            if include_answers
+            else ""
+        )
+        _rendered = f"（{_letter}）" if _letter else "（\u3000\u3000）"
+        stem = clean_choice_stem_parentheses(stem).rstrip() + " " + _rendered
     answer = question.get("answer_markdown", "") or ""
     answer_clean = IMAGE_PATTERN.sub("", answer)
     answer_clean = re.sub(r"\\begin\{tikzpicture\}[\s\S]*?\\end\{tikzpicture\}", "", answer_clean).strip()
@@ -1406,7 +1423,10 @@ def build_word_document(
     uploads_dir: str | Path | None = None,
 ) -> tuple[bytes, dict]:
     """Build an A4 editable DOCX and return bytes plus conversion diagnostics."""
-    prepared = [_prepare_question(item, uploads_dir) for item in questions_data]
+    prepared = [
+        _prepare_question(item, uploads_dir, include_answers=include_answers)
+        for item in questions_data
+    ]
     diagnostics = WordExportDiagnostics(answer_card_omitted=(paper_type == "exam_19"))
     if diagnostics.answer_card_omitted:
         diagnostics.warnings.append("Word 版本仅导出试卷正文，不包含答题卡。")

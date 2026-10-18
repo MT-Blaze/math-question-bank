@@ -183,6 +183,189 @@ def _strip_item_choice_labels(md: str) -> str:
     return "\n".join(out)
 
 
+# choices 环境内「一个 \item 挤了多个选项」的程序侧兜底拆分。
+# 提示词已要求逐项拆开，但 AI 偶尔仍把 A. B. C. D. 挤成一行、甚至漏掉首个标号，
+# 如 `\item 1 B. 1或3 C 3 D.-3`。标号 = A-H 单个字母，前不接字母/数字
+# （避免「点B在圆C上」这类被误判）、后接 . ／ ．／ 、 或空白。
+_MERGED_OPTION_LABEL_RE = re.compile(r"(?<![A-Za-z0-9])([A-H])(?=[.．、]|\s)(?![A-Za-z0-9])")
+
+# 「只剩一个标号」的形态（Q9：A/B/C 无标号或各占一行，挤压行里只剩一个 D）
+# 不能光靠连续递增判据，否则整行拆不开。但单标号极易误伤正文里的数学变量
+# （「点 B. 在圆上」），故单标号必须同时过下面四道闸门才算分割点。
+_MERGED_SINGLE_LABEL_RANGE = "BCDEFGH"
+
+
+def _merged_mark_is_split_point(protected: str, index: int, letter: str) -> bool:
+    """单个标号是否可当分割点（仅供「整行只有一个标号」时使用）。
+
+    ``\\item`` 之后的位置等价于「隐含的首选项」。A 常已被
+    :func:`_strip_item_choice_labels` 剥掉，于是挤压行只剩一个 B-H 标号。
+    四道防误伤闸门：
+
+      1. 必须是 B-H（A 单标号更可能是行首残留，不是"隐含 A + 显式 X"；
+         显式 A 的情形已由 strip 处理）；
+      2. 标号前必须是空白（紧贴中文/字母/数字的不算）；
+      3. 标号后必须紧跟标点 ``.``/``．``/``、``（纯空白分隔不算标号）；
+      4. 标号前一段要"像选项内容"——非空、且不是孤立单字
+         （``点 B.`` 里紧邻的「点」只有 1 个汉字，是句子前缀而非选项内容）。
+    """
+
+    if letter not in _MERGED_SINGLE_LABEL_RANGE:
+        return False
+    if index <= 0 or index + 1 >= len(protected):
+        return False
+    # 闸门 2：前一字符必须是空白
+    if not protected[index - 1].isspace():
+        return False
+    # 闸门 3：后一字符必须是标点分隔符
+    if protected[index + 1] not in ".．、":
+        return False
+    prev = protected[:index].strip()
+    nxt = protected[index + 1:].lstrip(" .．、")
+    if not prev or not nxt:
+        return False
+    # 闸门 4：前一段要像选项内容——≥2 字符，或含数字/字母
+    if len(prev) < 2 and not re.search(r"[0-9A-Za-z]", prev):
+        return False
+    return True
+
+
+def _split_merged_option_content(content: str) -> list[str]:
+    """把 ``1 B. 1或3 C 3 D.-3`` 拆成 ``['1', '1或3', '3', '-3']``（缺首标号也认）。
+
+    ``\\item`` 之后的位置视为「隐含首选项」：行内出现 **≥1** 个可用标号即切。
+    多标号仍要求构成连续递增的一段（B C D…，防「A 在… B 在…」误伤）；
+    只剩一个标号时（Q9 形态 ``<内容> D．<内容>``）走
+    :func:`_merged_mark_is_split_point` 的防误伤闸门。
+    """
+
+    if not content or not content.strip():
+        return [content]
+    spans: dict[str, str] = {}
+
+    def _stash(match):
+        key = f"\x00MBSPAN{len(spans)}\x00"
+        spans[key] = match.group(0)
+        return key
+
+    # 先保护 $...$ 数学段，避免把数学里的字母当选项标号切开。
+    protected = re.sub(r"\$[^$]+\$", _stash, content)
+    marks = list(_MERGED_OPTION_LABEL_RE.finditer(protected))
+    if not marks:
+        return [content]
+    if len(marks) == 1:
+        # 「只剩一个标号」：\item 之后是隐含首选项，过闸门才切成两段。
+        only = marks[0]
+        if not _merged_mark_is_split_point(protected, only.start(), only.group(1)):
+            return [content]
+        cuts = [0, only.start(), len(protected)]
+    else:
+        # 多标号：仍要求整体构成连续递增的一段（允许缺首个 A，如 B C D）。
+        labels = "".join(m.group(1) for m in marks)
+        start = ord(labels[0]) - ord("A")
+        expected = "".join(chr(ord("A") + start + i) for i in range(len(labels)))
+        if labels != expected:
+            return [content]
+        cuts = [0] + [m.start() for m in marks] + [len(protected)]
+    parts: list[str] = []
+    for left, right in zip(cuts[:-1], cuts[1:]):
+        seg = protected[left:right].strip()
+        if not seg:
+            continue
+        for key, value in spans.items():
+            seg = seg.replace(key, value)
+        # 剥掉该段开头的标号（编号由 exam-zh choices 自动生成）。
+        seg = re.sub(r"^[A-H]\s*[.．、]?\s*", "", seg).strip()
+        if seg:
+            parts.append(seg)
+    return parts if len(parts) >= 2 else [content]
+
+
+_ITEM_CHOICE_INDENT = "    "  # choices 内 \item 的统一前导缩进
+
+
+def _split_merged_choice_items(md: str) -> str:
+    """在已有 ``choices`` 环境内，把挤在同一 ``\\item`` 的多选项拆成多项，并统一项缩进。
+
+    顺带把块内所有 ``\\item`` 的前导空白统一成 ``_ITEM_CHOICE_INDENT``：拆出的项
+    与原有项缩进不一致（曾出现「两条 4 空格、两条 2 空格」）会让拆卷编辑框里
+    ``\\item`` 看着错位，也让同一条归一化链产出两种源码。统一后该函数幂等。
+    """
+
+    lines = md.split("\n")
+    out: list[str] = []
+    in_choices = False
+    for line in lines:
+        in_choices = _choices_env_state(line, in_choices)
+        stripped = line.strip()
+        if in_choices and stripped.startswith("\\item"):
+            body = stripped[len("\\item"):].strip()
+            pieces = _split_merged_option_content(body)
+            if len(pieces) < 2:
+                pieces = [body]
+            out.extend(_ITEM_CHOICE_INDENT + "\\item " + piece for piece in pieces)
+            continue
+        out.append(line)
+    return "\n".join(out)
+
+
+# 行内选项：高中数学选择题**恒为 4 个选项**。AI 常把选项挤在题干行的中后部
+# （如「... 的最小值为 A. 8 B. 9 C. 11 D. 13」），不在行首 —— 行首判据
+# （_CHOICE_LABEL_LINE_RE 的 `^`）认不出来，于是选项原样留在题干里。
+# 标号 = 单个 A-D 字母，前不接字母/数字（避免「点B」「AB」误判），
+# 后接 . ／ ．／ 、／ , ／ ，／ : ／ ：。
+_INLINE_ABCD_MARK_RE = re.compile(r"(?<![A-Za-z0-9])([A-D])[\.、．,，:：]")
+
+
+def _extract_inline_choice_run(line: str) -> tuple[str, list[str]] | None:
+    """识别单行里的「题干 + 行内 4 个 ABCD 选项」。
+
+    返回 ``(题干前缀, [选项A, 选项B, 选项C, 选项D])``；不满足
+    「恰好 A/B/C/D 四个标号，且每个标号后都紧跟内容（不能紧跟下一个标号）」
+    时返回 ``None``。先保护 ``$...$`` 数学段，避免把数学变量 ``$A$`` 当标号。
+    """
+
+    if not line or not line.strip():
+        return None
+    spans: dict[str, str] = {}
+
+    def _stash(match):
+        key = f"\x00MBINLINE{len(spans)}\x00"
+        spans[key] = match.group(0)
+        return key
+
+    protected = re.sub(r"\$[^$]+\$", _stash, line)
+    marks = list(_INLINE_ABCD_MARK_RE.finditer(protected))
+    if [m.group(1) for m in marks] != ["A", "B", "C", "D"]:
+        return None
+    options: list[str] = []
+    for i, mark in enumerate(marks):
+        right = marks[i + 1].start() if i + 1 < len(marks) else len(protected)
+        seg = protected[mark.end():right].strip()
+        if not seg:
+            # 标号后紧跟下一个标号（如「已知 A、B、C、D …」）→ 不是选项，放弃。
+            return None
+        options.append(seg)
+
+    # 末尾 ``\paren``（AI 直出的作答括号，或上一轮归一化留下的）属于题干，
+    # 不属于最后一个选项 —— 挪到前缀（exam-zh 的作答括号在题干末、choices 之前）。
+    trailing_paren = ""
+    m = re.search(r"\s*\\paren\s*$", options[-1])
+    if m:
+        options[-1] = options[-1][: m.start()].rstrip()
+        if not options[-1]:
+            return None
+        trailing_paren = " \\paren"
+    prefix = protected[: marks[0].start()].rstrip() + trailing_paren
+
+    def _restore(text: str) -> str:
+        for key, value in spans.items():
+            text = text.replace(key, value)
+        return text
+
+    return _restore(prefix), [_restore(option) for option in options]
+
+
 def latexify_choices(md: str, question_type: str = "") -> str:
     """把纯文本选项行包装成 exam-zh 的 ``\\begin{choices}`` 环境。
 
@@ -199,9 +382,17 @@ def latexify_choices(md: str, question_type: str = "") -> str:
     # 必须放在下面「无选项行就不碰」的守卫**之前**——choices 环境里标号位于
     # `\item ` 之后而非行首，那条守卫的 `^` 判据根本认不出来，会直接放行。
     if r"\begin{choices}" in md:
-        return _strip_item_choice_labels(md)
-    # 守卫：正文里没有任何选项行就不碰，避免误伤普通文本里的「A．」。
-    if not re.search(r"^\s*[-*]?\s*[A-H][\.、．\s]", md, re.MULTILINE):
+        return _split_merged_choice_items(_strip_item_choice_labels(md))
+    # 守卫：正文里没有任何选项就不碰，避免误伤普通文本里的「A．」。
+    # 两条触发条件（任一成立即继续）：
+    #   ① 行首 A-H 标号（原有）；
+    #   ② 行内恰好 4 个 ABCD 标号、且每个标号后都有内容（高中数学选择题恒 4 选项，
+    #      覆盖「... 的最小值为 A. 8 B. 9 C. 11 D. 13」这种不在行首的形态）。
+    has_line_label = re.search(r"^\s*[-*]?\s*[A-H][\.、．\s]", md, re.MULTILINE)
+    has_inline_run = any(
+        _extract_inline_choice_run(line) is not None for line in md.split("\n")
+    )
+    if not (has_line_label or has_inline_run):
         return md
     # 防误伤（Q3）：明确非选择题时不做选项包装。
     if question_type and question_type not in {"single_choice", "multi_choice"}:
@@ -228,6 +419,19 @@ def latexify_choices(md: str, question_type: str = "") -> str:
     for line in lines:
         if not line.strip():
             blank_run += 1
+            continue
+        # 病灶②：行内 4 个 ABCD 选项（不在行首）——切成「题干前缀 + 选项块」，
+        # 就地插入（与行首选项同口径，不把选项块挪到正文末尾）。
+        inline_run = _extract_inline_choice_run(line)
+        if inline_run is not None:
+            inline_prefix, inline_options = inline_run
+            flush()
+            out.extend([""] * blank_run)
+            blank_run = 0
+            if inline_prefix.strip():
+                out.append(inline_prefix.strip())
+            items.extend("    \\item " + option for option in inline_options)
+            flush()
             continue
         # min_labels=2：两选项判断题「A．对 B．错」也要正确拆成两个 \item，
         # 否则 B 标号与内容会被吞进 A 的 \item（导出侧默认 3 不改）。
@@ -261,7 +465,10 @@ def latexify_choices(md: str, question_type: str = "") -> str:
                 flush()
                 out.append(piece)
     flush()
-    return "\n".join(out)
+    # 病灶 2d：包装分支收尾也要复跑一次挤压拆分 —— 行内形态的选项内容里
+    # 仍可能被 AI 挤进第二个标号（如 A 项里又出现「 C. …」），顶部那处
+    # `_split_merged_choice_items` 只在「已有 choices 环境」的分支里跑，覆盖不到这里。
+    return _split_merged_choice_items("\n".join(out))
 
 
 # ---------------------------------------------------------------------------
@@ -534,4 +741,89 @@ def normalize_stem_for_storage(value: str, question_type: str = "") -> tuple[str
     """
     text = normalize_for_storage(value, question_type)
     return extract_leading_question_number(text)
+
+
+# ---------------------------------------------------------------------------
+# 选择题作答括号：题库统一存 exam-zh 的 ``\paren``，导出侧（组卷 / 讲义 / Word）
+# 再把它展开成字面括号。为什么要这样分成两步：
+#   - 库里存 ``\paren`` 才能让三个出口共用同一个「作答括号」语义，不至于有的出口
+#     留着全角 ``（）``、有的补 ``\paren``、有的漏出字面命令；
+#   - 展开必须在导出侧做，因为教师版要把答案字母印进括号（依赖 answer_markdown）。
+# ``clean_choice_stem_parentheses`` 与 ``paper_helper`` 中的同名函数**逐字同源**
+# （行为必须一致，那边导出侧仍在用），这里复制一份是为了让入库层不必反向依赖导出层。
+# ---------------------------------------------------------------------------
+def clean_choice_stem_parentheses(text: str) -> str:
+    """清洗选择题末尾的空括号，并保持数学定界符平衡。
+
+    OCR 可能会把空括号识别为 ``$(\\quad)$`` 或 ``（$\\quad$）``。
+    这些定界符必须和括号一起移除，否则会遗留孤立的 ``$$``
+    并让 XeLaTeX 后续一直处于数学模式。
+
+    2026-09-25 修「题干末尾双括号」：
+      ① 摘 ``\\paren`` 必须**走在清括号之前**。旧实现反着来 —— 末尾空括号的
+         正则带 ``$`` 锚定，而输入形如 ``…（　）\\paren`` 时末尾是 ``\\paren``，
+         锚定落空、括号清不掉；等随后删掉 ``\\paren``，括号虽已成末尾却不再重清，
+         归一化又无条件补一个 ``\\paren``，于是落库成 ``（　）\\paren`` 双括号。
+      ② 末尾空括号后允许跟**句末标点**（``（　）.`` 这类）。旧正则要求括号正好
+         收在文本末尾，而中文题面几乎总在作答括号后写句号，同样导致清不掉。
+         只放行标点、不放行正文：``（　）条件`` 这种括号后接正文的形态不匹配，
+         免得把嵌在句子中间的空括号误当成作答括号清掉。
+    """
+    if not text:
+        return ""
+    text = text.strip()
+
+    # ① 先摘掉 ``\paren``：它若留在末尾，会顶掉下面 ``$`` 锚定的末尾匹配。
+    text = re.sub(r'\\paren\b', '', text).strip()
+
+    blank = r'(?:\\quad|\\qquad|\\hspace\{[^{}]*\}|[\s\xa0\u3000_])*'
+    plain_parens = rf'[\(（]\s*{blank}\s*[\)）]'
+    math_wrapped_parens = rf'\$\s*{plain_parens}\s*\$'
+    math_inside_parens = rf'[\(（]\s*\$\s*{blank}\s*\$\s*[\)）]'
+    # ② 末尾空括号，其后只允许再有**句末标点 / 空白 / 一个收尾的 ``$``**。
+    #    用前瞻而非把这些字符一起吃掉，标点与 ``$`` 才会原样留在题面上。
+    #    那个可选 ``$`` 是为了「数学模式内的作答括号」：中文题面常见
+    #    ``$A \cup B = (\quad)$ \paren``，空括号**不紧贴**前导 ``$``，所以
+    #    math_wrapped_parens 匹配不到，只能靠这条兜住（清完得 ``$A \cup B = $``，
+    #    美元符号仍成对）。
+    #    前置 ``(?<![\\$])`` 把「``$( )$`` 纯包裹」挡在 plain 分支外：那种形态交给
+    #    math_wrapped_parens 整段删除，免得删剩一对孤立的 ``$$``。
+    tail = r'[。．.，,；;！!？?\s\xa0\u3000]'
+    pattern = (
+        rf'(?:[\s\xa0\u3000]*(?:{math_wrapped_parens}|'
+        rf'{math_inside_parens}|(?<![\\$]){plain_parens}))+[\s\xa0\u3000]*'
+        rf'(?={tail}*\$?{tail}*$)'
+    )
+    cleaned = re.sub(pattern, '', text).strip()
+
+    # 仅在未闭合的数学内容后补 "$"。若末尾本身就是孤立 "$"，
+    # 直接移除；追加另一个 "$" 会把它变成未闭合的行间数学定界符 "$$"。
+    dollars = list(re.finditer(r'(?<!\\)\$', cleaned))
+    if len(dollars) % 2 != 0:
+        last_dollar = dollars[-1]
+        if cleaned[last_dollar.end():].strip():
+            cleaned += "$"
+        else:
+            cleaned = cleaned[:last_dollar.start()].rstrip()
+
+    return cleaned
+
+
+def normalize_choice_paren_macro(value: str, question_type: str = "") -> str:
+    """把选择题题干末尾的作答空括号归一为 ``\\paren``（exam-zh 命令）。
+
+    - 仅对 ``single_choice`` / ``multi_choice`` 生效；
+    - 题干含 ``\\begin{choices}`` 时只在它之前补；
+    - 幂等：已归一过的原样返回。
+    """
+    if not value:
+        return value
+    if question_type not in ("single_choice", "multi_choice"):
+        return value
+    if r"\begin{choices}" in value:
+        head, sep, tail = value.partition(r"\begin{choices}")
+        head = clean_choice_stem_parentheses(head)
+        return head.rstrip() + r" \paren" + "\n" + sep + tail
+    cleaned = clean_choice_stem_parentheses(value)
+    return cleaned.rstrip() + r" \paren"
 

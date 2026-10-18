@@ -1,6 +1,8 @@
 """Shared HTTP transport helpers for AI provider requests."""
 
-from typing import Any, Dict, Optional, Protocol
+import json
+import time
+from typing import Any, Callable, Dict, Optional, Protocol
 
 import requests
 
@@ -79,6 +81,76 @@ def build_bearer_headers(api_key: str) -> Dict[str, str]:
     }
 
 
+class AICancelled(RuntimeError):
+    """Raised when a cooperative cancel check fires during a provider read."""
+
+
+class _BufferedResponse:
+    """Minimal response view returned by deadline-bounded provider reads."""
+
+    def __init__(self, status_code: int, headers: Any, content: bytes) -> None:
+        self.status_code = status_code
+        self.headers = headers or {}
+        self._content = content
+
+    @property
+    def content(self) -> bytes:
+        return self._content
+
+    @property
+    def text(self) -> str:
+        return self._content.decode("utf-8", errors="replace")
+
+    def json(self):
+        return json.loads(self._content.decode("utf-8", errors="replace"))
+
+
+def _post_bounded(
+    url: str,
+    request_kwargs: Dict[str, Any],
+    *,
+    deadline_seconds: Optional[float] = None,
+    cancel_check: Optional[Callable[[], bool]] = None,
+    read_timeout: Optional[float] = None,
+):
+    """POST with a hard wall-clock deadline and a cooperative cancel hook.
+
+    ``requests`` timeouts are per socket operation: a provider that dribbles
+    bytes slowly never trips them, so one call can pin an import worker for
+    hours.  Reading in bounded chunks while watching both a deadline and a
+    cancel flag guarantees the call always comes back.
+
+    ``read_timeout`` 显式放宽「单次读等待」上限：默认压到 30s，便于取消尽快生效；
+    但整卷拆题这类**非流式、一次性生成**的调用首字节可能要远超 30s，若仍按 30s
+    掐断就会把正常的长响应误判成超时。此类调用传入 ``read_timeout`` 放宽即可。
+    """
+
+    kwargs = dict(request_kwargs)
+    kwargs["stream"] = True
+    requested = float(kwargs.get("timeout") or 60)
+    kwargs["timeout"] = min(requested, float(read_timeout) if read_timeout else 30.0)
+    started = time.monotonic()
+    deadline = started + deadline_seconds if deadline_seconds else None
+
+    response = robust_request_post(url, **kwargs)
+    chunks = []
+    try:
+        for chunk in response.iter_content(chunk_size=8192):
+            if cancel_check is not None and cancel_check():
+                raise AICancelled("任务已取消，AI 请求已中断。")
+            if deadline is not None and time.monotonic() > deadline:
+                raise requests.exceptions.ReadTimeout(
+                    f"AI 响应超时：已超过整体截止时间 {deadline_seconds:.0f} 秒。"
+                )
+            if chunk:
+                chunks.append(chunk)
+    finally:
+        response.close()
+    return _BufferedResponse(
+        response.status_code, response.headers, b"".join(chunks)
+    )
+
+
 def post_chat_completion(
     provider: ChatProviderConfig,
     payload: Dict[str, Any],
@@ -87,12 +159,19 @@ def post_chat_completion(
     stream: bool = False,
     check_status: bool = True,
     provider_name: Optional[str] = None,
+    deadline_seconds: Optional[float] = None,
+    cancel_check: Optional[Callable[[], bool]] = None,
+    read_timeout: Optional[float] = None,
 ):
     """Send one OpenAI-compatible chat completion request.
 
     Payload construction and response parsing remain the responsibility of the
     calling business flow.  Streaming callers can disable status checking so
     they can preserve their existing SSE error format.
+
+    ``deadline_seconds`` caps the *total* wall-clock time of a non-streaming
+    call, and ``cancel_check`` is polled while reading so a cancelled task can
+    break out of a slow provider response instead of blocking a worker.
     """
 
     if not provider.api_key:
@@ -107,11 +186,23 @@ def post_chat_completion(
     }
     if stream:
         request_kwargs["stream"] = True
-
-    response = robust_request_post(
-        provider.chat_completions_url,
-        **request_kwargs,
-    )
+        response = robust_request_post(
+            provider.chat_completions_url,
+            **request_kwargs,
+        )
+    elif deadline_seconds or cancel_check is not None:
+        response = _post_bounded(
+            provider.chat_completions_url,
+            request_kwargs,
+            deadline_seconds=deadline_seconds,
+            cancel_check=cancel_check,
+            read_timeout=read_timeout,
+        )
+    else:
+        response = robust_request_post(
+            provider.chat_completions_url,
+            **request_kwargs,
+        )
     if check_status and response.status_code != 200:
         display_name = provider_name or provider.provider_label
         # Provider bodies can echo prompt fragments or internal diagnostics.
