@@ -480,9 +480,12 @@ def test_txt_archive_is_intact():
 def test_active_outline_topics_all_have_id_and_name():
     """JSON 成为唯一来源后，考点 ID 只能由大纲自己保证：每条考向都得有 id/name。"""
 
-    metadata = json.loads(
-        (PROJECT_ROOT / "data_backup" / "custom_metadata.json").read_text(encoding="utf-8")
-    )
+    outline_path = PROJECT_ROOT / "data_backup" / "custom_metadata.json"
+    if not outline_path.exists():
+        # 这是**本机运行数据**的体检：data_backup/* 被 .gitignore 挡在库外，干净检出没有它。
+        # 大纲结构本身的守卫在别处（考点 ID/名称的生成逻辑），不依赖这份快照。
+        pytest.skip("自定义大纲快照不在本机（干净检出/CI），跳过这条本机数据体检")
+    metadata = json.loads(outline_path.read_text(encoding="utf-8"))
     curriculum = metadata.get("curriculum", {})
     total = 0
     broken = []

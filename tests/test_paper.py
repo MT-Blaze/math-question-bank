@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 from main import LOCAL_TOKEN
 from mathbank.database import Paper, PaperQuestion, Question
 
-def test_paper_api_flow(client):
+def test_paper_api_flow(client, stubbed_full_backup):
     headers = {"X-Local-Token": LOCAL_TOKEN}
     
     # 1. Create a question
@@ -81,6 +81,7 @@ def test_paper_api_flow(client):
 
     del_res = client.delete(f"/api/papers/{paper_id}", headers=headers)
     assert del_res.status_code == 200
+    assert len(stubbed_full_backup) == 1, "删卷前没有登记备份"
     assert del_res.json()["status"] == "success"
 
 
@@ -822,7 +823,32 @@ def _save_paper(client, headers, title, q_ids, scores=None):
     return res.json()["paper_id"]
 
 
-def test_delete_paper_keeps_every_question_and_its_links_of_other_papers(client, db_session):
+@pytest.fixture
+def stubbed_full_backup(monkeypatch, tmp_path):
+    """把「删卷前建完整备份」这一步打桩，让删卷用例离开本机也能跑。
+
+    create_full_backup 的默认库路径取项目根的 math_question_bank.db，而 .gitignore
+    把 *.db 挡在库外：干净检出（或独立 worktree）里根本没有这个文件，删卷于是 500
+    「删除前的完整备份未能创建，已中止删除」。另外在开发机上默认参数还会顺手把**真实
+    题库**在线快照一遍，既慢又没必要。这几条用例守的是「题目与绑定不许被删掉」的数据
+    不变式，备份机制本身由 test_delete_paper_backup_created_before_write /
+    _aborts_when_backup_fails 专门覆盖，所以这里只把这一步换掉。
+    """
+    import mathbank.backup as backup_mod
+
+    calls = []
+    fake_zip = tmp_path / "mathbank-backup-stub.zip"
+
+    def fake_create(**kwargs):
+        calls.append(kwargs)
+        fake_zip.write_bytes(b"PK\x03\x04stub")
+        return fake_zip
+
+    monkeypatch.setattr(backup_mod, "create_full_backup", fake_create)
+    return calls
+
+
+def test_delete_paper_keeps_every_question_and_its_links_of_other_papers(client, db_session, stubbed_full_backup):
     """核心不变式：删一份卷，**题目一行都不许少**，别的卷的绑定也不受影响。"""
     from main import LOCAL_TOKEN
     headers = {"X-Local-Token": LOCAL_TOKEN}
@@ -836,6 +862,7 @@ def test_delete_paper_keeps_every_question_and_its_links_of_other_papers(client,
     before_total = db_session.query(Question).count()
     res = client.delete(f"/api/papers/{paper_a}", headers=headers)
     assert res.status_code == 200, res.text
+    assert len(stubbed_full_backup) == 1, "删卷前没有登记备份"
     db_session.expire_all()
 
     assert db_session.query(Question).count() == before_total, "删试卷把题目删掉了"
@@ -847,7 +874,7 @@ def test_delete_paper_keeps_every_question_and_its_links_of_other_papers(client,
     assert db_session.query(Paper).filter(Paper.id == paper_b).first() is not None
 
 
-def test_delete_paper_recounts_usage_from_live_links_not_incremental_decrement(client, db_session):
+def test_delete_paper_recounts_usage_from_live_links_not_incremental_decrement(client, db_session, stubbed_full_backup):
     """usage_count 用「现存绑定数」绝对口径重算，而不是增量扣减。
 
     事故原型：save_paper 每次新建 Paper 并对每题 +1，同一份卷保存两次计数就虚高；
@@ -870,6 +897,7 @@ def test_delete_paper_recounts_usage_from_live_links_not_incremental_decrement(c
 
     res = client.delete(f"/api/papers/{p1}", headers=headers)
     assert res.status_code == 200, res.text
+    assert len(stubbed_full_backup) == 1, "删卷前没有登记备份"
     db_session.expire_all()
 
     assert db_session.get(Question, shared.id).usage_count == 1, "共用题应剩 1 份现存绑定"
