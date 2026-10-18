@@ -924,7 +924,7 @@
                 const combinedImages = Array.from(new Set([
                     ...uploadedImages,
                     ...(typeof uploadedAnswerImages !== 'undefined' ? uploadedAnswerImages : []),
-                    ...TikzState.referencePaths()
+                    ...TikzState.assetImagePaths()
                 ].map(path => window.MathBankSafe.safeImageUrl(path)).filter(Boolean)));
                 formData.append('image_paths', JSON.stringify(combinedImages));
                 if (duplicateDecision.duplicateSnapshotHash) {

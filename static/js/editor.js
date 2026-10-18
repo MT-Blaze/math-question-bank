@@ -124,7 +124,10 @@ function findTopicLevel(comp, chap, know, topicName) {
                 applicable_grade: document.getElementById('editApplicableGrade') ? document.getElementById('editApplicableGrade').value : '',
                 topic: document.getElementById('editTopic') ? document.getElementById('editTopic').value : '',
                 related_question_id: document.getElementById('editRelatedQuestion').value,
-                image_paths: JSON.stringify(uploadedImages),
+                image_paths: JSON.stringify(Array.from(new Set([
+                    ...uploadedImages,
+                    ...TikzState.assetImagePaths()
+                ]))),
                 tikz_code: TikzState.contentAssets[0] ? TikzState.contentAssets[0].tikz_code : '',
                 tikz_reference_image_path: TikzState.contentAssets[0]
                     ? (TikzState.contentAssets[0].reference_image_path || '')
@@ -536,7 +539,7 @@ function findTopicLevel(comp, chap, know, topicName) {
                 image_paths: Array.from(new Set([
                     ...uploadedImages,
                     ...(typeof uploadedAnswerImages !== 'undefined' ? uploadedAnswerImages : []),
-                    ...TikzState.referencePaths()
+                    ...TikzState.assetImagePaths()
                 ])),
                 tikz_code: TikzState.contentAssets[0]
                     ? TikzState.contentAssets[0].tikz_code
@@ -2133,6 +2136,21 @@ function deleteDraft(id) {
             window.__autoResizeContent = _resizeContent;
             window.__autoResizeAnswer = _resizeAnswer;
 
+            // 上一次刷新时的正文快照：只有「刚才还在正文里、现在没了」的图才算被用户删掉。
+            let contentTextForImageSync = '';
+
+            // 判断一张已登记的配图在正文刷新后是否仍应保留登记。
+            // 从没进过正文的登记必须原样保留：TikZ 渲染图、拆卷题干截图、MinerU/PDF 裁图
+            // 都是按设计只登记在 image_paths、由配图条或绘图槽统一展示的（后端
+            // reconcile_image_paths_with_text 的「宁留不错删」是同一条口径）。
+            function illustrationRegistrationSurvives(path, previousText, currentText, claimedPaths) {
+                if (!path) return false;
+                if (currentText.indexOf(path) !== -1) return true;
+                if (Array.isArray(claimedPaths) && claimedPaths.indexOf(path) !== -1) return true;
+                return String(previousText || '').indexOf(path) === -1;
+            }
+            window.illustrationRegistrationSurvives = illustrationRegistrationSurvives;
+
             const updateContentPreview = () => {
                 // 载入题目/恢复草稿时 textarea 是程序化赋值，不会触发 input；
                 // 选项卡跟着这条共用预览链路刷新，避免残留上一题的选项。
@@ -2147,7 +2165,12 @@ function deleteDraft(id) {
                 // Automatically sync illustrations list with text content
                 if (uploadedImages.length > 0) {
                     const initialLength = uploadedImages.length;
-                    uploadedImages = uploadedImages.filter(path => text.includes(path));
+                    const claimedPaths = typeof TikzState.assetImagePaths === 'function'
+                        ? TikzState.assetImagePaths()
+                        : TikzState.referencePaths();
+                    uploadedImages = uploadedImages.filter((path) => illustrationRegistrationSurvives(
+                        path, contentTextForImageSync, text, claimedPaths));
+                    contentTextForImageSync = text;
                     if (uploadedImages.length !== initialLength) {
                         renderIllustrationBadges();
                     }

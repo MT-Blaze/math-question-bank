@@ -1,4 +1,4 @@
-"""拆卷保存的 image_paths 对账判据回归。
+"""拆卷/绘图资产保存的 image_paths 对账判据回归。
 
 `reconcile_image_paths_with_text` 位于「晋升」与 `require_file` 校验之间，去留判据一旦
 写错就是静默改数据：旧实现按「正文/绘图槽有没有引用」剔除，而拆卷卡片的题干截图按设计
@@ -15,6 +15,7 @@ import main  # routes_questions ← main 是循环导入，先加载入口再取
 from PIL import Image
 
 from mathbank.routes_questions import (
+    prepare_question_assets,
     reconcile_image_paths_with_text,
 )
 
@@ -111,3 +112,63 @@ def test_tikz_asset_rendered_image_kept_without_body_reference(tmp_path):
         )
     assert kept == ["/static/uploads/tikz_asset.png"]
     assert paths  # 仅确认夹具序列化正常
+
+
+def test_save_payload_missing_tikz_owned_image_registers_it_instead_of_400(tmp_path):
+    """2026-10-19 事故回归：渲染图不在正文、客户端又漏登记时，保存链路必须自己补登记。
+
+    浏览器把「正文里没出现」的登记一律剔掉，而 TikZ 渲染图按设计就不进正文（正文仍指向
+    原图），于是每道带 TikZ 的题一保存就 400「TikZ 插图路径必须同时存在于题目 image_paths
+    中」。判据只能是文件在不在磁盘：在就补登记，不在就别伪造。
+    """
+    rendered = _make_png(tmp_path / "tikz_rendered.png")
+    reference = _make_png(tmp_path / "original_bitmap.png")
+    assets = json.dumps(
+        [
+            {
+                "id": "regression_content_asset",
+                "image_path": "/static/uploads/tikz_rendered.png",
+                "reference_image_path": "/static/uploads/original_bitmap.png",
+                "tikz_code": "\\begin{tikzpicture}\\draw (0,0)--(1,1);\\end{tikzpicture}",
+                "instruction": "题干示意图",
+            }
+        ]
+    )
+
+    with patch("main.UPLOAD_DIR", str(tmp_path)), patch(
+        "mathbank.routes_questions.UPLOAD_DIR", str(tmp_path)
+    ), patch("mathbank.routes_questions.UPLOAD_DIR_REL", "static/uploads"):
+        _, _, kept, _, _, parsed_assets, _ = prepare_question_assets(
+            "如图所示，求函数图象的对称轴。",
+            "",
+            json.dumps([]),  # 旧前端：正文里没有的登记全被剔光
+            assets,
+            "/static/uploads/original_bitmap.png",
+            "[]",
+            "",
+            promotion_log=[],
+        )
+
+    assert "/static/uploads/tikz_rendered.png" in kept
+    assert "/static/uploads/original_bitmap.png" in kept
+    assert parsed_assets[0]["image_path"] == "/static/uploads/tikz_rendered.png"
+    assert rendered.exists() and reference.exists()
+
+
+def test_missing_tikz_owned_image_is_not_fabricated(tmp_path):
+    """文件已经不在磁盘就不能伪造登记：让上层报「插图文件不存在」这种可行动的错。"""
+    with patch("main.UPLOAD_DIR", str(tmp_path)), patch(
+        "mathbank.routes_questions.UPLOAD_DIR", str(tmp_path)
+    ):
+        kept = reconcile_image_paths_with_text(
+            [],
+            "如图所示，求函数图象的对称轴。",
+            "",
+            content_tikz_assets=json.dumps(
+                [{"id": "t1", "image_path": "/static/uploads/tikz_gone.png"}]
+            ),
+            answer_tikz_assets="[]",
+            tikz_reference_image_path="",
+        )
+
+    assert kept == []

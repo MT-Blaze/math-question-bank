@@ -4472,3 +4472,60 @@ console.log('OK');
     assert apply_body.count("if (crop.session !== session) return;") == 2, (
         "成功与失败两条分支都要校验会话号"
     )
+
+
+def test_save_payload_registers_tikz_owned_images():
+    """保存链路必须登记绘图资产认领的物理文件——TikZ 渲染图按设计不出现在正文里。"""
+    api_source = _read(STATIC_JS_DIR / "api.js")
+    editor_source = _read(STATIC_JS_DIR / "editor.js")
+    import_source = _read(STATIC_JS_DIR / "import.js")
+    ocr_source = _read(STATIC_JS_DIR / "ocr.js")
+
+    start = api_source.index("assetImagePaths()")
+    body = api_source[start:api_source.index("\n            }", start)]
+    assert "asset.image_path" in body and "asset.reference_image_path" in body, (
+        "assetImagePaths() 必须同时认领渲染图与原参考图"
+    )
+
+    assert editor_source.count("...TikzState.assetImagePaths()") == 2, (
+        "脏态快照与保存 payload 都要带上资产认领的文件"
+    )
+    assert "...TikzState.assetImagePaths()" in import_source, "真正的保存链路漏登记资产文件"
+
+    # 「把原参考图从配图条里藏起来」是显示口径，不能被顺手换成资产口径
+    for source, label in ((editor_source, "editor.js"), (import_source, "import.js"), (ocr_source, "ocr.js")):
+        assert "new Set(TikzState.referencePaths())" in source, "%s 的隐藏参考图显示口径被改坏" % label
+
+
+def test_illustration_text_sync_keeps_registration_without_body_reference():
+    """正文刷新只剩一个正确判据：刚才在正文里、现在没了，才算用户把图删了。"""
+    result = _run_node_script(r"""
+const fs = require('fs');
+const src = fs.readFileSync('static/js/editor.js', 'utf8');
+const start = src.indexOf('function illustrationRegistrationSurvives');
+if (start < 0) { console.log('FAIL: editor.js 没有 illustrationRegistrationSurvives'); process.exit(1); }
+const end = src.indexOf('window.illustrationRegistrationSurvives = illustrationRegistrationSurvives;', start);
+if (end < 0) { console.log('FAIL: 判定助手没有导出到 window'); process.exit(1); }
+const survives = new Function(src.slice(start, end) + String.fromCharCode(10) + 'return illustrationRegistrationSurvives;')();
+function assertOk(cond, msg) { if (!cond) { console.log('FAIL: ' + msg); process.exit(1); } }
+
+// 载入带 TikZ 的题：正文从没出现过渲染图，第一次刷新绝不能把登记剔掉（否则保存 400）
+assertOk(survives('/static/uploads/tikz_a.png', '', '如图所示，求函数图象的对称轴。', []),
+    '载入后第一次刷新就剔掉了 TikZ 渲染图登记');
+// 从没进过正文的合法登记（拆卷截图 / MinerU 整页图）一律保留
+assertOk(survives('/static/uploads/pdf_crop_task1.png', '上一版正文', '换了别的正文', []),
+    '正文不引用的配图登记被静默释放');
+// 绘图资产认领的文件，无论正文怎么写都必须保留
+assertOk(survives('/static/uploads/tikz_b.png', '刚才还写着 /static/uploads/tikz_b.png', '图已从正文删掉', ['/static/uploads/tikz_b.png']),
+    '资产认领的文件仍被剔除');
+// 用户真的删掉图片语法时，登记要跟着释放，否则文件永远回收不掉
+assertOk(!survives('/static/uploads/x.png', '![插图](/static/uploads/x.png)', '图被我删了', []),
+    '正文删图后登记没有释放');
+// 仍在正文里的图当然保留
+assertOk(survives('/static/uploads/y.png', '旧文', '看 ![插图](/static/uploads/y.png)', []),
+    '正文仍引用的图被误删');
+assertOk(!survives('', 'a', 'b', []), '空路径不该留在登记里');
+console.log('OK');
+""")
+    assert result.returncode == 0, (result.stdout or "") + (result.stderr or "")
+    assert "OK" in (result.stdout or "")

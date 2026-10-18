@@ -1013,6 +1013,21 @@ window.topicName = function(t) {
                     ...this.contentAssets.map(asset => asset && asset.reference_image_path),
                     ...this.answerAssets.map(asset => asset && asset.reference_image_path)
                 ].map(path => window.MathBankSafe.safeImageUrl(path)).filter(Boolean);
+            },
+            // 绘图资产自己认领的物理文件：渲染图 image_path + 原参考图 reference_image_path。
+            // 渲染图按设计不出现在正文里（正文仍指向原图，只有展示/导出才换成 TikZ 成品），
+            // 所以保存时必须由资产这一侧兜底登记进 image_paths：后端 asset_security 要求
+            // 「TikZ 插图路径必须同时存在于题目 image_paths 中」，漏登记直接 400 卡住保存，
+            // 文件还会掉回孤儿队列被回收（2026-10-19 事故）。
+            assetImagePaths() {
+                const paths = [];
+                [this.contentAssets, this.answerAssets].forEach(assets => {
+                    (Array.isArray(assets) ? assets : []).forEach(asset => {
+                        if (!asset || typeof asset !== 'object') return;
+                        paths.push(asset.image_path, asset.reference_image_path);
+                    });
+                });
+                return paths.map(path => window.MathBankSafe.safeImageUrl(path)).filter(Boolean);
             }
         };
         window.TikzState = TikzState;

@@ -1050,15 +1050,21 @@ def reconcile_image_paths_with_text(
     """
 
     referenced = _referenced_image_basenames(content, answer_markdown)
+    # 绘图资产自己认领的物理文件（渲染图 + 原参考图）：它们按设计不出现在正文里
+    # （正文仍指向原图，渲染图只在展示/导出时替换），所以客户端很容易漏登记。
+    owned: list = []
     for raw in (content_tikz_assets, answer_tikz_assets):
         for asset in _tikz_asset_field(raw):
             for key in ("image_path", "reference_image_path"):
                 value = str(asset.get(key) or "").strip()
-                if value:
-                    referenced.add(value.rsplit("/", 1)[-1])
+                if not value:
+                    continue
+                referenced.add(value.rsplit("/", 1)[-1])
+                owned.append(value)
     legacy_reference = str(tikz_reference_image_path or "").strip()
     if legacy_reference:
         referenced.add(legacy_reference.rsplit("/", 1)[-1])
+        owned.append(legacy_reference)
 
     kept: list = []
     for reference in parsed_img_paths:
@@ -1073,6 +1079,22 @@ def reconcile_image_paths_with_text(
             f"[asset-reconcile] drop stale image_path: {basename}"
             f"（文件已不在 uploads 根目录；{reason}）"
         )
+
+    # 补登记：绘图资产认领、且文件确实还在的图片，即使客户端漏了也必须进 image_paths。
+    # asset_security 的不变式是「渲染图/参考图必须被题目登记」，用来挡住孤儿回收；
+    # 漏登记时直接 400 会让用户「图看着好好的却存不下去」（2026-10-19 事故）。文件不在
+    # 就不补——留给 normalize_upload_asset_reference 报「插图文件不存在」这种可行动的错。
+    kept_basenames = {
+        str(path or "").strip().replace("\\", "/").rsplit("/", 1)[-1] for path in kept
+    }
+    for value in owned:
+        basename = value.replace("\\", "/").rsplit("/", 1)[-1]
+        if not basename or basename in kept_basenames:
+            continue
+        if Path(UPLOAD_DIR).joinpath(basename).is_file():
+            kept.append(value)
+            kept_basenames.add(basename)
+            print(f"[asset-reconcile] register tikz-owned asset: {basename}")
     return kept
 
 

@@ -790,7 +790,7 @@ def test_lecture_numbering_resets_per_topic_and_block_heads():
 
 
 def test_pit_method_bare_lt_survives_rendering():
-    """修订稿 \(0<a<1\) 里的裸 < 曾把 KaTeX 段整段吃掉（浏览器当未知标签）：
+    r"""修订稿 \(0<a<1\) 里的裸 < 曾把 KaTeX 段整段吃掉（浏览器当未知标签）：
     渲染前数学段必须走正文同款管线转成 \lt/\gt；真标签保留，script 注入堵死。"""
     st = ("{ sections: [], activeKey: '', compulsory: '', chapter: '', knowledge: '', section: null,"
           " topics: [], extraIds: [], questions: [], knowledgeMind: null, qIndex: {}, previewData: null, coverBg: {} }")
