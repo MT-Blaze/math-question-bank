@@ -2147,6 +2147,22 @@ function deleteDraft(id) {
             });
         }
 
+        // 观察登记表：ResizeObserver.observe 持的是强引用。整卷重渲染走 innerHTML 替换，
+        // 旧网格虽然已经脱离文档，却仍被观察器一并攥着 —— #28 压测实测 11 轮重渲染后
+        // observe 调用 264 次、实际网格只有 22 个、unobserve 一次都没发生，242 个僵尸
+        // 目标连同各自的子树整体无法回收。每次整批适配前回收一遍已断开的目标，
+        // 让观察表数量与实际网格同阶。
+        const choicesGridObserved = new Set();
+
+        function pruneDetachedChoicesGridTargets() {
+            if (!choicesGridResizeObserver) return;
+            for (const grid of choicesGridObserved) {
+                if (grid.isConnected) continue;
+                choicesGridObserved.delete(grid);
+                choicesGridResizeObserver.unobserve(grid);
+            }
+        }
+
         function adaptChoicesGridLayout(root) {
             if (!root) return;
             const grids = [];
@@ -2155,10 +2171,12 @@ function deleteDraft(id) {
 
             if (!grids.length) return;
             ensureChoicesGridResizeObserver();
+            pruneDetachedChoicesGridTargets();   // 先放掉上一代脱离的目标，再登记这一代
             adaptChoicesGridsBatch(grids);       // 整批一次，class 切换只 2 次
             if (choicesGridResizeObserver) {
                 for (const grid of grids) {
                     noteChoicesGridSize(grid);
+                    choicesGridObserved.add(grid);
                     choicesGridResizeObserver.observe(grid);   // 重复 observe 同一元素是幂等的
                 }
             }

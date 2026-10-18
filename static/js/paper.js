@@ -1123,6 +1123,22 @@
                                 </select>
                             </div>
                         </div>
+                        <!-- 画布缩放（待办 #18）：只缩页面盒子，页内仍按真 A4 像素排版 -->
+                        <div class="flex items-center space-x-1.5 text-[10px] font-sans select-none">
+                            <button type="button" data-paper-zoom-mode="fit" onclick="window.setPaperZoomFit()"
+                                    class="paper-zoom-btn px-2 py-0.5 rounded-lg" title="按画布宽度自动缩放整卷">适应宽度</button>
+                            <button type="button" data-paper-zoom-mode="manual" onclick="window.setPaperZoomActual()"
+                                    class="paper-zoom-btn px-2 py-0.5 rounded-lg" title="按 100% 实际尺寸显示（A4 = 794px 宽）">100%</button>
+                            <div class="flex items-center space-x-1 ml-1">
+                                <button type="button" onclick="window.stepPaperZoom(-0.1)" class="paper-zoom-btn px-1.5 py-0.5 rounded-lg" title="缩小画布">
+                                    <i class="fa-solid fa-minus text-[9px]"></i>
+                                </button>
+                                <span id="paperZoomReadout" class="paper-zoom-readout font-bold text-slate-600">100%</span>
+                                <button type="button" onclick="window.stepPaperZoom(0.1)" class="paper-zoom-btn px-1.5 py-0.5 rounded-lg" title="放大画布">
+                                    <i class="fa-solid fa-plus text-[9px]"></i>
+                                </button>
+                            </div>
+                        </div>
                     </div>
 
                     <!-- Row 2: Paper Management Actions (Clear, Save, History) -->
@@ -1181,10 +1197,15 @@
             </div>
 
             <!-- Part 2: Independent Scrollable A4 Desk Canvas Paper Container -->
-            <div class="flex-1 overflow-y-auto custom-scrollbar pt-1 pb-10 flex flex-col items-center" id="a4PaperPreviewSheet">
-                ${generateA4PaperPagesHtml(cart, meta, totalCount, totalScore)}
+            <div class="flex-1 overflow-y-auto overflow-x-auto custom-scrollbar pt-1 pb-10 flex flex-col items-start" id="a4PaperPreviewSheet">
+                <div class="paper-zoom-stage" id="paperZoomStage">
+                    ${generateA4PaperPagesHtml(cart, meta, totalCount, totalScore)}
+                </div>
             </div>
         `;
+
+        // 先定缩放倍率（适应宽度依赖滚动容器的 clientWidth，innerHTML 后即可取到）
+        window.applyPaperZoom();
 
         // Render math in A4 sheet
         const sheet = document.getElementById('a4PaperPreviewSheet');
@@ -1222,6 +1243,499 @@
             requestAnimationFrame(restoreScroll);
         }
     };
+
+    // ---- A4 画布几何（待办 #18 · 方案 A-lite：真 A4 盒子 + 等比缩放）----
+    // 口径与导出侧 exam-zh 一致：96dpi 下 A4 = 794×1123px、geometry margin=1in=96px、
+    // ctex 五号正文 10.5bp≈14px、行距 12.6bp（= 字号 × 1.2）、1cm=37.8px。
+    // 页面盒子在 app.css 的 .a4-paper-sheet 里按同一组数书写，分页估算也吃这一份常量，
+    // 两边不再各写一套数字。
+    const A4_PAGE = {
+        widthPx: 794,
+        heightPx: 1123,
+        marginPx: 96,
+        bodyPx: 14,
+        linePx: 17,          // 14×1.2=16.8 → 取 17：估算宁可就高，撑破页面比页底少排一行更糟
+        mathLinePx: 21,      // 行内含 KaTeX 的行盒：实测 20~21px
+        fracLinePx: 24,      // 行内含 \frac / \sqrt 的行盒：实测 23~24px
+        bigMathLinePx: 34,   // 行内含 \dfrac / cases / array 的行盒：实测 34~35px
+        textPx: 602,         // 版心宽 = 794 - 96×2
+        cmPx: 37.8,          // 原留白换算用的是 35px/cm，比真 A4 少 7.4%
+        cjkPerLine: 40,      // 版心 602px ÷ 14px ≈ 43 个汉字；按 40 折算留出公式余量
+        itemGapPx: 11,       // 题与题之间 0.75em
+        choiceColGapPx: 14,  // .choices-grid 列间距 1em
+        choiceGridPadPx: 14, // 选项区上下 0.5em×2
+        choiceRowGapPx: 7,   // 选项折成多行时的行间距
+        choiceLabelPx: 26,   // 选项标号「A．」的印刷宽
+        figurePx: 170,       // 行内插图无显式上限时按典型高度计（上限 180 + my-2.5 的七折）
+        figureMaxPx: 180,    // 渲染器给插图写的 max-h-[180px]
+        figureMarginPx: 20,  // 插图外层 div.my-2.5（上下各 10px）
+        tableRowPx: 30       // tabular 每行：实测两行表 59px
+    };
+    A4_PAGE.contentPx = A4_PAGE.heightPx - A4_PAGE.marginPx * 2;   // 931px：一页正文可用高度
+
+// ==== 新版 A4 画布估高模型（替换 paper.js 里的旧实现）====
+    const PAPER_WIDE_CHAR_RE = /[\u1100-\u115F\u2E80-\u33FF\u3400-\u4DBF\u4E00-\u9FFF\uAC00-\uD7A3\uF900-\uFAFF\uFE30-\uFE4F\uFF00-\uFF60\uFFE0-\uFFE6]/;
+    // 数学段：$$…$$ / $…$ / \(…\) / \[…\]
+    const PAPER_MATH_SEGMENT_RE = /\$\$[\s\S]+?\$\$|\$[^$]+\$|\\\([\s\S]+?\\\)|\\\[[\s\S]+?\\\]/g;
+    // 插图三种写法（Markdown / \includegraphics / 裸 <img>）：不占行宽，高度另算
+    const PAPER_FIGURE_TOKEN_RE = /!\[[^\]]*\]\([^)]*\)|\\includegraphics(?:\[[^\]]*\])?\{[^}]*\}|<img[^>]*>/gi;
+    // 半角单位宽（1 单位 = bodyPx / 2 ≈ 7px）
+    const PAPER_UNIT_PX = 7;
+    // 数学段放大系数：KaTeX 自带算符间距、数学斜体比源码宽。无头浏览器在真 A4 版心上
+    // 对 86 个内联式实测「预测/真实」中位数 0.77，对 51 个选项单元（含 A. 标号）实测
+    // 中位数 1.05 —— 取 1.3 让估高落在安全侧（宁可不排满，也不能把页面撑破）。
+    const PAPER_MATH_WIDTH_SCALE = 1.3;
+    // \command → 半角单位宽（关系符/二元运算符含 KaTeX 前后空白）
+    const PAPER_TEX_OP_UNITS = {
+        in: 1.8, notin: 2.4, neq: 2.1, ne: 2.1, leq: 1.7, le: 1.7, geq: 1.7, ge: 1.7,
+        lt: 1.24, gt: 1.24, equiv: 2, approx: 2, sim: 1.8, simeq: 2, cong: 2.2,
+        subset: 2, subseteq: 2.6, subsetneq: 2.6, supset: 2, supseteq: 2.6,
+        forall: 2.5, exists: 2.7, cup: 1.6, cap: 1.6, setminus: 2, wedge: 1.6, vee: 1.6,
+        land: 1.6, lor: 1.6, lnot: 1.4, neg: 1.4, infty: 2, cdot: 1.1, times: 1.7,
+        div: 1.7, pm: 1.8, mp: 1.8, ast: 1.2, star: 1.4, circ: 1.2, bullet: 1.2,
+        to: 2.2, rightarrow: 2.8, Rightarrow: 3.2, leftarrow: 2.8, Leftrightarrow: 3.6,
+        mapsto: 2.6, implies: 3,iff: 2.4, perp: 1.8, parallel: 2, mid: 2.2, nmid: 2.6,
+        triangleright: 2, triangleleft: 2, triangle: 2, square: 2, diamond: 1.8,
+        ldots: 2.4, cdots: 2.4, dots: 2.4, vdots: 1, ddots: 1.6,
+        varnothing: 2.4, emptyset: 2.4, partial: 1.8, nabla: 1.8, angle: 1.8,
+        sum: 2.4, prod: 2.4, int: 2, iint: 2.6, iiint: 3.2, oint: 2.4, lim: 1.8,
+        sin: 2.2, cos: 2.2, tan: 2.2, cot: 2.2, sec: 2.2, csc: 2.2, log: 2.2, ln: 1.8,
+        exp: 2, lg: 1.8, min: 1.8, max: 1.8, deg: 2.2, gcd: 2.2, arcsin: 3.4, arccos: 3.6,
+        alpha: 1.2, beta: 1.3, gamma: 1.3, delta: 1.4, epsilon: 1.2, varepsilon: 1.2,
+        zeta: 1.1, eta: 1.2, theta: 1.2, vartheta: 1.3, iota: 0.9, kappa: 1.2, mu: 1.2,
+        nu: 1.1, xi: 1.3, pi: 1.4, rho: 1.2, sigma: 1.4, tau: 1.2, upsilon: 1.4,
+        phi: 1.4, varphi: 1.6, chi: 1.3, psi: 1.6, omega: 1.6,
+        Gamma: 2, Delta: 2, Theta: 2.2, Lambda: 2.2, Xi: 1.8, Pi: 2.2, Sigma: 2,
+        Phi: 2, Upsilon: 2.4, Psi: 2.2, Omega: 2.4,
+        bmod: 1.6, pmod: 2.2, mod: 2, colon: 1, greaterdot: 1.4,
+        // \paren 是「选作答括号」宏：源码 6 字符，纸面是一对空括号约 56px
+        paren: 8, cead: 0, chead: 0,
+        langle: 1.4, rangle: 1.4, lvert: 0.8, rvert: 0.8, lVert: 1.2, rVert: 1.2,
+        backslash: 1.2, setminus2: 2
+    };
+    // 只包内容、自身几乎不占宽的命令
+    const PAPER_TEX_WRAPPERS = {
+        mathrm: 0, mathbf: 0, mathbb: 0.4, mathit: 0, mathsf: 0, mathtt: 0, boldsymbol: 0,
+        operatorname: 0, text: 0, textrm: 0, textbf: 0, textit: 0, mbox: 0, textnormal: 0,
+        underlined: 0, colorbox: 0
+    };
+    // 自身要额外占宽的带参命令
+    const PAPER_TEX_ACCENTS = {
+        hat: 0.5, widehat: 0.9, bar: 0.5, overline: 0.5, underline: 0.5, vec: 0.5,
+        dot: 0.4, ddot: 0.6, tilde: 0.5, widetilde: 0.9, overrightarrow: 0.6,
+        stackrel: 0.8, overset: 0.8, underset: 0.8
+    };
+    const PAPER_TEX_SPACERS = {
+        ",": 0.34, ";": 0.56, ":": 0.56, "!": -0.34, quad: 4, qquad: 8,
+        thinspace: 0.4, medspace: 0.8, thickspace: 1, " ": 0.25
+    };
+    // 括号/成对定界符本身
+    const PAPER_TEX_DELIMS = { "left": 0.9, "right": 0.9, "bigl": 0.7, "bigr": 0.7, "Bigl": 1, "Bigr": 1, "big": 0.7, "Big": 1, "bigg": 1.2 };
+
+    function paperWidthUnits(text) {
+        let units = 0;
+        const source = String(text || "");
+        for (let i = 0; i < source.length; i++) {
+            units += PAPER_WIDE_CHAR_RE.test(source[i]) ? 2 : 1;
+        }
+        return units;
+    }
+
+    // 读一个 LaTeX 组：返回 [组内文本, 组之后的下标]
+    function paperReadTexGroup(source, from) {
+        if (source[from] !== "{") return ["", from];
+        let depth = 0;
+        for (let i = from; i < source.length; i++) {
+            if (source[i] === "{") depth += 1;
+            else if (source[i] === "}") {
+                depth -= 1;
+                if (!depth) return [source.slice(from + 1, i), i + 1];
+            }
+        }
+        return [source.slice(from + 1), source.length];
+    }
+
+    // 源码 → 半角单位宽。只处理题目里真会出现的 LaTeX 子集：分式取分子/分母较宽的一侧，
+    // 上下标按 0.5 折算（角标字号小），未收录的命令按 0.9 兜底。
+    function paperTexHalfUnits(tex, depth) {
+        const level = depth || 0;
+        if (level > 8) return 0;
+        const source = String(tex || "");
+        let total = 0;
+        let i = 0;
+        while (i < source.length) {
+            const ch = source[i];
+            if (ch === "\\") {
+                const matched = /^\\([a-zA-Z]+|.)/.exec(source.slice(i));
+                const name = matched[1];
+                i += matched[0].length;
+                if (name === "frac" || name === "dfrac" || name === "tfrac" || name === "cfrac") {
+                    const num = paperReadTexGroup(source, i); i = num[1];
+                    const den = paperReadTexGroup(source, i); i = den[1];
+                    total += Math.max(paperTexHalfUnits(num[0], level + 1), paperTexHalfUnits(den[0], level + 1)) + 0.7;
+                    if (name === "dfrac") total += 0.5;
+                } else if (name === "sqrt") {
+                    if (source[i] === "[") {
+                        const close = source.indexOf("]", i);
+                        i = close < 0 ? i + 1 : close + 1;
+                    }
+                    if (source[i] === "{") {
+                        const body = paperReadTexGroup(source, i);
+                        total += paperTexHalfUnits(body[0], level + 1) + 0.9;
+                        i = body[1];
+                    } else {
+                        total += paperTexHalfUnits(source.slice(i, i + 1), level + 1) + 0.9;
+                        i += 1;
+                    }
+                } else if (name === "begin" || name === "end") {
+                    const body = paperReadTexGroup(source, i);
+                    i = body[1];
+                    if (body[0] === "cases" || body[0] === "array" || body[0] === "aligned" || body[0] === "matrix") total += 1.6;
+                } else if (PAPER_TEX_ACCENTS[name] !== undefined) {
+                    const body = paperReadTexGroup(source, i);
+                    total += paperTexHalfUnits(body[0], level + 1) + PAPER_TEX_ACCENTS[name];
+                    i = body[1];
+                } else if (PAPER_TEX_WRAPPERS[name] !== undefined) {
+                    const body = paperReadTexGroup(source, i);
+                    total += paperTexHalfUnits(body[0], level + 1) + PAPER_TEX_WRAPPERS[name];
+                    i = body[1];
+                } else if (PAPER_TEX_DELIMS[name] !== undefined) {
+                    total += PAPER_TEX_DELIMS[name];
+                    if (name === "left" || name === "right") {
+                        const next = source.slice(i, i + 2);
+                        if (next === "\\{") i += 2;
+                        else if (next === "\\}") i += 2;
+                        else i += 1;
+                    }
+                } else if (PAPER_TEX_SPACERS[name] !== undefined) {
+                    total += PAPER_TEX_SPACERS[name];
+                } else if (PAPER_TEX_OP_UNITS[name] !== undefined) {
+                    total += PAPER_TEX_OP_UNITS[name];
+                } else if (name === "_" || name === "^" || name === "\\" || name === "item") {
+                    // 换行/标号不占行宽
+                } else {
+                    total += 0.9;
+                }
+                continue;
+            }
+            if (ch === "{" || ch === "}" || ch === "$") { i += 1; continue; }
+            if (ch === "_" || ch === "^") {
+                i += 1;
+                if (source[i] === "{") {
+                    const body = paperReadTexGroup(source, i);
+                    total += paperTexHalfUnits(body[0], level + 1) * 0.5;
+                    i = body[1];
+                } else {
+                    total += 0.3;
+                    i += 1;
+                }
+                continue;
+            }
+            if (PAPER_WIDE_CHAR_RE.test(ch)) { total += 2; i += 1; continue; }
+            if (/\s/.test(ch)) { i += 1; continue; }
+            if ("+-=<>".indexOf(ch) >= 0) { total += 1.9; i += 1; continue; }   // 关系/二元符带前后空白
+            if ("|.,;:!'\"".indexOf(ch) >= 0) { total += 0.64; i += 1; continue; }
+            if ("()[]".indexOf(ch) >= 0) { total += 0.84; i += 1; continue; }
+            if (/[0-9]/.test(ch)) { total += 1; i += 1; continue; }
+            if (/[a-zA-Z]/.test(ch)) { total += 1.04; i += 1; continue; }       // 数学斜体略宽于等宽数字
+            total += 1;
+            i += 1;
+        }
+        return total;
+    }
+
+    // 只留「会排进正文的东西」：插图另有高度、表格按行计高，环境名/线标记不占宽。
+    // ⚠️ 不用后行断言（AGENTS.md 禁令），一律整段匹配。
+    function stripPaperEstimateNoise(text) {
+        return String(text || "")
+            .replace(PAPER_FIGURE_TOKEN_RE, "")
+            .replace(/\\begin\{tabular\}(?:\{[^}]*\})?[\s\S]*?\\end\{tabular\}/g, "")
+            .replace(/\\begin\{[^{}]*\}|\\end\{[^{}]*\}/g, "")
+            .replace(/\\hline|\\cline\{[^}]*\}/g, "")
+            .replace(/\\(?:centering|raggedright|noindent)/g, "")
+            .replace(/\\(?:label|tag|nonumber|displaystyle|scriptstyle|textstyle|limits|nolimits)/g, "");
+    }
+
+    // 剥掉数学段的外层定界符，只留公式体
+    function paperMathBody(segment) {
+        let body = String(segment);
+        if (body.indexOf("$$") === 0) return body.slice(2, body.length - 2);
+        if (body.indexOf("\\[") === 0) return body.slice(2, body.length - 2);
+        if (body.indexOf("\\(") === 0) return body.slice(2, body.length - 2);
+        if (body.charAt(0) === "$") return body.slice(1, body.length - 1);
+        return body;
+    }
+
+    // 一段混排文本的印刷宽度（px）：文字按字符宽累加，数学段额外放大
+    function paperInlineWidthPx(text) {
+        const source = stripPaperEstimateNoise(text);
+        const scanner = new RegExp(PAPER_MATH_SEGMENT_RE.source, "g");
+        let px = 0;
+        let cursor = 0;
+        let matched;
+        while ((matched = scanner.exec(source))) {
+            px += paperTexHalfUnits(source.slice(cursor, matched.index)) * PAPER_UNIT_PX;
+            px += paperTexHalfUnits(paperMathBody(matched[0])) * PAPER_UNIT_PX * PAPER_MATH_WIDTH_SCALE;
+            cursor = matched.index + matched[0].length;
+        }
+        px += paperTexHalfUnits(source.slice(cursor)) * PAPER_UNIT_PX;
+        return px;
+    }
+
+    // 行盒高度：纯文字 17px；含 KaTeX 的实测 20~21px；含 \frac/\sqrt 23~24px；
+    // 含 \dfrac / cases / array 这类真正拉高的式子 34~35px。
+    function paperBlockLinePx(text) {
+        const source = String(text || "");
+        if (/\\dfrac|\\begin\{(?:cases|array|aligned|matrix)\}|\\substack/.test(source)) return A4_PAGE.bigMathLinePx;
+        if (/\\(?:frac|tfrac|sqrt|stackrel)\{/.test(source)) return A4_PAGE.fracLinePx;
+        // 只要这行里真出现了公式就按 mathLinePx：像 $[0,2)$ 这种不带命令的区间式，
+        // KaTeX 仍把行盒撑到 20px（实测），只查 \\command 会漏判成 17px。
+        if (/\\[a-zA-Z]+|\$[^$]+\$|\\\(|\\\[/.test(source)) return A4_PAGE.mathLinePx;
+        return A4_PAGE.linePx;
+    }
+
+    function paperFigureCount(text) {
+        return (String(text || "").match(PAPER_FIGURE_TOKEN_RE) || []).length;
+    }
+
+    // 插图块高：显式写了 max height=Xcm 的按 X×37.8 折（再与渲染上限 180 取小），
+    // 没写的按典型高度 figurePx 计。一律取上限会让宽幅函数图象白占半页，首页排不满。
+    function paperFigureHeightPx(source) {
+        const tokens = String(source || "").match(PAPER_FIGURE_TOKEN_RE) || [];
+        let px = 0;
+        tokens.forEach(function (token) {
+            const capped = token.match(/max\s+height\s*=\s*([0-9.]+)\s*cm/i);
+            if (capped) {
+                const cm = parseFloat(capped[1]);
+                px += Math.min(A4_PAGE.figureMaxPx, Math.round(cm * A4_PAGE.cmPx)) + A4_PAGE.figureMarginPx;
+            } else {
+                px += A4_PAGE.figurePx;
+            }
+        });
+        return px;
+    }
+
+    // tabular 行数：每个 \\ 结束一行，另加末行
+    function paperTableRowCount(text) {
+        const source = String(text || "");
+        const scanner = /\\begin\{tabular\}(?:\{[^}]*\})?([\s\S]*?)\\end\{tabular\}/g;
+        let rows = 0;
+        let matched;
+        while ((matched = scanner.exec(source))) {
+            // 末行 \ 之后只剩 \hline，那不算一行：拆段后只数有内容的段
+            const body = matched[1].replace(/\\hline|\\cline\{[^}]*\}/g, " ");
+            const segments = body.split("\\\\").filter(function (row) { return row.trim(); });
+            rows += Math.max(1, segments.length);
+        }
+        return rows;
+    }
+
+    // 文字块高度：段落按行折，段与段之间的空行（预览里渲染成 <br><br>）实测多占一个行高。
+    // widthRatio 用于「右侧浮动图把文字压窄」的情形。
+    function paperTextHeightPx(rawText, widthRatio) {
+        const ratio = widthRatio && widthRatio > 0 && widthRatio <= 1 ? widthRatio : 1;
+        const capacity = A4_PAGE.textPx * ratio;
+        const blocks = String(rawText || "").replace(/\r\n?/g, "\n").split(/\n{2,}/);
+        let height = 0;
+        let filledBlocks = 0;
+        blocks.forEach(function (block) {
+            const oneLine = block.replace(/\n+/g, " ");
+            if (!stripPaperEstimateNoise(oneLine).trim()) return;
+            if (filledBlocks) height += A4_PAGE.linePx;   // 段间空行
+            const lines = Math.max(1, Math.ceil(paperInlineWidthPx(oneLine) / capacity));
+            height += lines * paperBlockLinePx(oneLine);
+            filledBlocks += 1;
+        });
+        return height;
+    }
+
+    // 兼容旧口径的「折行数」：卷首语/大题标题这类纯文字够用
+    function paperLineCount(rawText, widthRatio) {
+        const ratio = widthRatio && widthRatio > 0 && widthRatio <= 1 ? widthRatio : 1;
+        const capacity = A4_PAGE.textPx * ratio;
+        const source = String(rawText || "").replace(/\r\n?/g, "\n");
+        let lines = 0;
+        source.split("\n").forEach(function (line) {
+            const clean = stripPaperEstimateNoise(line).replace(/\s+/g, " ").trim();
+            if (!clean) return;
+            lines += Math.max(1, Math.ceil(paperInlineWidthPx(clean) / capacity));
+        });
+        return lines;
+    }
+
+    // 选项区高度：先按「4 → 2 → 1 折半列」挑列数（与编辑器 adaptChoicesGridLayout 的
+    // 实测规则同口径），再按列宽折行、取本组最高的一档行高。
+    function paperChoiceCellWidthPx(columns) {
+        return (A4_PAGE.textPx - (columns - 1) * A4_PAGE.choiceColGapPx) / columns;
+    }
+
+    function paperChoicesHeightPx(items) {
+        const cells = (items || []).map(function (rawItem) {
+            const text = String(rawItem || "");
+            const figurePx = paperFigureHeightPx(text);
+            const widthPx = paperInlineWidthPx(text) + A4_PAGE.choiceLabelPx;
+            // 选项图受格子宽收口（.choices-grid img { max-width: 100% }），
+            // 宽度不撑破 4 列，但行高要按图块算
+            return {
+                widthPx: widthPx,
+                linePx: figurePx ? figurePx : paperBlockLinePx(text)
+            };
+        });
+        if (!cells.length) return 0;
+
+        let widest = 0;
+        cells.forEach(function (cell) { widest = Math.max(widest, cell.widthPx); });
+        let columns = 4;
+        while (columns > 1 && widest > paperChoiceCellWidthPx(columns)) columns /= 2;
+        const cellWidth = paperChoiceCellWidthPx(columns);
+
+        // 行优先填充：各项折行数累加后摊回行数；行高取最高的一档（含图/含分式的行更挤）
+        let visualRows = 0;
+        let rowLinePx = A4_PAGE.linePx;
+        cells.forEach(function (cell) {
+            visualRows += Math.max(1, Math.ceil(cell.widthPx / cellWidth));
+            rowLinePx = Math.max(rowLinePx, cell.linePx);
+        });
+        const rows = Math.max(1, Math.ceil(visualRows / columns));
+        return rows * rowLinePx
+            + Math.max(0, rows - 1) * A4_PAGE.choiceRowGapPx
+            + A4_PAGE.choiceGridPadPx;
+    }
+
+    // 单题估高：题干（折行 × 行盒）+ 选项区 + 表格 + 插图 + 解答题留白 + 题间距。
+    // 所有常数都来自无头浏览器在真 A4 版心上的实测（见 tests/test_frontend_usability.py 的守卫）。
+    function estimateQuestionBlockHeight(qType, rawContent, solSpaceCm, figAlign, imgCount) {
+        const source = String(rawContent || "").replace(/\r\n?/g, "\n");
+        let stemSource = source;
+        let choicesPx = 0;
+        const choicesMatch = source.match(/\\begin\{choices\}([\s\S]*?)\\end\{choices\}/);
+        if (choicesMatch) {
+            stemSource = source.replace(choicesMatch[0], "");
+            const items = choicesMatch[1].split("\\item").slice(1);
+            if (items.length) choicesPx = paperChoicesHeightPx(items);
+        }
+
+        // 右栏浮图会把文字压到 calc(100% - 170px)，按 74% 行宽折行
+        const floatRight = imgCount > 0 && (figAlign || "right") === "right";
+        let heightPx = paperTextHeightPx(stemSource, floatRight ? 0.74 : 1)
+            + choicesPx
+            + paperTableRowCount(stemSource) * A4_PAGE.tableRowPx;
+
+        // 正文里的插图（\includegraphics / <img> / 未 detach 的 Markdown 图）：
+        // 预览里它们是独立块（div.my-2.5 + img），必须整块计高，不能只算一行文字
+        if (imgCount === 0) heightPx += paperFigureHeightPx(stemSource);
+
+        if (imgCount > 0) {
+            // 上限与 formatQuestionContentHtml 里的 max-h 保持一致
+            const imgPx = floatRight ? (imgCount > 1 ? 115 : 135) : (imgCount > 1 ? 140 : 170);
+            heightPx = floatRight
+                ? Math.max(heightPx, imgPx)
+                : heightPx + imgPx + 16 + (imgCount > 0 ? 22 : 0);   // 上下方图再留一个切换按钮行
+        }
+
+        if (qType === "detailed_answer") {
+            // 留白 0cm 时纸面仍有一条 20px 的作答线（.is-zero 底边）+ 上下边距
+            heightPx += solSpaceCm > 0 ? Math.round(solSpaceCm * A4_PAGE.cmPx) + 13 : 33;
+        }
+
+        return Math.max(A4_PAGE.linePx * 2, Math.round(heightPx)) + A4_PAGE.itemGapPx;
+    }
+
+    // 大题标题估高：标题本身可能折行（多选题那句说明很长），再加 1.4em/0.7em 上下留白。
+    function estimateSectionTitleHeightPx(headerText) {
+        return paperTextHeightPx(headerText, 1) + 29;
+    }
+
+    // 首页页眉估高（绝密行 + 标题组 + 全卷说明 + 注意事项）。
+    // 常量来自无头浏览器实测（14px/1.2 版式下逐项量得），改动页眉结构后要重新量。
+    function estimateA4HeaderHeight(meta) {
+        const isExamType = (meta.paper_type === "exam" || meta.paper_type === "exam_19");
+        // 132 = 主标题 + 「数 学」 + 副标题（实测 345 px 首页页眉倒推，另留 20px 安全余量：
+        // 页眉估低了会把首页撑破，估高了只少排一道题）
+        let height = 132;
+        height += Math.max(0, paperLineCount(meta.title || "", 0.55) - 1) * 32;   // 长标题折行
+        if (isExamType) {
+            height += 34;                                   // 绝密★启用前 / 恢复提示行
+            height += 32;                                   // 「本试卷共 N 页…」说明行
+            height += meta.show_notice !== false ? 154 : 34; // 注意事项三条 / 恢复提示
+        }
+        return Math.round(height);
+    }
+
+    // 取元素的有效缩放率：rect.width 是「视口像素」，offsetWidth 是元素自己的「布局像素」，
+    // 比值就是该元素到视口之间的累计缩放（对 zoom 与 transform: scale() 都成立，未缩放时为 1）。
+    function paperStageZoomFactor(el) {
+        if (!el || !el.offsetWidth) return 1;
+        const ratio = el.getBoundingClientRect().width / el.offsetWidth;
+        return (Number.isFinite(ratio) && ratio > 0.01) ? ratio : 1;
+    }
+
+    // ---- 画布缩放（待办 #18）----
+    // 三态：'fit' 适应宽度（默认，倍率不超过 1）/ 手动态（± 或 100% 进入）。
+    // 缩放只作用于 .paper-zoom-stage，页面内部几何不动，因此 KaTeX 渲染与选项降列
+    // 的测量口径不受影响；拖拽插入判定比较的是 getBoundingClientRect() 与 e.clientY，
+    // 两者同为视口像素，缩放后仍然同一坐标系，无需额外换算。
+    let paperZoomMode = "fit";
+    let paperZoomManual = 1;
+    const PAPER_ZOOM_MIN = 0.4;
+    const PAPER_ZOOM_MAX = 1.5;
+    const PAPER_ZOOM_STEP = 0.1;
+    let paperZoomResizeQueued = false;
+
+    function paperZoomFitRatio() {
+        const scroller = document.getElementById("a4PaperPreviewSheet");
+        if (!scroller || !scroller.clientWidth) return 1;
+        // 留 8px 余量，避免刚好压线时冒出横向滚动条（那又会少 15px，反复抖动）
+        const available = scroller.clientWidth - 8;
+        if (available <= 0) return 1;
+        return Math.max(PAPER_ZOOM_MIN, Math.min(1, available / A4_PAGE.widthPx));
+    }
+
+    function resolvePaperZoomRatio() {
+        const ratio = paperZoomMode === "fit" ? paperZoomFitRatio() : paperZoomManual;
+        const clamped = Math.max(PAPER_ZOOM_MIN, Math.min(PAPER_ZOOM_MAX, ratio));
+        return Math.round(clamped * 100) / 100;
+    }
+
+    window.applyPaperZoom = function () {
+        const ratio = resolvePaperZoomRatio();
+        const stage = document.getElementById("paperZoomStage");
+        if (stage) stage.style.setProperty("--paper-zoom", String(ratio));
+        const readout = document.getElementById("paperZoomReadout");
+        if (readout) readout.textContent = Math.round(ratio * 100) + "%";
+        ["fit", "manual"].forEach(function (mode) {
+            const btn = document.querySelector("[data-paper-zoom-mode='" + mode + "']");
+            if (btn) btn.classList.toggle("is-active", paperZoomMode === mode);
+        });
+    };
+
+    window.setPaperZoomFit = function () {
+        paperZoomMode = "fit";
+        window.applyPaperZoom();
+    };
+
+    window.setPaperZoomActual = function () {
+        paperZoomMode = "manual";
+        paperZoomManual = 1;
+        window.applyPaperZoom();
+    };
+
+    window.stepPaperZoom = function (delta) {
+        const base = paperZoomMode === "fit" ? resolvePaperZoomRatio() : paperZoomManual;
+        paperZoomMode = "manual";
+        paperZoomManual = Math.round(Math.max(PAPER_ZOOM_MIN, Math.min(PAPER_ZOOM_MAX, base + delta)) * 100) / 100;
+        window.applyPaperZoom();
+    };
+
+    // 视口宽度变化时重算「适应宽度」；手动态尊重用户设定，不跟着变。
+    window.addEventListener("resize", function () {
+        if (paperZoomMode !== "fit" || paperZoomResizeQueued) return;
+        paperZoomResizeQueued = true;
+        requestAnimationFrame(function () {
+            paperZoomResizeQueued = false;
+            window.applyPaperZoom();
+        });
+    });
 
     function renderA4Header(meta, totalCount, totalScore, totalPages) {
         const isExamType = (meta.paper_type === 'exam' || meta.paper_type === 'exam_19');
@@ -1303,10 +1817,10 @@
     function generateA4PaperPagesHtml(cart, meta, totalCount, totalScore) {
         if (cart.length === 0) {
             return `
-                <div class="a4-paper-sheet w-full max-w-[794px] min-h-[1123px] bg-white text-slate-900 px-10 py-12 shadow-2xl rounded-sm border border-slate-300 font-serif leading-relaxed relative overflow-hidden select-none">
+                <div class="a4-paper-sheet">
                     ${renderA4Header(meta, totalCount, totalScore, 1)}
                     <div class="text-center py-24 text-slate-400 font-sans text-xs">暂无试题数据，请在左侧点击“加入试卷”添加题目</div>
-                    <div class="absolute bottom-5 left-0 right-0 text-center text-xs font-serif text-slate-700 tracking-wider">数学 &nbsp; 第 1 页 (共 1 页)</div>
+                    <div class="paper-page-footer">数学 &nbsp; 第 1 页 (共 1 页)</div>
                 </div>
             `;
         }
@@ -1381,11 +1895,11 @@
                 type: 'section_title',
                 qType: qType,
                 html: `
-                    <div class="paper-sec-block mb-3" data-qtype="${qType}">
-                        <h3 class="font-bold text-[13.5px] font-serif mt-2 mb-2 text-slate-900 leading-snug">${secHeaderText}</h3>
+                    <div class="paper-sec-block" data-qtype="${qType}">
+                        <h3 class="font-bold">${secHeaderText}</h3>
                     </div>
                 `,
-                estHeight: 40
+                estHeight: estimateSectionTitleHeightPx(secHeaderText)
             });
 
             items.forEach((item, subIdx) => {
@@ -1449,7 +1963,7 @@
 
                 let solutionBlankHtml = '';
                 if (qType === 'detailed_answer') {
-                    const spacePx = Math.round(solSpaceCm * 35);
+                    const spacePx = Math.round(solSpaceCm * A4_PAGE.cmPx);
                     const isZero = solSpaceCm <= 0;
 
                     let embeddedImgContainer = '';
@@ -1467,7 +1981,7 @@
                         : (isZero ? 'min-height: 20px;' : `height: ${spacePx}px;`);
 
                     solutionBlankHtml = `
-                        <div class="solution-space-zone group/blank relative mt-2 mb-1 ${isZero ? 'py-1 border-b border-dashed border-slate-200 hover:border-sky-300' : 'rounded-lg border border-dashed border-sky-300/80 bg-sky-50/20'} transition-all" data-solution-space-zone-qid="${q ? q.id : 0}" style="${minHeightStyle}">
+                        <div class="solution-space-zone group/blank relative mt-2 mb-1 ${isZero ? 'is-zero' : ''}" data-solution-space-zone-qid="${q ? q.id : 0}" style="${minHeightStyle}">
                             ${embeddedImgContainer}
                             <!-- Anchor controls to the zone's top edge. They stay out
                                  of document flow, so preview pagination remains stable. -->
@@ -1487,22 +2001,16 @@
                                     + 1cm
                                 </button>
                             </div>
-                            <div class="absolute inset-0 flex items-center justify-center pointer-events-none ${isZero ? 'opacity-0 group-hover/blank:opacity-70' : 'opacity-40 group-hover/blank:opacity-80'} transition-opacity">
-                                <span class="text-[10px] font-sans text-sky-700 font-medium tracking-wider select-none">
-                                    <i class="fa-solid fa-pen-ruler mr-1"></i> 解答题留白区域 (${solSpaceCm.toFixed(1)} cm)
-                                </span>
-                            </div>
+                            <!-- 纸面上不画水印：留白厘米数由 hover 出现的「留白微调」控件显示 -->
                         </div>
                     `;
                 }
 
                 const itemHtml = `
-                    <div class="paper-q-item group relative text-[13px] leading-normal font-serif p-2 rounded-xl border border-transparent hover:border-brand-200 hover:bg-brand-50/30 transition-all duration-200 cursor-grab active:cursor-grabbing mb-2"
-                        draggable="true"
+                    <div class="paper-q-item group relative"
                         data-qid="${q ? q.id : ''}"
                         data-qtype="${qType}"
                         data-sub-index="${subIdx}"
-                        ondragstart="onPaperCanvasDragStart(event, ${q ? q.id : 0}, ${subIdx}, '${qType}')"
                         ondragover="onPaperCanvasDragOver(event)"
                         ondragenter="onPaperCanvasDragEnter(event)"
                         ondragleave="onPaperCanvasDragLeave(event)"
@@ -1511,7 +2019,11 @@
 
                         <!-- Hover Action Bar: Drag Handle & Quick Move/Remove Buttons -->
                         <div class="paper-canvas-toolbar absolute right-2 top-2 opacity-0 group-hover:opacity-100 transition-opacity flex items-center space-x-1.5 px-2.5 py-1 rounded-lg text-[10px] font-sans select-none z-10">
-                            <span class="toolbar-label font-medium mr-0.5"><i class="fa-solid fa-grip-vertical"></i> 按住拖拽排序</span>
+                            <span class="toolbar-label font-medium mr-0.5 cursor-grab active:cursor-grabbing"
+                                  draggable="true"
+                                  ondragstart="onPaperCanvasDragStart(event, ${q ? q.id : 0}, ${subIdx}, '${qType}')"
+                                  ondragend="onPaperCanvasDragEnd(event)"
+                                  title="按住此处拖拽，可在同一题型内调整题目顺序"><i class="fa-solid fa-grip-vertical"></i> 按住拖拽排序</span>
                             <button onclick="event.stopPropagation(); window.movePaperQuestionWithinType('${qType}', ${subIdx}, 'up')" ${subIdx === 0 ? 'disabled' : ''} class="toolbar-btn p-0.5 disabled:opacity-30" title="上移">
                                 <i class="fa-solid fa-chevron-up"></i>
                             </button>
@@ -1533,9 +2045,13 @@
                     </div>
                 `;
 
-                let estH = 75;
-                if (qType === 'detailed_answer') estH = 120 + Math.round(solSpaceCm * 35);
-                if (rawContent.length > 200) estH += 60;
+                // 高度估算（待办 #18）：按真 A4 版心逐块折算行数，取代原先一律 75px 的魔法数。
+                // 仍然不是实测分页（方案 B 本期否决），但估算口径与页面盒子对齐：偏差只会让页底
+                // 少排一点，不再像过去那样把页面撑高、破坏 A4 比例。
+                const detachedImgCount = shouldPreserveInlinePaperImages(rawContent)
+                    ? 0
+                    : (String(rawContent || '').match(/!\[[^\]]*\]\([^)]*\)/g) || []).length;
+                const estH = estimateQuestionBlockHeight(qType, rawContent, solSpaceCm, figAlign, detachedImgCount);
 
                 blocks.push({
                     type: 'question',
@@ -1552,8 +2068,10 @@
         const pages = [];
         let currentPage = [];
         let currentH = 0;
-        const PAGE_1_MAX = 620; // Height budget for Page 1
-        const PAGE_N_MAX = 920; // Height budget for Page 2+
+        // 分页预算（待办 #18）：每页正文可用高度 = 1123 - 96×2 = 931px；首页再扣掉页眉
+        // 估算高度，保证首页排满、续页不再随机出现大片空白。
+        const PAGE_N_MAX = A4_PAGE.contentPx;
+        const PAGE_1_MAX = A4_PAGE.contentPx - estimateA4HeaderHeight(meta);
 
         blocks.forEach(blk => {
             const maxH = (pages.length === 0) ? PAGE_1_MAX : PAGE_N_MAX;
@@ -1579,15 +2097,15 @@
             let pgContent = pgBlocks.map(b => b.html).join('');
 
             pagesHtml += `
-                <div class="a4-paper-sheet w-full max-w-[794px] min-h-[1123px] bg-white text-slate-900 px-10 py-12 shadow-2xl rounded-sm border border-slate-300 font-serif leading-relaxed relative overflow-hidden select-none mb-8">
+                <div class="a4-paper-sheet mb-8">
                     ${isFirstPage ? renderA4Header(meta, totalCount, totalScore, totalPages) : ''}
                     
-                    <div class="space-y-1.5 text-[13px]">
+                    <div class="paper-page-body">
                         ${pgContent}
                     </div>
 
                     <!-- Page Footer -->
-                    <div class="absolute bottom-5 left-0 right-0 text-center text-xs font-serif text-slate-700 tracking-wider">
+                    <div class="paper-page-footer">
                         数学 &nbsp; 第 ${pgIdx + 1} 页 (共 ${totalPages} 页)
                     </div>
                 </div>
@@ -1782,7 +2300,9 @@
                     const canScroll = /(auto|scroll)/.test(style.overflowY || '') &&
                         scrollParent.scrollHeight > scrollParent.clientHeight + 1;
                     if (canScroll) {
-                        scrollParent.scrollTop += shift;
+                        // rect 差值是「视口像素」，scrollTop 用的是滚动容器自己的布局像素：
+                        // 画布被缩放后两者相差一个有效缩放率，不换算就会跳过头或跳不足。
+                        scrollParent.scrollTop += shift / paperStageZoomFactor(scrollParent);
                         break;
                     }
                     scrollParent = scrollParent.parentElement;
@@ -3046,7 +3566,7 @@
 
             const btnHtml = showControls ? `
                 <div class="mt-1 ${effectiveAlign === 'center' ? 'text-center' : 'text-right'}">
-                    <button onclick="event.stopPropagation(); window.showFigureAlignPopover(event, ${qidAttr})" class="inline-flex items-center text-[10px] font-sans text-brand-700 bg-brand-50 hover:bg-brand-100 border border-brand-200/80 rounded-md px-1.5 py-0.5 transition-colors shadow-sm">
+                    <button onclick="event.stopPropagation(); window.showFigureAlignPopover(event, ${qidAttr})" class="paper-fig-align-btn inline-flex items-center text-[10px] font-sans text-brand-700 bg-brand-50 hover:bg-brand-100 border border-brand-200/80 rounded-md px-1.5 py-0.5 transition-colors shadow-sm">
                         <i class="fa-solid ${iconClass} text-[9px] mr-1 text-brand-500"></i> ${currentLabel}${countTag} <i class="fa-solid fa-chevron-down text-[8px] ml-1 opacity-70"></i>
                     </button>
                 </div>

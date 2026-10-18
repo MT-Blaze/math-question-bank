@@ -304,7 +304,7 @@ html.init-ws-paper #toggleSidebarBtn { display: none !important; }
     background-color: #ffffff !important;
     color: #0f172a !important;
     border-color: #cbd5e1 !important;
-    box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5), 0 8px 10px -6px rgba(0, 0, 0, 0.4) !important;
+    box-shadow: 0 10px 28px -14px rgba(0, 0, 0, 0.45), 0 2px 6px rgba(0, 0, 0, 0.18) !important;
 }
 
 .a4-paper-sheet h1,
@@ -821,6 +821,180 @@ header, main {
 
 .paper-choice-options-row .choices-grid {
     width: 100%;
+}
+
+
+/* =====================================================================
+   组卷 A4 画布（待办 #18 · 方案 A-lite：真 A4 盒子 + 等比缩放）
+   页面几何与导出侧 exam-zh 同口径，全部按「真 A4 像素」书写，不再用
+   Tailwind 的 w-full/px-10 让纸面随视口伸缩：
+     · 96dpi 下 A4 = 210mm×297mm = 794px×1123px
+     · geometry margin = 1in = 96px  → 版心宽 602px（= exam-zh 的 \linewidth）
+     · ctex 五号正文 10.5bp ≈ 14px，行距 12.6bp（= 字号 × 1.2）
+     · 1cm = 37.8px（解答题留白按此换算，原 35px/cm 偏小 7.4%）
+   视口适配交给 .paper-zoom-stage 的 zoom，页内测量口径不受影响。
+   ===================================================================== */
+.paper-zoom-stage {
+    /* 用 zoom 而不是 transform: scale()：zoom 会真正参与布局，外层滚动容器
+     * 拿到的就是缩放后的尺寸，无需手动预留宽高；而页内 clientWidth/scrollWidth
+     * （选项降列的测量依据）仍是 A4 本地像素，列数与 PDF 一致。 */
+    zoom: var(--paper-zoom, 1);
+    flex: 0 0 auto;
+    width: 794px;
+    margin: 0 auto;
+}
+
+.a4-paper-sheet {
+    position: relative;
+    box-sizing: border-box;
+    width: 794px;
+    min-height: 1123px;
+    padding: 96px;
+    overflow: hidden;
+    background-color: #ffffff;
+    color: #0f172a;
+    border: 1px solid #cbd5e1;
+    border-radius: 2px;
+    box-shadow: 0 10px 28px -14px rgba(15, 23, 42, 0.28), 0 2px 6px rgba(15, 23, 42, 0.08);
+    /* 导出侧是 \examsetup font=times：拉丁走 Times New Roman、中文走宋体。
+     * 不写这条会命中 Tailwind 默认 serif 栈里的 Georgia（旧式数字、字面更宽），
+     * 卷面数字与 PDF 明显两样。 */
+    font-family: "Times New Roman", "Songti SC", "SimSun", serif;
+    font-size: 14px;
+    line-height: 1.2;
+    /* 卷面是纸，不是控件：整页允许选中复制（选项网格模板自带 select-none，页内放开） */
+    -webkit-user-select: text;
+    user-select: text;
+}
+
+.a4-paper-sheet .choices-grid {
+    -webkit-user-select: text;
+    user-select: text;
+}
+
+/* 题目回到纸面：去掉圆角卡片、hover 变紫与 8px 内缩
+ * （原先题号被 p-2 顶得比大题标题右移一档，左边缘一条ragged线）。 */
+.a4-paper-sheet .paper-q-item {
+    margin: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+}
+.a4-paper-sheet .paper-q-item + .paper-q-item {
+    /* 题间留白：约一个空行，对应真卷的题目呼吸感 */
+    margin-top: 0.75em;
+}
+
+/* 大题标题：与导出侧 \heiti\bfseries + beforeskip=2ex / afterskip=1ex 同口径 */
+.a4-paper-sheet .paper-sec-block h3 {
+    font-family: "SimHei", "Heiti SC", "Songti SC", sans-serif;
+    font-size: 14px;
+    line-height: 1.2;
+    margin: 1.4em 0 0.7em;
+}
+
+/* 选项列间距 = exam-zh 的 column-sep(1em)，行内去掉 28px 点击区（那是编辑器预览的需要）。
+ * 只作用于页内，编辑器预览仍按 gap-2，避免牵动 #15 的列数测量口径。 */
+.a4-paper-sheet .choices-grid {
+    column-gap: 1em;
+    margin: 0.5em 0;
+}
+.a4-paper-sheet .choices-grid > div {
+    min-height: 0;
+}
+
+/* 解答题留白：纸面只留极浅灰虚线定位框，去掉天蓝底色、圆角与「留白区域 (n cm)」水印。
+ * 厘米数仍可在 hover 的「留白微调」控件读到，可操作性不丢。 */
+.a4-paper-sheet .solution-space-zone {
+    border: 1px dashed #e2e8f0;
+    border-radius: 0;
+    background: transparent;
+}
+.a4-paper-sheet .solution-space-zone:hover {
+    border-color: #cbd5e1;
+}
+
+/* 留白为 0 cm（不留白）时只留一条极浅基线虚线，hover 才加深：纸上不出现「填空格块」 */
+.a4-paper-sheet .solution-space-zone.is-zero {
+    border: 0;
+    border-bottom: 1px dashed #e2e8f0;
+    padding-top: 0.25rem;
+    padding-bottom: 0.25rem;
+}
+.a4-paper-sheet .solution-space-zone.is-zero:hover {
+    border-bottom-color: #cbd5e1;
+}
+
+/* 纸面上的插图只当图看待：去掉预览态的边框/圆角/阴影与 hover 光环放大，
+ * 图文排版按钮改为 hover 才显形（元素仍占位可命中，不影响点击切换）。
+ *
+ * 尺寸口径**不能**写成一句 .a4-paper-sheet img { max-width: 100% }：
+ * 那条规则的特级度(0,1,1)高于渲染器给每张图带的 Tailwind 上限
+ * .max-w-[220px](0,1,0)，会把 220/150/125 的顶全部顶穿，插图被放大到版心宽
+ * （实测某卷 310×180），既不像纸面，也让分页估高与实际高度对不上。
+ * 这里只兜两种真需要收口的情形：裸 <img>（没写任何上限）与选项格子里的图
+ * （格子只有 140px 宽，220 的图必须缩进格子，否则横向溢出）。 */
+.a4-paper-sheet img {
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+}
+.a4-paper-sheet img:not([class*="max-w-"]) {
+    /* 版心 602px：无上限的超宽图必须缩进来，否则被页面盒 overflow:hidden 裁掉 */
+    max-width: 100%;
+    height: auto;
+}
+.a4-paper-sheet .choices-grid img {
+    max-width: 100%;
+    height: auto;
+}
+.a4-paper-sheet img:hover {
+    box-shadow: none;
+    transform: none;
+}
+.a4-paper-sheet .paper-fig-align-btn {
+    opacity: 0;
+    transition: opacity 150ms ease;
+}
+.a4-paper-sheet .paper-fig-align-btn:hover {
+    opacity: 1;
+}
+
+/* 页码页脚：居中落在 1in 下边距内，贴近真卷 */
+.a4-paper-sheet .paper-page-footer {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 44px;
+    text-align: center;
+    font-size: 12px;
+    letter-spacing: 0.05em;
+    color: #334155;
+}
+
+/* 画布缩放控件：适应宽度 / 100% / ±，激活态用一条细下划线而不是底色 */
+.paper-zoom-btn {
+    border: 1px solid rgba(226, 232, 240, 0.9);
+    background: rgba(241, 245, 249, 0.9);
+    color: #475569;
+    transition: background-color 150ms ease, color 150ms ease, border-color 150ms ease;
+}
+.paper-zoom-btn:hover {
+    background: #ffffff;
+    color: #1e293b;
+    border-color: #cbd5e1;
+}
+.paper-zoom-btn.is-active {
+    background: rgba(var(--brand-50-rgb), 0.9);
+    border-color: rgba(var(--brand-200-rgb), 0.9);
+    color: rgb(var(--brand-700-rgb));
+    font-weight: 700;
+}
+.paper-zoom-readout {
+    min-width: 3.25rem;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
 }
 
 .preview-box img {

@@ -600,12 +600,221 @@ def test_solution_space_controls_stay_at_the_resizable_zone_top():
     )
     handler_source = paper_source[handler_start:handler_end]
     assert "getBoundingClientRect().top" in handler_source
-    assert "scrollParent.scrollTop += shift" in handler_source
+    # 画布缩放后滚动容器像素与布局像素不同尺，补偿必须除以有效缩放率
+    assert "scrollParent.scrollTop += shift / paperStageZoomFactor(scrollParent)" in handler_source
+    assert "getBoundingClientRect().width / el.offsetWidth" in paper_source
     assert "requestAnimationFrame(restoreAnchor)" in handler_source
     assert "nextButton.focus({ preventScroll: true })" in handler_source
     assert handler_source.index("window.renderPaperCanvas()") < handler_source.rindex(
         "restoreSolutionSpaceControlViewport(qid, anchorTop, activeDelta)"
     )
+
+
+def test_a4_paper_canvas_is_a_real_page_box_scaled_by_zoom():
+    """「查看整卷」必须按真 A4 盒子排版，视觉缩放只作用于外层 stage。
+
+    待办 #18 之前画布是一个假的 A4：宽度吃列宽（w-full）、上下用 40/48px 的
+    Tailwind 内边距冒充 1in 页边距，结果「像 A4 但不是 A4」，导出 PDF 又是另一套
+    口径，用户在画布上排好的分页与真卷完全无关。现在改为 794×1123 的盒子 +
+    zoom 等比缩放，页内几何与导出侧 exam-zh 同参数。
+    """
+
+    css_source = _read(CSS_PATH)
+    paper_source = _read(STATIC_JS_DIR / "paper.js")
+    index_source = _read(INDEX_PATH)
+
+    sheet_start = css_source.index("\n.a4-paper-sheet {")   # 前面带换行，才不会撞上 .dark .a4-paper-sheet
+    sheet_block = css_source[sheet_start:css_source.index("}", sheet_start)]
+    for declaration in (
+        "width: 794px;",
+        "min-height: 1123px;",
+        "padding: 96px;",
+        "font-size: 14px;",
+        "line-height: 1.2;",
+        '"Times New Roman"',
+        "overflow: hidden;",
+    ):
+        assert declaration in sheet_block, sheet_block
+
+    stage_start = css_source.index(".paper-zoom-stage {")
+    stage_block = css_source[stage_start:css_source.index("}", stage_start)]
+    assert "zoom: var(--paper-zoom, 1);" in stage_block
+    assert "width: 794px;" in stage_block
+
+    # 缩放只挂在 stage，页面盒子自身不参与缩放，否则页内实测口径会跟着变
+    assert "zoom: var(--paper-zoom" not in sheet_block
+
+    # 画布列宽 40% -> 52%，右侧不再留大片空白
+    assert 'id="paperCanvasSection"' in index_source
+    canvas_column = index_source[index_source.index('id="paperCanvasSection"') - 400:
+                                 index_source.index('id="paperCanvasSection"')]
+    assert "w-[52%]" in canvas_column
+    assert "w-[48%]" in _read(INDEX_PATH)[:index_source.index('id="paperCanvasSection"')]
+
+    # 三态缩放控件：适应宽度 / 100% / ±
+    for hook in ("window.setPaperZoomFit", "window.setPaperZoomActual",
+                 "window.stepPaperZoom", 'id="paperZoomReadout"'):
+        assert hook in paper_source
+    assert 'data-paper-zoom-mode="fit"' in paper_source
+    assert 'data-paper-zoom-mode="manual"' in paper_source
+    assert 'class="paper-zoom-stage" id="paperZoomStage"' in paper_source
+
+
+def test_a4_paper_canvas_keeps_paper_texture_and_selectable_text():
+    """纸面回归真实试卷观感：去掉卡片化装饰、水印文字，并允许选中复制。"""
+
+    css_source = _read(CSS_PATH)
+    paper_source = _read(STATIC_JS_DIR / "paper.js")
+
+    sheet_start = css_source.index("\n.a4-paper-sheet {")   # 前面带换行，才不会撞上 .dark .a4-paper-sheet
+    sheet_block = css_source[sheet_start:css_source.index("}", sheet_start)]
+    declarations = [
+        line.strip() for line in sheet_block.splitlines()
+        if line.strip().endswith(";") and not line.strip().startswith(("*", "/*"))
+    ]
+    joined = "\n".join(declarations)
+    assert "user-select: text;" in joined
+    assert "select-none" not in joined
+
+    # 题目不再是圆角卡片：边框/圆角/底色全部归零，也不再有 hover 变紫
+    item_start = css_source.index(".a4-paper-sheet .paper-q-item {")
+    item_block = css_source[item_start:css_source.index("}", item_start)]
+    assert "margin: 0;" in item_block and "padding: 0;" in item_block
+    assert "border: 0;" in item_block
+    assert "border-radius: 0;" in item_block
+    assert "background: transparent;" in item_block
+    assert "box-shadow" not in item_block, item_block
+    # hover 变紫/抬升的整条规则都必须消失（纸面不是卡片，不该有可点起的错觉）
+    assert ".a4-paper-sheet .paper-q-item:hover" not in css_source
+
+    # 解答题留白：极浅灰虚线，没有天蓝虚线框与水印文字
+    zone_start = css_source.index(".a4-paper-sheet .solution-space-zone {")
+    zone_block = css_source[zone_start:css_source.index("}", zone_start)]
+    assert "#e2e8f0" in zone_block
+    assert "dashed" in zone_block
+    assert "#bae6fd" not in zone_block and "#7dd3fc" not in zone_block
+
+    blank_start = paper_source.index("solutionBlankHtml = `")
+    blank_block = paper_source[blank_start:paper_source.index("const itemHtml = `", blank_start)]
+    assert "solution-space-label" not in blank_block, "纸面上不要再画留白水印文字"
+
+    # 拖拽改由把手发起：整题 draggable 会让 Chrome 把正文当成不可复制的拖拽源
+    assert 'draggable="true"' in paper_source
+    toolbar_start = paper_source.index("paper-canvas-toolbar")
+    toolbar_block = paper_source[toolbar_start:paper_source.index("</div>\n\n                        <div class=\"flex items-baseline", toolbar_start)]
+    assert 'draggable="true"' in toolbar_block
+    assert "onPaperCanvasDragStart" in toolbar_block
+
+    item_start = paper_source.index("<div class=\"paper-q-item group relative\"")
+    item_open_tag = paper_source[item_start:paper_source.index(">", item_start)]
+    assert "draggable" not in item_open_tag, "整题 draggable 会让 Chrome 吞掉正文选中的鼠标事件"
+
+
+def test_a4_page_budget_uses_the_real_content_height():
+    """分页预算必须走 A4_PAGE 常量：931px 正文高，首页再扣页眉。"""
+
+    paper_source = _read(STATIC_JS_DIR / "paper.js")
+
+    assert "A4_PAGE.contentPx = A4_PAGE.heightPx - A4_PAGE.marginPx * 2;" in paper_source
+    assert "const PAGE_N_MAX = A4_PAGE.contentPx;" in paper_source
+    assert "const PAGE_1_MAX = A4_PAGE.contentPx - estimateA4HeaderHeight(meta);" in paper_source
+    # 旧的魔法数（一律 75px / 40px / 560px 视口高）不能回来
+    assert "estHeight: 40," not in paper_source
+    assert "const estH = estimateQuestionBlockHeight(" in paper_source
+    assert "detachedImgCount" in paper_source
+
+
+def test_a4_height_estimate_counts_figures_tables_and_choice_wrapping_in_node():
+    """真跑 node：估高模型必须把插图/表格/选项折行/段间空行都算进去。
+
+    浏览器实测（15 道真题语料）：改造前首页估 738px / 实际 1465px，页面被撑破
+    220px；模型补齐口径后同一份卷面零溢出、首页填充率 0.91。
+    """
+
+    paper_source = _read(STATIC_JS_DIR / "paper.js")
+    block_start = paper_source.index("    const A4_PAGE = {")
+    block_end = paper_source.index("    function paperStageZoomFactor(", block_start)
+    geometry_source = paper_source[block_start:block_end]
+
+    script = "const api = (function (window) {\n" + geometry_source + r"""
+return {
+    A4_PAGE: A4_PAGE,
+    estimateQuestionBlockHeight: estimateQuestionBlockHeight,
+    paperChoicesHeightPx: paperChoicesHeightPx,
+    paperBlockLinePx: paperBlockLinePx,
+    paperFigureHeightPx: paperFigureHeightPx,
+    paperTableRowCount: paperTableRowCount,
+    paperTextHeightPx: paperTextHeightPx,
+    estimateA4HeaderHeight: estimateA4HeaderHeight,
+};
+})(typeof window === 'undefined' ? {} : window);
+
+const A4 = api.A4_PAGE;
+function fail(msg) { throw new Error(msg); }
+
+// 几何常数与导出侧 exam-zh 对齐
+if (A4.widthPx !== 794 || A4.heightPx !== 1123 || A4.marginPx !== 96) fail('A4 页面几何漂移');
+if (A4.contentPx !== 931 || A4.textPx !== 602) fail('版心/正文高漂移');
+if (A4.bodyPx !== 14 || A4.linePx !== 17 || A4.cmPx !== 37.8) fail('字号/行高/cm 口径漂移');
+if (A4.mathLinePx !== 21 || A4.fracLinePx !== 24 || A4.bigMathLinePx !== 34) fail('公式行盒口径漂移');
+if (A4.tableRowPx !== 30 || A4.choiceColGapPx !== 14) fail('表格行/选项间距口径漂移');
+
+// 1) 插图必须整块计高，且尊重 \includegraphics 自带的 max height
+const figNoCap = '\\includegraphics[max width=0.85\\linewidth,keepaspectratio]{a.png}';
+const figCapped = '\\includegraphics[max height=3.2cm,keepaspectratio]{a.png}';
+if (api.paperFigureHeightPx(figNoCap) !== A4.figurePx) fail('无显式上限的插图未计高');
+if (api.paperFigureHeightPx(figCapped) !== 141) fail('max height=3.2cm 应按 3.2*37.8+20 折算');
+const stem = '已知函数 $f(x)$ 的图象如图所示，则 $f(x)$ 的解析式为 \\paren';
+const withFig = stem + '\n\n' + figNoCap + '\n\\begin{choices}\n\\item $1$\n\\item $2$\n\\item $3$\n\\item $4$\n\\end{choices}';
+const noFig = stem + '\n\\begin{choices}\n\\item $1$\n\\item $2$\n\\item $3$\n\\item $4$\n\\end{choices}';
+const figGap = api.estimateQuestionBlockHeight('single_choice', withFig, 0, 'right', 0)
+    - api.estimateQuestionBlockHeight('single_choice', noFig, 0, 'right', 0);
+if (figGap < A4.figurePx - 10) fail('题干插图没有把整块高度计入：' + figGap);
+
+// 2) 选项过长必须降列（4 -> 2 -> 1），降列后高度翻倍
+const shortItems = '\\begin{choices}\n\\item $1$\n\\item $2$\n\\item $3$\n\\item $4$\n\\end{choices}';
+const longItems = '\\begin{choices}\n\\item 该地平均每年新增至少 45 个水质好湖泊且治理达标率逐年提升\n\\item 该地平均每年新增至少 45 个水质好湖泊且治理达标率逐年提升\n\\item 该地平均每年新增至少 45 个水质好湖泊且治理达标率逐年提升\n\\item 该地平均每年新增至少 45 个水质好湖泊且治理达标率逐年提升\n\\end{choices}';
+if (!(api.paperChoicesHeightPx(['该地平均每年新增至少 45 个水质好湖泊且治理达标率逐年提升 A', 'B', 'C', 'D'])
+    > api.paperChoicesHeightPx(['短一', '短二', '短三', '短四']))) fail('长选项没有触发降列/折行');
+const shortH = api.estimateQuestionBlockHeight('single_choice', stem + '\n' + shortItems, 0, 'right', 0);
+const longH = api.estimateQuestionBlockHeight('single_choice', stem + '\n' + longItems, 0, 'right', 0);
+if (longH <= shortH) fail('选项折列没有抬高整题估高：' + shortH + ' vs ' + longH);
+
+// 3) 行盒口径：光有 $[0,2)$ 这种不带命令的公式也要按公式行高（回归：曾漏判成 17px）
+if (api.paperBlockLinePx('$[0,2)$') !== A4.mathLinePx) fail('无命令内联式行高漏判');
+if (api.paperBlockLinePx('\\dfrac{1}{a}>\\dfrac{1}{b}') !== A4.bigMathLinePx) fail('dfrac 行高口径漂移');
+if (api.paperBlockLinePx('纯文字没有公式') !== A4.linePx) fail('纯文字行高不该被抬高');
+
+// 4) 段间空行在预览里渲染成 <br><br>，实测多占一个行高
+const onePara = api.paperTextHeightPx('第一段文字', 1);
+const twoPara = api.paperTextHeightPx('第一段文字\n\n第二段文字', 1);
+if (twoPara - onePara < A4.linePx) fail('段间空行没有计入高度');
+
+// 5) 表格按行计高
+const tabular = '\\begin{tabular}{|c|c|c|}\n\\hline\nx & 1 & 2 \\\\ \\hline\ny & 3 & 4 \\\\ \\hline\n\\end{tabular}';
+if (api.paperTableRowCount(tabular) !== 2) fail('tabular 行数判定错误');
+if (api.estimateQuestionBlockHeight('detailed_answer', stem + '\n' + tabular, 0, 'right', 0)
+    <= api.estimateQuestionBlockHeight('detailed_answer', stem, 0, 'right', 0)) fail('表格没有计入估高');
+
+// 6) 解答题即使留白 0cm，纸面仍有一条作答线 + 上下边距
+// （用两行题干，避开估高下限 max(2 行) 对差值的截断）
+const stemTwo = stem + '，且该结论对任意实数恒成立，需要给出完整证明过程并说明取等条件';
+const withZone = api.estimateQuestionBlockHeight('detailed_answer', stemTwo, 0, 'right', 0);
+const asChoice = api.estimateQuestionBlockHeight('single_choice', stemTwo, 0, 'right', 0);
+if (withZone - asChoice !== 33) fail('0cm 留白的兜底高度漂移：' + (withZone - asChoice));
+const sevenCm = api.estimateQuestionBlockHeight('detailed_answer', stemTwo, 7, 'right', 0);
+if (sevenCm - withZone !== Math.round(7 * A4.cmPx) + 13 - 33) fail('留白厘米数换算漂移');
+
+// 7) 首页页眉估高不能低于实测（实测 345px，估低会把首页撑破）
+const header = api.estimateA4HeaderHeight({
+    paper_type: 'exam',
+    title: '2026 届普通高中学业质量监测数学试题',
+    show_notice: true,
+});
+if (header < 345) fail('页眉估高低于实测：' + header);
+"""
+    result = _run_node_script(script)
+    assert result.returncode == 0, result.stderr
 
 
 def test_static_dialogs_expose_modal_semantics_and_accessible_names():
