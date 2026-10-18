@@ -2385,6 +2385,30 @@
         });
     }
 
+    // 缺图上报：后端在准备阶段就把「清单里找不到」的图片引用降级成卷面红字占位
+    // （mathbank/paper_helper.py: patch_missing_latex_images），并用两个响应头把缺了几张、
+    // 缺哪些图告知前端。这里必须翻成 Toast：否则用户拿到 PDF 只看见凭空多出的红字，
+    // 完全不知道是自己题库里的图丢了。
+    function notifyMissingPaperImages(response) {
+        if (!response || !response.headers) return 0;
+        const count = parseInt(response.headers.get('X-Paper-Missing-Images') || '0', 10);
+        if (!Number.isInteger(count) || count <= 0) return 0;
+        let files = response.headers.get('X-Paper-Missing-Image-Files') || '';
+        try {
+            files = files ? decodeURIComponent(files) : '';
+        } catch (e) {
+            // 头值按后端约定是百分号编码；万一被中间层解过一次，直接用原文继续提示。
+        }
+        const names = files.split(',').map((name) => name.trim()).filter(Boolean);
+        let message = `⚠️ 本次导出有 ${count} 张图片缺失，已在卷面用红字占位，请检查题库`;
+        if (names.length) {
+            const preview = names.slice(0, 3).join('、');
+            message += `：${preview}${names.length > 3 ? ` 等 ${names.length} 张` : ''}`;
+        }
+        if (window.showToast) window.showToast(message, 'warning');
+        return count;
+    }
+
     // Export PDF, Word, TeX, and Save Handlers
     window.exportPaperPdf = async function (target = 'paper') {
         const cart = window.PaperStore.cart;
@@ -2430,6 +2454,7 @@
                     tab.location.href = url;
                 }
                 if (window.showToast) window.showToast(`${targetName} PDF 编译成功！已在新窗口打开`, 'success');
+                notifyMissingPaperImages(res);
             } else {
                 let errLog = `${targetName} PDF 编译失败`;
                 let errData = {};
@@ -2905,6 +2930,7 @@
                         await writable.write(blob);
                         await writable.close();
                         if (window.showToast) window.showToast(`LaTeX 打包归档已保存至指定目录`, 'success');
+                        notifyMissingPaperImages(res);
                         return;
                     } catch (err) {
                         if (err && err.name === 'AbortError') return;
@@ -2918,6 +2944,7 @@
                 a.click();
                 URL.revokeObjectURL(url);
                 if (window.showToast) window.showToast(`LaTeX 打包《${filename}》导出成功！`, 'success');
+                notifyMissingPaperImages(res);
             } else {
                 const errData = await res.json();
                 if (window.showToast) window.showToast(errData.message || '导出失败', 'error');
@@ -3309,6 +3336,7 @@
                     if (tab && !tab.closed) {
                         tab.location.href = url;
                     }
+                    notifyMissingPaperImages(pdfRes);
                 } else {
                     let errorData = {};
                     try { errorData = await pdfRes.json(); } catch (e) {}
