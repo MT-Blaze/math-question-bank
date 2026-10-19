@@ -785,6 +785,18 @@ header, main {
     min-width: 0;
     max-width: 100%;
 }
+/* 选项图网格（导入卡片预览，import.js applyParsedCardChoiceImageGrid 挂类）：
+   等宽两列 + contain 收口，修拼图切片「单图通栏」的比例变形。 */
+.choices-grid.choices-image-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+}
+.choices-grid.choices-image-grid img {
+    width: 100%;
+    max-width: 100%;
+    height: auto;
+    max-height: 160px;
+    object-fit: contain;
+}
 .choices-grid .choices-content {
     display: block;
     min-width: 0;

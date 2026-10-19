@@ -28,6 +28,7 @@ from mathbank.latex_normalize import (
     normalize_for_storage,
     normalize_stem_for_storage,
 )
+from mathbank.figure_repair import repair_parsed_questions
 from mathbank.output_fidelity import (
     check_split_output_fidelity,
     format_fidelity_log,
@@ -942,6 +943,12 @@ def post_process_pdf_parsed_questions(parsed_questions: list, paper_title: str, 
         print("[配图自检] 以下题目的配图建议人工核对：" + "；".join(review_notes))
     else:
         print("[配图自检] 全部题目的配图归属未发现异常。")
+
+    # 7.45 插图归属修复（MinerU 分支，快慢两路共用）：拼图切片错位会让第 4 片
+    #     落进解析、选项被无标号浮图炸开——确定性形态本地修复（见
+    #     mathbank/figure_repair），拿不准一律不动；记录进卡片 _figure_repair。
+    for note in repair_parsed_questions(parsed_questions):
+        print(f"[插图归属修复] {note}")
 
     # 7.5 内容守恒自检：把每题输出与源文切片按可数量对账（选项数 / choices 环境 /
     #     tabular / \fillin / [插图待补] 编号集）。公式原文由 lock_visible_math 负责，

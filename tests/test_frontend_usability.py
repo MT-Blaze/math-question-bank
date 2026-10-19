@@ -5540,3 +5540,15 @@ def test_pdf_fast_path_reason_never_ends_with_a_double_period():
         "裸用 pdfFastPathClip 会让原文句号与模板句号叠加成「。。」"
     assert "[。．.！!？?；;]+$" in strip, "剥尾只吃句末标点，不能误删正文里的标点"
     assert "=== '…'" in strip, "截断已带省略号时不得再剥，否则会吃掉被截断的半句"
+
+
+def test_choice_image_grid_preview_contract():
+    """大庆第 4 题教训的预览层契约：选项图网格强制等宽两列 + 布局字段透传。"""
+    js = (STATIC_JS_DIR / "import.js").read_text(encoding="utf-8")
+    css = CSS_PATH.read_text(encoding="utf-8")
+    assert "function applyParsedCardChoiceImageGrid" in js
+    assert "applyParsedCardChoiceImageGrid(contentPrev);" in js
+    assert "choices-image-grid" in js
+    assert "formData.append('image_layouts'" in js
+    assert ".choices-grid.choices-image-grid" in css
+    assert "object-fit: contain" in css

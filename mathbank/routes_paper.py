@@ -1298,6 +1298,12 @@ def run_mineru_pdf_parsing_task(
             parsed_questions, paper_title, task_id, page_texts or None, markdown,
             generate_answers_bool=generate_answers,
         )
+        # 插图归属修复记录进任务诊断（前端 pdf_fast_path 块对未知键容错，仅供排查）。
+        figure_repairs = [
+            rec for q in final_questions for rec in (q.get("_figure_repair") or [])
+        ]
+        if figure_repairs:
+            pdf_fast_diag["figure_repairs"] = figure_repairs
         _main.DOCUMENT_TASKS.check_cancelled(task_id)
         # 云路线同样要对账：MinerU 抽了几幅图、模型把几幅挂到了题上。整卷口径
         # （见 summarize_figure_coverage），因为 mineru_*.jpg 不带页码。

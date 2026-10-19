@@ -1327,6 +1327,7 @@ def create_question(
     tags: str = Form(""),
     related_question_id: str = Form(""),
     image_paths: str = Form("[]"),  # JSON array string
+    image_layouts: str = Form(""),  # 逐图排版 JSON（归属修复播种，可缺省）
     duplicate_snapshot_hash: str = Form(""),
     duplicate_override: str = Form(""),
     extra_topics: str = Form("[]"),
@@ -1439,6 +1440,13 @@ def create_question(
             ),
         )
         db_question.image_paths = parsed_img_paths
+        # 逐图排版：卡片播种的 image_layouts 原样透传；属性 setter 会按 content
+        # 校验枚举并过滤野键，坏值只丢弃、绝不阻塞导入。
+        if image_layouts and image_layouts.strip() not in ("", "{}"):
+            try:
+                db_question.image_layouts = image_layouts
+            except ValueError:
+                pass
         db_question.content_tikz_assets = parsed_content_tikz_assets
         db_question.answer_tikz_assets = parsed_answer_tikz_assets
         

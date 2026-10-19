@@ -6800,6 +6800,21 @@
             });
         }
 
+        // 选项图等宽 2×2（仅预览层，不改入库源码）：网格里 ≥2 个含图单元格时挂上
+        // .choices-image-grid，由 app.css 以 !important 强制两列等宽 + contain 收口——
+        // 拼图切片宽高比相近，2×2 最接近原卷，修掉「单图通栏拉伸」的比例变形。
+        function applyParsedCardChoiceImageGrid(container) {
+            if (!container || !container.querySelectorAll) return;
+            Array.prototype.forEach.call(container.querySelectorAll('.choices-grid'), function (grid) {
+                const imgCells = Array.prototype.filter.call(grid.children, function (cell) {
+                    return cell.querySelector && cell.querySelector('img');
+                });
+                if (imgCells.length >= 2) {
+                    grid.classList.add('choices-image-grid');
+                }
+            });
+        }
+
         // 三槽归属：解答图 / 选项图 / 题干图。
         // 判定顺序有意义——解答优先（图在解答里就是解答图），其次选项图。
         function parsedCardImageSlot(path, answerText, contentText) {
@@ -8530,6 +8545,8 @@
                     if (typeof window.adaptChoicesGridLayout === 'function') {
                         window.adaptChoicesGridLayout(contentPrev);
                     }
+                    // 测量完成后强制图片网格等宽两列（app.css 的 !important 压过测量结果）。
+                    applyParsedCardChoiceImageGrid(contentPrev);
                     // 配图条用真实 DOM 追加（不经 sanitizeRichHtml：<button> 与
                     // data-* 属性不在白名单内，内联 onclick 也会被 DOMPurify 剥掉）。
                     appendParsedCardImageStrip(contentPrev, q, index, answerText);
@@ -9357,6 +9374,11 @@ function saveParsedQuestion(index) {
                     ? currentDuplicatePayload.image_paths
                     : safeDuplicateImagePaths(q.image_paths);
                 formData.append('image_paths', JSON.stringify(safeImagePaths));
+                // 逐图排版：归属修复播种的 image_layouts（align/size 枚举）原样透传，
+                // 后端 create_question 走 normalize_image_layouts 校验后才落库。
+                if (q && q.image_layouts && Object.keys(q.image_layouts).length) {
+                    formData.append('image_layouts', JSON.stringify(q.image_layouts));
+                }
                 const parsedTags = appendDuplicateTagToTags(q.tags || '', autoTag);
                 if (parsedTags) {
                     formData.append('tags', parsedTags);
