@@ -300,3 +300,49 @@ def test_default_mode_still_degrades_but_records_error_class():
     assert diag["ai_ok"] is False
     assert diag["ai_error_class"] == "_FakeReadTimeout"
     assert diag["degrade_reason"].startswith("_FakeReadTimeout:")
+
+
+def test_fast_path_metadata_composite_chapter_survives_post_process():
+    r"""防复发：AI 把教材清单整行「章 > 小节」抄进 category_chapter 时，卡片预填必须落回大纲规范名。
+
+    归一层挂在 post_process 第 7.6 步（实现见 mathbank/kaoxiang_tree.py），快路径与整卷
+    老路都从这一个出口出去。前端「章节」下拉按大纲键匹配，章一选不中，小节与考向就
+    连锁空掉 —— 这条链路必须端到端钉住，否则下次模型再抄一次整行，又是教师手改 22 道题。
+    """
+    curriculum = {
+        "必修一": {
+            "1. 集合与常用逻辑用语": [
+                {"name": "1.1 集合的概念",
+                 "topics": [{"id": "k_a", "name": "集合的判断", "level": "L1"}]},
+            ]
+        }
+    }
+    dirty = {
+        "question_type": "single_choice",
+        "category_compulsory": "必修一",
+        "category_chapter": "1. 集合与常用逻辑用语 > 1.1 集合的概念",
+        "category_knowledge": "集合的概念",
+        "topic": "集合的判断",
+        "difficulty": "L2",
+    }
+
+    def _stub(payload_json, locks, task_id, deadline_seconds, cancel_check):
+        payload = json.loads(payload_json)
+        return ({b["block_id"]: dict(dirty) for b in payload.get("clean_blocks", [])},
+                {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2})
+
+    with patch.dict(os.environ, {"PDF_FASTPATH_ENABLED": "1"}), \
+         patch.object(routes_paper, "_call_pdf_metadata_ai", side_effect=_stub), \
+         patch("mathbank.parsing_pipeline.get_current_curriculum", return_value=curriculum):
+        qs = routes_paper.parse_pdf_with_fast_path(GOOD, None, False, None, "t-meta1", {})
+        out = main.post_process_pdf_parsed_questions(
+            qs, "测试卷", task_id=None, ocr_results=None,
+            source_text=GOOD, generate_answers_bool=False,
+        )
+
+    assert out, out
+    for q in out:
+        assert q["category_chapter"] == "1. 集合与常用逻辑用语", q["category_chapter"]
+        assert q["category_knowledge"] == "1.1 集合的概念", q["category_knowledge"]
+        assert q["topic"] == "集合的判断", q["topic"]
+        assert q.get("_metadata_align"), "归一改写过却无痕，任务诊断就查不到是谁在漂"

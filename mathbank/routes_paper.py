@@ -1304,6 +1304,12 @@ def run_mineru_pdf_parsing_task(
         ]
         if figure_repairs:
             pdf_fast_diag["figure_repairs"] = figure_repairs
+        metadata_aligns = [
+            note for q in final_questions for note in (q.get("_metadata_align") or [])
+        ]
+        if metadata_aligns:
+            pdf_fast_diag["metadata_aligned"] = len(metadata_aligns)
+            pdf_fast_diag["metadata_align_samples"] = metadata_aligns[:3]
         _main.DOCUMENT_TASKS.check_cancelled(task_id)
         # 云路线同样要对账：MinerU 抽了几幅图、模型把几幅挂到了题上。整卷口径
         # （见 summarize_figure_coverage），因为 mineru_*.jpg 不带页码。

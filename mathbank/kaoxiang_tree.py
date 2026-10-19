@@ -481,6 +481,162 @@ def match_chapter_key(curriculum: dict, compulsory: str, chapter_title: str) -> 
     return ""
 
 
+# ---------------------------------------------------------------------------
+# AI 分类字段 ↔ 大纲规范名（拆卷卡片下拉的自动填充依赖这一层）
+# ---------------------------------------------------------------------------
+# 提示词里给模型的教材清单是「章 > 小节」一整行（见 prompts.build_curriculum_text），
+# 字段规则又要求「挑精确字符串」，模型就老老实实把整行抄进 category_chapter：
+#   "3. 函数的概念与性质 > 3.1 函数的概念及表示"
+# 而卡片小节的章节下拉用严格相等匹配大纲键，章名对不上就选不中，小节与考向跟着
+# **连锁锁死**（2026-10-19 大庆实验卷线上复现：AI 22 条分类全给了，卡片却全是空状态）。
+# 所以 AI 回来的分类必须先归一到大纲规范名再交给前端与落库：前端只负责显示，
+# 数据口径由这一层兜住，Word/TeX/图片录入等别的路径将来也一样复用。
+_CATEGORY_JOIN_RE = re.compile(r"\s*(?:》|＞|»|>>|→|｜|\|)\s*|\s*>\s*")
+
+
+def split_chapter_section(value: str) -> tuple[str, str]:
+    """把「章 > 小节」这类复合串拆成 (章, 节)；没有连接符时返回 (原文, "")。"""
+    text = str(value or "").strip()
+    if not text:
+        return "", ""
+    parts = [p.strip() for p in _CATEGORY_JOIN_RE.split(text) if p and p.strip()]
+    if len(parts) < 2:
+        return text, ""
+    return parts[0], parts[-1]
+
+
+def _strip_leading_number(text: str) -> str:
+    return re.sub(r"^[0-9０-９]+(?:[.．、][0-9０-９]+)*[.．、]?\s*", "", str(text or "").strip())
+
+
+def _name_key(text: str) -> str:
+    """名字的比较键：去空白、去句点顿号、转小写（中英混排的小节号也一并抹平）。"""
+    return re.sub(r"[\s.．、]+", "", _strip_leading_number(text)).lower()
+
+
+def _pick_by_key(candidates: list, want: str) -> str:
+    """在候选规范名里挑 want：精确 → 比较键相等 → 互相包含（取最接近长度的那个）。"""
+    cand = str(want or "").strip()
+    if not cand or not candidates:
+        return ""
+    if cand in candidates:
+        return cand
+    ck = _name_key(cand)
+    if not ck:
+        return ""
+    for name in candidates:
+        if _name_key(name) == ck:
+            return name
+    hits = [n for n in candidates if ck in _name_key(n) or _name_key(n) in ck]
+    if not hits:
+        return ""
+    return min(hits, key=lambda n: abs(len(_name_key(n)) - len(ck)))
+
+
+def section_names_of(sections) -> list:
+    """大纲里某个章下面的小节名列表（小节既可能是 dict 也可能是裸字符串）。"""
+    names: list = []
+    for sec in sections or []:
+        name = str(sec.get("name") or "").strip() if isinstance(sec, dict) else str(sec or "").strip()
+        if name:
+            names.append(name)
+    return names
+
+
+def topic_names_of(sections, section_name: str) -> list:
+    """某个小节下面已有的考向名（不带 L1/L2 级别后缀）。"""
+    out: list = []
+    for sec in sections or []:
+        if not isinstance(sec, dict):
+            continue
+        if str(sec.get("name") or "").strip() != section_name:
+            continue
+        for topic in sec.get("topics") or []:
+            name = str(topic.get("name") or "").strip() if isinstance(topic, dict) else str(topic or "").strip()
+            if name:
+                out.append(name)
+    return out
+
+
+def find_chapter_by_section(book: dict, section_name: str) -> str:
+    """小节名反查所属章：模型章名瞎写、但小节抄对时的自愈通道。"""
+    key = _name_key(section_name)
+    if not key:
+        return ""
+    for chapter, sections in (book or {}).items():
+        if key in [_name_key(n) for n in section_names_of(sections)]:
+            return chapter
+    return ""
+
+
+def align_parsed_classification(curriculum: dict, questions: list) -> list:
+    """就地改写每题的 category_compulsory/category_chapter/category_knowledge/topic。
+
+    口径：能在大纲里找到规范名就换成规范名，找不到就按大纲口径留空（启动自检对
+    「不属于该章小节列表」的知识点同样是置空）；考向匹配不上时**保留 AI 原文**，
+    未知考向名还要走自动建考向的链路，抹掉等于替教师做决定。教材本身不在当前
+    大纲里时整套字段原样不动 —— 那是切换教材版本的事，不该由这里抹平线索。
+    返回人话调整记录，供任务诊断与排查。
+    """
+    notes: list = []
+    books = curriculum or {}
+    for q in questions or []:
+        if not isinstance(q, dict):
+            continue
+        comp = str(q.get("category_compulsory") or "").strip()
+        chapter = str(q.get("category_chapter") or "").strip()
+        know = str(q.get("category_knowledge") or "").strip()
+        topic = str(q.get("topic") or "").strip()
+        if not (comp or chapter or know or topic):
+            continue
+        if comp and comp not in books:
+            continue
+        book = books.get(comp) or {}
+        if not book:
+            continue
+
+        # 「3. 函数的概念与性质 > 3.1 函数的概念及表示」这种整行抄写：前半当章、后半当小节。
+        head, tail = split_chapter_section(chapter)
+        candidate = know or tail
+        chapter_key = match_chapter_key(books, comp, head) if head else ""
+        sections = book.get(chapter_key) or [] if chapter_key else []
+        know_name = _pick_by_key(section_names_of(sections), candidate) if candidate else ""
+
+        if candidate and not know_name:
+            # 章名挑空了、或小节其实属于别的章：以「小节确实挂在哪一章」为准。
+            other = find_chapter_by_section(book, candidate)
+            if other:
+                chapter_key = other
+                sections = book.get(other) or []
+                know_name = _pick_by_key(section_names_of(sections), candidate)
+        elif chapter_key and know_name:
+            anchored = find_chapter_by_section(book, know_name)
+            if anchored and anchored != chapter_key:
+                chapter_key = anchored
+                sections = book.get(anchored) or []
+
+        topic_name = ""
+        if topic and know_name:
+            cleaned = re.sub(r"[（(]\s*L[1-5]\s*[)）]", "", topic).strip()
+            topic_name = _pick_by_key(topic_names_of(sections, know_name), cleaned)
+
+        changed = []
+        if comp != str(q.get("category_compulsory") or "").strip():
+            changed.append("教材 %r -> %r" % (q.get("category_compulsory"), comp))
+            q["category_compulsory"] = comp
+        if chapter_key != chapter:
+            changed.append("章节 %r -> %r" % (chapter, chapter_key))
+            q["category_chapter"] = chapter_key
+        if know_name != know:
+            changed.append("小节 %r -> %r" % (know, know_name))
+            q["category_knowledge"] = know_name
+        if topic_name and topic_name != topic:
+            changed.append("考向 %r -> %r" % (topic, topic_name))
+            q["topic"] = topic_name
+        notes.extend(changed[:4])
+    return notes
+
+
 def _old_topic_ids(sections) -> dict:
     mapping = {}
     for sec in sections or []:

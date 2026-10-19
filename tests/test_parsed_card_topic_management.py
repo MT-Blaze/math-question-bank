@@ -879,3 +879,78 @@ def test_backend_gate_left_untouched():
     assert STRICT_AUTO_TOPIC_CREATION is True
     src = _read(PROJECT_ROOT / "mathbank" / "metadata.py")
     assert 'MATHBANK_STRICT_AUTO_TOPICS", "1"' in src
+
+
+def test_linkage_lights_up_cascade_from_dirty_ai_category_names():
+    r"""卡片联动的连锁锁死：章名一旦对不上大纲键，小节与考向会跟着一起空掉。
+
+    后端 7.6 已把 AI 分类字段归一到大纲规范名，这条是第二道防线（Word/TeX/图片录入
+    不经过那道归一），钉三个形态：整行「章 > 小节」抄写、章写飞但小节抄对、全空不报错。
+    """
+    body = r"""
+function blankCard() {
+  const card = new El('div');
+  card.className = 'parsed-card';
+  ['card-compulsory','card-chapter','card-knowledge','card-topic','card-difficulty']
+    .forEach(function (cls) {
+      const s = new El('select');
+      s.className = cls;
+      const blank = new El('option');
+      blank.value = '';
+      blank.selected = true;
+      s.appendChild(blank);
+      card.appendChild(s);
+    });
+  ['card-topic-rename','card-topic-create','card-extra-topic-add'].forEach(function (cls) {
+    const b = new El('button');
+    b.className = cls;
+    card.appendChild(b);
+  });
+  ['card-extra-topic-list','card-topic-manage-hint'].forEach(function (cls) {
+    const d = new El('div');
+    d.className = cls;
+    card.appendChild(d);
+  });
+  return card;
+}
+
+function linkValues(card) {
+  return ['.card-compulsory','.card-chapter','.card-knowledge','.card-topic']
+    .map(function (sel) { return card.querySelector(sel).value; }).join('|');
+}
+
+const copied = {
+  category_compulsory: '必修一',
+  category_chapter: '1. 集合与常用逻辑用语 > 1.3 集合的基本运算',
+  category_knowledge: '1.3 集合的基本运算',
+  topic: '交集运算',
+  difficulty: 'L1'
+};
+const card = blankCard();
+cardApi.setupCardCategoryLinkage(card, copied);
+const got = linkValues(card);
+if (got !== '必修一|1. 集合与常用逻辑用语|1.3 集合的基本运算|交集运算') {
+  throw new Error('整行抄写的章名没能点亮三排下拉: ' + got);
+}
+
+const wrong = {
+  category_compulsory: '必修一',
+  category_chapter: '9. 模型瞎写的章',
+  category_knowledge: '1.1 集合的概念',
+  topic: '集合的判断'
+};
+const card2 = blankCard();
+cardApi.setupCardCategoryLinkage(card2, wrong);
+const got2 = linkValues(card2);
+if (got2 !== '必修一|1. 集合与常用逻辑用语|1.1 集合的概念|集合的判断') {
+  throw new Error('小节反查章失效: ' + got2);
+}
+
+const card3 = blankCard();
+cardApi.setupCardCategoryLinkage(card3, {});
+if (card3.querySelector('.card-chapter').value !== '') {
+  throw new Error('空分类被凭空选中了章');
+}
+console.log('OK');
+"""
+    assert "OK" in _ok(_run_import_block(body))

@@ -5851,6 +5851,19 @@
                 }
             };
 
+            // 小节名反查所属章：AI 把章名写错、却把小节抄对时，靠它把章/节/考向一次点亮。
+            const findChapterByKnowledge = (comp, knowName) => {
+                const s = String(knowName || '').trim();
+                if (!s || !categoryTree[comp]) return '';
+                const chNames = Object.keys(categoryTree[comp]);
+                for (let i = 0; i < chNames.length; i++) {
+                    const sections = categoryTree[comp][chNames[i]];
+                    if (!sections || typeof sections !== 'object') continue;
+                    if (fuzzyMatchName(s, Object.keys(sections))) return chNames[i];
+                }
+                return '';
+            };
+
             const updateChapters = () => {
                 const comp = compSelect.value;
                 chapSelect.innerHTML = '<option value="">-- 选择章节 --</option>';
@@ -5861,11 +5874,17 @@
 
                 if (comp && categoryTree[comp]) {
                     chapSelect.disabled = false;
-                    Object.keys(categoryTree[comp]).forEach(ch => {
+                    const chNames = Object.keys(categoryTree[comp]);
+                    // 章名也必须走模糊匹配：教材清单在提示词里是「章 > 小节」一整行，
+                    // 模型常把整行抄进 category_chapter，严格相等一个都选不中，而小节/考向
+                    // 依赖章先选中，于是三排下拉连锁空掉（后端 7.6 已归一，这里防别的路径）。
+                    const matchedChap = fuzzyMatchName(q.category_chapter, chNames)
+                        || findChapterByKnowledge(comp, q.category_knowledge);
+                    chNames.forEach(ch => {
                         const opt = document.createElement('option');
                         opt.value = ch;
                         opt.textContent = ch;
-                        if (ch === q.category_chapter) opt.selected = true;
+                        if (ch === matchedChap) opt.selected = true;
                         chapSelect.appendChild(opt);
                     });
                 } else {

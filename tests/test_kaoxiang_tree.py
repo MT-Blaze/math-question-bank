@@ -507,3 +507,124 @@ def test_active_outline_topics_all_have_id_and_name():
     assert total > 400, total
     assert broken == [], broken[:3]
     assert duplicated == [], duplicated[:3]
+
+
+# ---------------------------------------------------------------------------
+# AI 分类字段 → 大纲规范名（拆卷卡片「章节/小节/考向」自动填充的地基）
+# ---------------------------------------------------------------------------
+
+ALIGN_CURRICULUM = {
+    "必修一": {
+        "1. 集合与常用逻辑用语": [
+            {"name": "1.1 集合的概念", "topics": [
+                {"id": "k_a", "name": "集合的判断", "level": "L1"},
+                {"id": "k_b", "name": "元素与集合的关系", "level": "L2"},
+            ]},
+            {"name": "1.3 集合的基本运算", "topics": [
+                {"id": "k_c", "name": "交集运算", "level": "L1"}]},
+        ],
+        "3. 函数的概念与性质": [
+            {"name": "3.2.1 函数的单调性", "topics": [
+                {"id": "k_d", "name": "利用单调性解不等式", "level": "L3"}]},
+        ],
+    }
+}
+
+
+def _align(question, curriculum=None):
+    """跑一遍归一，返回 (改写后的题, 调整记录, 用到的大纲)。"""
+    book = copy.deepcopy(curriculum if curriculum is not None else ALIGN_CURRICULUM)
+    q = dict(question)
+    notes = kt.align_parsed_classification(book, [q])
+    return q, notes, book
+
+
+def test_split_chapter_section_handles_row_copying():
+    r"""提示词里的教材清单是「章 > 小节」一整行，模型会把整行抄进 category_chapter。"""
+    assert kt.split_chapter_section("3. 函数的概念与性质 > 3.1 函数的概念及表示") == (
+        "3. 函数的概念与性质", "3.1 函数的概念及表示")
+    assert kt.split_chapter_section("1. 集合与常用逻辑用语＞1.3 集合的基本运算") == (
+        "1. 集合与常用逻辑用语", "1.3 集合的基本运算")
+    assert kt.split_chapter_section("1. 集合与常用逻辑用语") == ("1. 集合与常用逻辑用语", "")
+    assert kt.split_chapter_section("") == ("", "")
+
+
+def test_align_maps_composite_chapter_back_to_outline_key():
+    r"""2026-10-19 大庆实验卷真实形态：章被写成整行「章 > 小节」，必须归一回大纲章键。
+
+    当时快路径 AI 的 22 条分类全给了、block_id 逐条对上，卡片却三排全空：章名对不上
+    大纲键就选不中，而小节与考向依赖章先选中，于是连锁清空。
+    """
+    q, notes, _book = _align({
+        "category_compulsory": "必修一",
+        "category_chapter": "1. 集合与常用逻辑用语 > 1.1 集合的概念",
+        "category_knowledge": "1.1 集合的概念",
+        "topic": "集合的判断",
+    })
+    assert q["category_chapter"] == "1. 集合与常用逻辑用语", q
+    assert q["category_knowledge"] == "1.1 集合的概念", q
+    assert q["topic"] == "集合的判断", q
+    assert any("章节" in n for n in notes), notes
+
+    # 幂等：写库边界与卡片重渲染都会重复调用，第二次必须零改写
+    again, notes2, _ = _align(q)
+    assert again == q, (again, q)
+    assert notes2 == [], notes2
+
+
+def test_align_recovers_chapter_from_correct_section():
+    """章名写飞、小节抄对：以「小节确实挂在哪一章」为准，别让三排下拉一起空。"""
+    q, _notes, _book = _align({
+        "category_compulsory": "必修一",
+        "category_chapter": "9. 不存在的章",
+        "category_knowledge": "3.2.1 函数的单调性",
+        "topic": "利用单调性解不等式",
+    })
+    assert q["category_chapter"] == "3. 函数的概念与性质", q
+    assert q["category_knowledge"] == "3.2.1 函数的单调性", q
+    assert q["topic"] == "利用单调性解不等式", q
+
+
+def test_align_accepts_names_without_numbering_and_strips_topic_level():
+    """AI 常丢掉大纲键的编号前缀，考向名也可能带 (L1) 级别尾巴。"""
+    q, _notes, _book = _align({
+        "category_compulsory": "必修一",
+        "category_chapter": "集合与常用逻辑用语",
+        "category_knowledge": "集合的基本运算",
+        "topic": "交集运算（L1）",
+    })
+    assert q["category_chapter"] == "1. 集合与常用逻辑用语", q
+    assert q["category_knowledge"] == "1.3 集合的基本运算", q
+    assert q["topic"] == "交集运算", q
+
+
+def test_align_blanks_unmatched_names_yet_keeps_unknown_topic():
+    """章/节对不上按大纲口径置空（启动自检对知识点也这么处理）；考向未知则留原文。"""
+    q, notes, _book = _align({
+        "category_compulsory": "必修一",
+        "category_chapter": "量子力学初步",
+        "category_knowledge": "波粒二象性",
+        "topic": "教师大纲里还没有的新考向",
+    })
+    assert q["category_chapter"] == "", q
+    assert q["category_knowledge"] == "", q
+    assert q["topic"] == "教师大纲里还没有的新考向", q
+    assert any("章节" in n for n in notes), notes
+
+
+def test_align_leaves_other_textbook_versions_untouched():
+    """教材本身不在当前大纲里（切了版本）：整套字段原样不动，不替教师抹掉线索。"""
+    raw = {"category_compulsory": "必修九", "category_chapter": "X. 别版本的章",
+           "category_knowledge": "Y 小节", "topic": "Z 考向"}
+    q, notes, _book = _align(raw)
+    assert q == raw, q
+    assert notes == [], notes
+
+
+def test_align_is_safe_on_missing_fields_and_dirty_rows():
+    """没有分类字段的题、非 dict 的行都不许炸，也不许凭空造字段。"""
+    question = {"content": "没有分类字段"}
+    assert kt.align_parsed_classification(ALIGN_CURRICULUM, []) == []
+    assert kt.align_parsed_classification(ALIGN_CURRICULUM, [question, None, "x"]) == []
+    assert question == {"content": "没有分类字段"}, question
+    assert kt.align_parsed_classification({}, [{"category_chapter": "任意"}]) == []

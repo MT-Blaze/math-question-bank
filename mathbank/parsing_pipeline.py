@@ -29,6 +29,7 @@ from mathbank.latex_normalize import (
     normalize_stem_for_storage,
 )
 from mathbank.figure_repair import repair_parsed_questions
+from mathbank.kaoxiang_tree import align_parsed_classification
 from mathbank.output_fidelity import (
     check_split_output_fidelity,
     format_fidelity_log,
@@ -965,6 +966,19 @@ def post_process_pdf_parsed_questions(parsed_questions: list, paper_title: str, 
         parsed_questions, source_text or (ocr_results[0] if ocr_results else "")
     )
     print(format_fidelity_log(fidelity_report))
+
+    # 7.6 教材分类字段对齐大纲规范名（快慢两路与 Word 分支共用）：提示词给模型的教材
+    #     清单是「章 > 小节」一整行，模型会把它原样抄进 category_chapter；而卡片下拉按
+    #     严格相等匹配章名，章一选不中，小节与考向就跟着连锁清空（2026-10-19 大庆卷：
+    #     AI 22 条分类全给了，卡片却全是空状态）。改写记录留在卡片字段上，供任务诊断。
+    aligned = 0
+    for q in parsed_questions:
+        align_notes = align_parsed_classification(get_current_curriculum(), [q])
+        if align_notes:
+            q["_metadata_align"] = align_notes
+            aligned += len(align_notes)
+    if aligned:
+        print(f"[分类对齐] {aligned} 处 AI 教材分类字段已归一到大纲规范名")
 
     # 8. 入库前 LaTeX 归一化：与 TeX / 批量图片路线共用同一个出口函数，
     #    保证「卡片预览 == 写库结果」只有一份实现。
