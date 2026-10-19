@@ -230,8 +230,8 @@ def test_deepseek_catalog_tracks_the_current_v41_flash_model():
     assert '"deepseek-chat"' not in combined_main, "不再以旧模型名作为缺省模型"
 
     # 思考参数统一由共享策略生成，禁止各处手搓 thinking 字段
-    # 五个站点：solve / classify / parse×2 / latex_diagnostic
-    assert (combined_main + parsing_source).count("apply_deepseek_thinking_policy(") == 5
+    # 六个站点：solve / classify / parse×2 / latex_diagnostic / pdf_metadata（R1 快路径元数据批分类）
+    assert (combined_main + parsing_source).count("apply_deepseek_thinking_policy(") == 6
     assert 'data["thinking"] = {' not in combined_main
     assert 'payload["thinking"] = {' not in combined_main
 

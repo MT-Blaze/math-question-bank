@@ -21,6 +21,7 @@ from mathbank.metadata import _decorate_topic_field, get_metadata_cache, schedul
 from mathbank.paper_helper import build_answer_sheet_latex, build_latex_document, collect_referenced_images, create_full_bundle_zip_package, create_tex_zip_package, patch_missing_latex_images, restore_storage_images_to_markdown
 from mathbank.pdf_inspector_helper import inspect_and_extract_pdf, merge_pdf_page_texts
 from mathbank import pdf_split
+from mathbank import pdf_local_split
 from mathbank.prompts import build_import_parse_system_prompt, build_latex_error_explanation_prompts, build_paper_selection_prompts
 from mathbank.task_manager import TaskCancelled, TaskQueueFull, format_duration
 from mathbank.tex_helper import MAX_TEX_BYTES, decode_and_prepare_tex, prepare_tex_source, tex_asset_basename, tex_asset_references_match
@@ -906,6 +907,221 @@ def _split_render_note(split_info) -> str:
     )
 
 
+# ==================== R1 PDF 快路径（仅 MinerU 分支接入）====================
+# 目标：本地切块为骨、AI 只贴分类。任何一步不过 → 静默退回整卷 parse_paper_text_internal。
+# 本地切块极速路径默认关闭（暗启动）；C 档 A/B 达标后由用户显式设 PDF_FASTPATH_ENABLED=1 开启
+
+PDF_METADATA_MAX_OUTPUT_TOKENS = 8192
+PDF_METADATA_DEADLINE_SECONDS = 120
+_PDF_CLEAN_EXCERPT = 150
+
+
+def _pdf_fastpath_enabled() -> bool:
+    """全局 kill switch：默认关（暗启动）；C 档 A/B 达标后显式设 PDF_FASTPATH_ENABLED=1 开启，设 0 退回整卷老路。"""
+    return os.getenv("PDF_FASTPATH_ENABLED", "0") == "1"
+
+
+def _pdf_fastpath_strict() -> bool:
+    """判红开关：默认 0 保持静默降级；置 1 时快路径 AI 异常直接抛出，把「降级」变成可判红的失败。"""
+    return os.getenv("PDF_FASTPATH_STRICT", "0") == "1"
+
+
+def _build_metadata_envelope(plan, source_text, task_id):
+    """把 clean/suspicious 块拼成一次合并请求（含 R2 公式锁，仅对 split 块锁公式）。"""
+    from mathbank.content_locks import lock_visible_math
+
+    clean_items = []
+    for b in plan.clean_blocks:
+        excerpt = (b.content or "")[:_PDF_CLEAN_EXCERPT]
+        clean_items.append({"block_id": b.block_id, "excerpt": excerpt})
+
+    split_items = []
+    split_locks = []
+    for b in plan.suspicious_blocks:
+        raw = (b.content or "") + ("\n" + b.answer_markdown if b.answer_markdown else "")
+        locked, locks = lock_visible_math(raw, f"PDFS_{task_id}_{b.block_id}"[:48])
+        split_items.append({"block_id": b.block_id, "raw": locked, "locks": [lk.lock_id for lk in locks]})
+        split_locks.extend(locks)
+
+    import json as _json
+    user_payload = _json.dumps(
+        {"clean_blocks": clean_items, "split_blocks": split_items},
+        ensure_ascii=False,
+    )
+    return user_payload, split_locks
+
+
+def _call_pdf_metadata_ai(user_payload, split_locks, task_id, deadline_seconds, cancel_check):
+    """一次合并元数据调用；返回 (items_by_block_id, split_locks)。异常向上抛由调用方兜底。"""
+    from mathbank.prompts import build_pdf_metadata_system_prompt
+
+    parse_model = os.getenv("PREFER_PARSE_MODEL") or os.getenv("DEEPSEEK_PARSE_MODEL", "deepseek-flash")
+    provider = _main.resolve_text_provider(parse_model)
+    if not provider.api_key:
+        raise RuntimeError(f"未配置 API Key ({provider.credential_label})")
+
+    system_instructions = build_pdf_metadata_system_prompt(
+        _main.get_current_curriculum(),
+        difficulties=get_metadata_cache().get("difficulties"),
+    )
+    data = {
+        "model": provider.model_name,
+        "messages": [
+            {"role": "system", "content": system_instructions},
+            {"role": "user", "content": user_payload},
+        ],
+        "response_format": {"type": "json_object"},
+        "temperature": 0.2,
+        "max_tokens": PDF_METADATA_MAX_OUTPUT_TOKENS,
+    }
+    data = inject_reasoning_effort(data, provider.reasoning_effort)
+    data = apply_deepseek_thinking_policy(
+        data, model_name=provider.model_name, api_base=provider.api_base,
+        provider_code=provider.provider_code, task="parse", thinking_enabled=False,
+    )
+    data = apply_bailian_thinking_policy(
+        data, provider_code=provider.provider_code, model_name=provider.model_name, task="parse",
+    )
+    # 分类任务不需要思考：qwen3.8-flash 等旧版百炼模型不在 thinking_policy 的白名单里，
+    # 默认会带着 5000+ 推理 token 慢慢想（实测 130s/7207 completion），直接把它关掉，
+    # 实测降到 ~30s/1813 completion。对 qwen3.8-max 等已由 parse 关闭的模型是幂等覆盖。
+    if str(provider.provider_code or "").strip().lower() == "bailian":
+        data["enable_thinking"] = False
+    # _post_bounded 会把 socket 单次读超时压到 30s；json_object 分类响应是缓冲返回、
+    # 首字节要等整段生成完，30s 会误杀正常响应导致永远静默降级。显式放宽读等待到
+    # deadline_seconds（与老路 read_timeout 同理），整体仍受 deadline_seconds 墙上时钟约束。
+    # TODO(R1·第二笔): connect/read 超时需要拆成独立量
+    response = _main.post_chat_completion(
+        provider, data, timeout=180, provider_name=provider.provider_label,
+        deadline_seconds=deadline_seconds, cancel_check=cancel_check,
+        read_timeout=deadline_seconds,
+    )
+    raw_ai_text = response.json()["choices"][0]["message"]["content"].strip()
+    usage = response.json().get("usage") or {}
+    parsed = parse_ai_json(raw_ai_text, raw_markdown="")
+    if isinstance(parsed, dict) and isinstance(parsed.get("items"), list):
+        items = parsed["items"]
+    elif isinstance(parsed, list):
+        items = parsed
+    else:
+        raise ValueError("元数据 AI 未返回 items 列表")
+    by_id = {}
+    for it in items:
+        if isinstance(it, dict) and it.get("block_id"):
+            by_id[str(it["block_id"])] = it
+    return by_id, usage
+
+
+def _degrade_clean_only(plan, reason, diagnostics):
+    """L2（D3-A）：AI 失败但本地块可信 → 全部按本地原文入库、分类留空标待refine，绝不重烧整卷。"""
+    questions = [b.to_parsed_question({}) for b in plan.clean_blocks]
+    questions += [b.to_parsed_question({}) for b in plan.suspicious_blocks]
+    diagnostics["fallback_level"] = "L2_degrade"
+    # ReadTimeout 这类异常的 str() 里没有类名，自动化无法区分「正常降级」与「基础设施全挂」，
+    # 因此降级原因必须带异常类名，并单独留一个 ai_error_class 供判红与统计。
+    diagnostics["ai_ok"] = False
+    diagnostics["degrade_reason"] = f"{type(reason).__name__}: {reason}"[:200]
+    diagnostics["ai_error_class"] = type(reason).__name__
+    diagnostics["rebill"] = False
+    return questions
+
+
+def _run_fast_path(plan, source_text, task_id, diagnostics):
+    """本地块 + 一次合并 AI → parsed_questions。默认任何 AI 失败走 L2 降级（保正文不重烧）；
+    PDF_FASTPATH_STRICT=1 时 AI 异常直接向上抛出，不再兜成可用返回值。"""
+    from mathbank.content_locks import ContentLockIntegrityError, restore_visible_math
+
+    user_payload, split_locks = _build_metadata_envelope(plan, source_text, task_id)
+    try:
+        t0 = time.perf_counter()
+        by_id, usage = _call_pdf_metadata_ai(
+            user_payload, split_locks, task_id,
+            deadline_seconds=PDF_METADATA_DEADLINE_SECONDS,
+            cancel_check=lambda: _main.DOCUMENT_TASKS.is_cancelled(task_id),
+        )
+        diagnostics["ai_ms"] = round((time.perf_counter() - t0) * 1000, 1)
+        diagnostics["ai_usage"] = {k: usage.get(k) for k in ("prompt_tokens", "completion_tokens", "total_tokens") if k in usage}
+        # 唯一成功证据：AI 调用真的回来了（分类是否非空另有 items 判定）
+        diagnostics["ai_ok"] = True
+    except (TaskCancelled,):
+        raise
+    except Exception as exc:  # 超时/网络/坏JSON/条数不符 → L2 保正文降级
+        diagnostics["ai_ok"] = False
+        if _pdf_fastpath_strict():
+            raise
+        return _degrade_clean_only(plan, exc, diagnostics)
+
+    questions = []
+    for b in plan.clean_blocks:
+        questions.append(b.to_parsed_question(by_id.get(b.block_id)))
+    for b in plan.suspicious_blocks:
+        item = by_id.get(b.block_id) or {}
+        subqs = item.get("questions") if item.get("action") == "split" else None
+        if isinstance(subqs, list) and subqs:
+            merged = []
+            for sq in subqs:
+                if isinstance(sq, dict) and (sq.get("content") or "").strip():
+                    sq.setdefault("referenced_images", [])
+                    merged.append(sq)
+            if merged:
+                try:
+                    restore_visible_math(merged, split_locks)
+                except ContentLockIntegrityError:
+                    merged = []  # 锁没回来 → 丢弃微拆，回退本地原文入库
+                questions.extend(merged)
+                continue
+        # split 没成功 → 仍按本地原文入库、待refine（不重烧、不阻塞）
+        questions.append(b.to_parsed_question({}))
+
+    diagnostics["fallback_level"] = "none" if not plan.suspicious_blocks else "L0_microsplit"
+    return questions
+
+
+def parse_pdf_with_fast_path(source_text, page_texts, generate_answers, split_info, task_id, diagnostics_out):
+    """MinerU 分支唯一入口：默认永远返回可用 parsed_questions；内部决定快路径或整卷老路。
+    例外：PDF_FASTPATH_STRICT=1 时快路径 AI 异常直接抛出（降级必须可判红）。"""
+    diagnostics = diagnostics_out
+    try:
+        if _pdf_fastpath_enabled() and not generate_answers:
+            plan = pdf_local_split.plan_pdf_local_split(source_text, page_texts, generate_answers)
+            diagnostics.update({
+                "attempted": True,
+                "anchor_count": plan.judge_report.get("anchor_count"),
+                "trustworthy": plan.trustworthy,
+                "local_blocks": len(plan.clean_blocks),
+                "suspicious_blocks": len(plan.suspicious_blocks),
+                "preserved_ratio": plan.judge_report.get("preserved_ratio"),
+                "cover_ok": plan.cover_ok,
+            })
+            if plan.trustworthy and plan.all_blocks:
+                fast = _run_fast_path(plan, source_text, task_id, diagnostics)
+                if fast:
+                    return fast
+                diagnostics["fallback_level"] = "L1_fullpaper"
+            else:
+                diagnostics["fallback_level"] = "L1_fullpaper"
+                diagnostics["fallback_reasons"] = plan.judge_report.get("gate_hits") or {
+                    k: plan.judge_report[k] for k in ("monotonic_break_at", "coverage_gap_group", "total_out_of_range", "answer_key_restart") if k in plan.judge_report
+                }
+    except TaskCancelled:
+        raise
+    except Exception as exc:  # 切块器/快路径任何异常 → 静默退回整卷老路
+        if diagnostics.get("ai_ok") is False and _pdf_fastpath_strict():
+            # 判红模式只兜「切块器自身故障」（那属 L1 合法回退），不兜已标记失败的快路径 AI 异常。
+            raise
+        diagnostics["exception_fallback"] = repr(exc)[:200]
+        diagnostics["fallback_level"] = "L1_fullpaper_exception"
+
+    # ↓↓ 与今天逐字相同的整卷老路（L1）
+    return _main.parse_paper_text_internal(
+        source_text,
+        generate_answers,
+        deadline_seconds=AI_SPLIT_DEADLINE_SECONDS,
+        cancel_check=lambda: _main.DOCUMENT_TASKS.is_cancelled(task_id),
+        preserve_extracted_answers=bool(split_info),
+    )
+
+
 def run_mineru_pdf_parsing_task(
     task_id: str,
     file_bytes: bytes,
@@ -1070,12 +1286,9 @@ def run_mineru_pdf_parsing_task(
         _main.DOCUMENT_TASKS.check_cancelled(task_id)
 
         paper_title = _resolve_task_paper_title(paper_title, filename)
-        parsed_questions = _main.parse_paper_text_internal(
-            markdown,
-            generate_answers,
-            deadline_seconds=AI_SPLIT_DEADLINE_SECONDS,
-            cancel_check=lambda: _main.DOCUMENT_TASKS.is_cancelled(task_id),
-            preserve_extracted_answers=bool(split_info),
+        pdf_fast_diag = {}
+        parsed_questions = parse_pdf_with_fast_path(
+            markdown, page_texts, generate_answers, split_info, task_id, pdf_fast_diag,
         )
         _main.DOCUMENT_TASKS.check_cancelled(task_id)
         # 传入逐页文本（见上）：用来推断每道题的来源页，供卡片上的「源自第 N 页」入口。
@@ -1109,7 +1322,7 @@ def run_mineru_pdf_parsing_task(
             data=final_questions,
             document_type="pdf",
             temp_assets=list(temp_assets),
-            diagnostics={"figures": figure_report, "split": split_info},
+            diagnostics={"figures": figure_report, "split": split_info, "pdf_fast_path": pdf_fast_diag},
         )
     except TaskCancelled:
         _delete_task_temp_assets(temp_assets)

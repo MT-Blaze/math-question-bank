@@ -296,6 +296,38 @@ def build_pdf_parse_system_prompt(
     return system_instructions
 
 
+def build_pdf_metadata_system_prompt(curriculum: dict, difficulties=None) -> str:
+    """R1 快路径元数据批分类提示词（只贴标签，绝不重打题干）。
+
+    与整册拆题提示词彻底解耦：不带「文字与插图忠实保留」「剥离出处」等整卷转录规则，
+    只要求模型对每个 block_id 输出分类字段；clean 块严禁回 content（题干已本地保留），
+    仅 split 块（可疑小块）允许回转录后的 questions。
+    """
+    curriculum_text = build_curriculum_text(curriculum)
+    difficulty_desc, _ = _difficulty_hint(difficulties)
+    return (
+        "你是数学题库的批量题目「属性标注」引擎。题干正文已由本地程序从原卷精确切出，"
+        "你的任务只是给每个 block 贴分类标签，**绝对不要抄写、改写或补全题干正文**。\n"
+        "【可选教材范围及各章名称】:\n"
+        f"{curriculum_text}\n"
+        "【字段规则】:\n"
+        "1. question_type 只能是 single_choice / multi_choice / fill_in_blank / detailed_answer 四者之一。\n"
+        "2. category_compulsory / category_chapter 必须从上面教材范围里挑精确字符串；"
+        "category_knowledge 是该章节下小节名精确字符串，拿不准填空字符串；"
+        "topic 是该小节下已有考向名精确字符串（不带 L1/L2 后缀），无法匹配填空字符串。\n"
+        f"3. difficulty 取值限定为上述难度枚举。\n"
+        "4. source 为题目标注的出处（如 2024·全国·高考真题），没有则空字符串。\n"
+        "5. paper_question_no 为原卷题号（保持 1、17(1) 等原样）。\n"
+        "【输入与输出结构】:\n"
+        "用户消息是 JSON：{clean_blocks:[{block_id,excerpt}],split_blocks:[{block_id,raw,locks}]}。\n"
+        "你必须返回 JSON：{\"items\":[...]}，对每个输入 block 给一条对应 item：\n"
+        " - clean 块：{\"block_id\":..,\"action\":\"classify\", 上述分类字段, **不得含 content/answer_markdown**}\n"
+        " - split 块：{\"block_id\":..,\"action\":\"split\",\"questions\":[把 raw 微拆成 1..N 道题，"
+        "每题含 content/answer_markdown(用给定的锁 id 引用公式，不要展开 LaTeX)，及分类字段]}。\n"
+        "输出必须是纯 JSON，不含 ```json 代码块或任何解释文字。"
+    )
+
+
 def build_import_parse_system_prompt(curriculum: dict, difficulties: list | None = None) -> str:
     """Prompt for pasted and uploaded single-file TeX paper parsing."""
     return build_pdf_parse_system_prompt(curriculum, generate_answers_bool=False, difficulties=difficulties) + (
