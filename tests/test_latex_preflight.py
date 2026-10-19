@@ -26,7 +26,10 @@ from pathlib import Path
 import pytest
 
 from main import LOCAL_TOKEN
-from mathbank.latex_preflight import repair_latex_before_compile
+from mathbank.latex_preflight import (
+    repair_latex_before_compile,
+    wrap_bare_math_variables,
+)
 
 HDRS = {"X-Local-Token": LOCAL_TOKEN}
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -680,3 +683,115 @@ def test_complement_glyph_heal_does_not_touch_point_marks():
     fixed, notes = repair_latex_before_compile(src)
     assert fixed == src, fixed
     assert not any("补集" in note for note in notes), notes
+
+
+# ---------------------------------------------------------------------------
+# R10 中文语境裸数学变量补 $（技术债 #36）
+# ---------------------------------------------------------------------------
+
+# 2024 大庆实验高一上学期期中·充分必要条件题的真实形态。字符层的高置信度判据要求数学
+# 串里带运算符或控制命令，单个字母不算，于是 p、q、a 以正文字面入库：卷面上是和旁边的
+# $f(x)$ 完全不配套的正体字母，MathJax 预览与 Word 导出跟着不一致。
+BARE_VARIABLE_STEM = (
+    r"已知：$p: \frac{1}{x-2} \geq 1$ ，$q: \log_{2}(x-a) \geq 1$ . "
+    "若 p 是 q 的充分不必要条件，则实数 a 的取值范围为（）"
+)
+# 库内 id=200：MinerU 把中文连接词「且」写在公式**内部**，那里的字母已经在数学态里。
+CJK_INSIDE_MATH = (
+    r"定义 $A \otimes B = \{x \mid x \in A \cup B 且 x \notin A \cap B\}$ ，若 a 成立"
+)
+
+
+def _as_document(body):
+    r"""R10 与 R8 同一条划界契约：只在 \begin{document} 之后的正文区生效。"""
+    return "\\documentclass{exam-zh}\n\\begin{document}\n%s\n\\end{document}" % body
+
+
+def test_r10_wraps_bare_variables_in_chinese_prose():
+    r"""#36 主形态钉死：「若 p 是 q 的充分不必要条件」的 p、q、a 一律进数学态。
+
+    已经包好的 $\frac{1}{x-2}$ 一串不许动（紧邻 $ 即否决），产物幂等——路由层与
+    compile_tex_to_pdf 各跑一次，第二次必须零改写、零提示。
+    """
+    fixed, notes = repair_latex_before_compile(_as_document(BARE_VARIABLE_STEM))
+
+    assert "若 $p$ 是 $q$ 的充分不必要条件" in fixed, fixed
+    assert r"实数 $a$ 的取值范围" in fixed, fixed
+    assert r"已知：$p: \frac{1}{x-2} \geq 1$" in fixed, "已有的数学串被二次包裹"
+    assert "$$" not in fixed, fixed
+    assert "定界符" in _notes_text(notes), notes
+
+    again, second = repair_latex_before_compile(fixed)
+    assert again == fixed and second == [], (again, second)
+
+
+def test_r10_positive_forms_from_the_bank():
+    r"""另三种生产形态：命题变元、直线名、小问里的未知量。"""
+    fixed, _notes = repair_latex_before_compile(
+        _as_document("命题 p：对任意 x 成立；命题 q：存在 y"))
+    assert "命题 $p$：对任意 $x$ 成立；命题 $q$：存在 $y$" in fixed, fixed
+
+    # 大写 A 是点名/集合名的歧义形态，交给字符层判据；小写 l 是直线名，收。
+    fixed, _ = repair_latex_before_compile(_as_document("点 A 到直线 l 的距离为 3"))
+    assert "点 A 到直线 $l$ 的距离为 3" in fixed, fixed
+
+
+def test_r10_leaves_words_units_and_commands_alone():
+    r"""零误伤边界：英文单词、单位、函数名尾巴、选项标号、命令与已有公式一律不碰。"""
+    for body in (
+        "故选：D",
+        "集合 A 与 B 的交集",
+        "长为 5 m 的绳子",
+        r"则 sin x 的最大值",
+        "已包好的 $p$ 与 $ q $",
+        "app 的 pH 值稳定",
+        r"用 \partial_{x} 与 $x^{2}$ 求导",
+    ):
+        fixed, notes = repair_latex_before_compile(_as_document(body))
+        assert fixed == _as_document(body), "误伤：%s" % fixed
+        assert "定界符" not in _notes_text(notes), notes
+
+
+def test_r10_never_wraps_letters_inside_existing_math():
+    r"""数学区里的字母绝对不许再包 $：那等于提前关闭定界符，整条公式会劈成正文。
+
+    存量 id=200 是这条规则的唯一致命形态（MinerU 把「且」写进 $...$ 里），
+    四种定界符风格与行式数学环境一起钉死。
+    """
+    fixed, _notes = repair_latex_before_compile(_as_document(CJK_INSIDE_MATH))
+    assert r"A \cup B 且 x \notin A \cap B" in fixed, "数学区内部的字母被改了"
+    assert "若 $a$ 成立" in fixed, "正文里的变量该收的没收"
+    again, second = repair_latex_before_compile(fixed)
+    assert again == fixed and second == [], (again, second)
+
+    for body in (
+        r"由 \( x 与 y \) 得解",
+        r"在 \[ a + b \] 之外",
+        "已有 $$x=1$$ 展示公式",
+        r"\begin{equation}n 为奇数\end{equation}",
+    ):
+        fixed, notes = repair_latex_before_compile(_as_document(body))
+        assert fixed == _as_document(body), "数学区判定失守：%s" % fixed
+        assert "定界符" not in _notes_text(notes), notes
+
+
+def test_r10_is_scoped_to_the_document_body():
+    r"""导言区不碰：宏定义里的 ``#1`` 与注释都在 \begin{document} 之前。"""
+    src_tex = ("\\documentclass{exam-zh}\n\\newcommand{\\vars}[1]{设 m 为 #1}\n"
+               + _as_document("设 m 为正数"))
+    fixed, _notes = repair_latex_before_compile(src_tex)
+
+    assert r"\newcommand{\vars}[1]{设 m 为 #1}" in fixed, "导言区被误伤"
+    assert "设 $m$ 为正数" in fixed, fixed
+
+
+def test_r10_unit_contract():
+    r"""单元口径：返回 (文本, 命中数, 样例)，空串安全，产物幂等。"""
+    out, count, samples = wrap_bare_math_variables("若 p 是 q 的充分不必要条件")
+    assert out == "若 $p$ 是 $q$ 的充分不必要条件", out
+    assert count == 2, count
+    assert samples and all(len(s) <= 72 for s in samples), samples
+
+    assert wrap_bare_math_variables("") == ("", 0, [])
+    again, second, _rest = wrap_bare_math_variables(out)
+    assert again == out and second == 0, (again, second)

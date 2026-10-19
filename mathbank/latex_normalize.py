@@ -21,7 +21,7 @@ from html.parser import HTMLParser
 
 # 补集号自愈与导出前预检共用同一份实现（见 mathbank/latex_preflight R9）：
 # 入库时就写对，卡片预览与题库源码才不会带着错字形示人；导出前再跑一遍是幂等兜底。
-from mathbank.latex_preflight import repair_complement_glyphs
+from mathbank.latex_preflight import repair_complement_glyphs, wrap_bare_math_variables
 from mathbank.math_markdown import (
     compact_solution_markdown,
     normalize_fillin_macro,
@@ -775,6 +775,9 @@ def normalize_for_storage(value: str, question_type: str = "", is_answer: bool =
     value = normalize_fillin_macro(value)
     value = normalize_content_for_latex_storage(value, question_type)
     value = normalize_question_math_markdown(value)
+    # 变量语义包裹（R10）必须排在字符层之后：字符层已经包好的 ``$p$`` 这里会因为
+    # 紧邻 ``$`` 被否决，天然幂等；反过来先包再跑字符层，裸字母会被并入 ASCII run 处理。
+    value = wrap_bare_math_variables(value)[0]
     if is_answer:
         # 空壳选项环境必须在结构层之后删：那个垃圾环境正是选项包装器自己造出来的。
         value = strip_empty_solution_choices(value)

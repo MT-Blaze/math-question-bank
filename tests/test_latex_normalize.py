@@ -819,3 +819,29 @@ def test_complement_glyph_repaired_at_storage_time():
     assert "\\complement_{\\mathrm{R}}(A\\cup B)" in out, out
     assert "\\partial" not in out and "\\check" not in out, out
     assert normalize_for_storage(out, is_answer=True) == out
+
+
+def test_bare_math_variable_wrapped_at_storage_time():
+    r"""#36 的变量包裹挂在入库链上：新题录进来就是 $p$、$q$，不等导出预检兜。
+
+    必须晚于 normalize_question_math_markdown：字符层已经包好的 ``$p$`` 在 R10 这里
+    因紧邻 ``$`` 被否决，两条规则不会互相加码。
+    """
+    stem = "若 p 是 q 的充分不必要条件，则实数 a 的取值范围为（）"
+    out = normalize_for_storage(stem, "single_choice")
+
+    assert "若 $p$ 是 $q$ 的充分不必要条件" in out, out
+    assert r"实数 $a$ 的取值范围" in out, out
+    assert normalize_for_storage(out, "single_choice") == out, "二次入库重复加码"
+
+
+def test_bare_variable_wrapper_leaves_words_and_math_alone_at_storage_time():
+    """入库侧的零误伤口径：单词、单位、函数名、集合名都不该被拖进数学态。"""
+    for stem in ("集合 A 与 B 的交集", "长为 5 m 的绳子",
+                 r"则 sin x 的最大值", "app 的 pH 值稳定"):
+        out = normalize_for_storage(stem, "single_choice")
+        assert "$" not in out, "误包成数学态：%s" % out
+
+    already = "已知 $p$ 与 $ q $，求其交集"
+    out = normalize_for_storage(already, "single_choice")
+    assert out.count("$") == already.count("$"), out

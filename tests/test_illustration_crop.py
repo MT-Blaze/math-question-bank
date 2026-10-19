@@ -419,12 +419,14 @@ def test_overlap_helper_returns_negative_when_nothing_matches():
     assert find_source_page_by_overlap("立体几何与体积", pages) == 1
 
 
+# 解析正文只是填充料：别写成裸单字母（R10 会把它当数学变量补 $，把无关用例钉死在
+# 变量包裹上），三条用例的差别只在「空【答案】」的写法。
 @pytest.mark.parametrize(
     "raw,expected",
     [
         ("【答案】\n\n【答案】C\n\n【解析】开口向上。", "【答案】C\n\n【解析】开口向上。"),
-        ("【答案】　\n\n【答案】C\n\n【解析】x", "【答案】C\n\n【解析】x"),      # 全角空格
-        ("【答案】：\n\n【答案】D\n\n【解析】x", "【答案】D\n\n【解析】x"),      # 中文冒号
+        ("【答案】　\n\n【答案】C\n\n【解析】开口向上。", "【答案】C\n\n【解析】开口向上。"),  # 全角空格
+        ("【答案】：\n\n【答案】D\n\n【解析】开口向上。", "【答案】D\n\n【解析】开口向上。"),  # 中文冒号
     ],
 )
 def test_duplicate_empty_answer_shell_is_collapsed(tmp_path, raw, expected):

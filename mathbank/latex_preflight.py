@@ -25,7 +25,8 @@ from __future__ import annotations
 
 import re
 
-__all__ = ["repair_latex_before_compile", "repair_complement_glyphs", "MAX_NOTE_SAMPLES"]
+__all__ = ["repair_latex_before_compile", "repair_complement_glyphs",
+           "wrap_bare_math_variables", "MAX_NOTE_SAMPLES"]
 
 # 每条规则最多附几个样例进上报文案：够定位即可，整卷样例会把响应头撑爆。
 MAX_NOTE_SAMPLES = 3
@@ -508,6 +509,141 @@ def repair_complement_glyphs(text: str) -> tuple[str, int, list[str]]:
 
 
 
+# ---------------------------------------------------------------------------
+# R10 裸变量的数学定界符（技术债 #36）
+# ---------------------------------------------------------------------------
+# 「若 p 是 q 的充分不必要条件」里的 p、q 是数学命题变元，但字符层的高置信度判据要求
+# run 里带运算符或控制命令（= 、< 、^ 、\frac …），单个字母不算数学串，于是它们以**正文字面
+# 形态**入库：卷面上是与中文同字号的正体 p，和旁边的 $f(x)$、$a$ 明显不是一套东西，
+# Word 导出与 MathJax 预览也跟着不一致。
+#
+# 判据（四条同时成立才包，任一条不过就放行）：
+#   ① 字母单独成词：左右紧邻都不许是字母/数字（app 的 p、pH 的 p、x2 一律不碰），
+#      也不许是 ``\``、``$``、``_``、``^``、``{``、``}``、``%`` 这类结构字符
+#      —— 于是 ``\p`` 与已在数学态里的 ``$p$`` 天然被排除，也保证本规则**幂等**；
+#   ② 至少一侧（跳过空格后）是中文字符或全角标点：英文句子里的孤立字母不会被包；
+#   ③ 只认小写：大写单字母既可能是集合名（A）又可能是选项标号/点名（「故选：D」「点 A」），
+#      歧义太大，一律交给字符层的高置信度判据；
+#   ④ 不在已有数学区里（$...$ / $$...$$ / \(...\) / \[...\] 与 equation、align 一类行式
+#      环境）：数学态里的字母本就是斜体，而 MinerU 会把中文连接词写在公式**内部**
+#      （存量 id=200：``$A\otimes B=\{x\mid x\in A\cup B 且 x\notin A\cap B\}$``），
+#      在这里补 $ 等于提前关掉定界符，会把整条公式炸成文本。
+# 单位形态（「5 m」）与函数名后的变元（「sin x」）靠「跳过空格后仍贴 ASCII 字母/数字」
+# 这条邻位判据挡掉。
+_BARE_VAR_RE = re.compile(r"[a-z]")
+# 紧邻处出现即否决的字符：单词的一部分、LaTeX 命令、已有数学定界符/结构件。
+_BARE_VAR_REJECT_NEIGHBOR = set("\\$_{}^%&~") | set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+
+
+# 数学区定界符与行式数学环境：R10 用它判断字母是否已经在数学态里。
+_MATH_DELIMS = (("$$", "$$"), (r"\[", r"\]"), (r"\(", r"\)"), ("$", "$"))
+_MATH_ENV_RE = re.compile(
+    r"\\begin\{(equation|eqnarray|align|alignat|flalign|gather|multline|math|displaymath)\*?\}"
+    r".*?\\end\{\1\*?\}",
+    re.S,
+)
+
+
+# _CJK_LIKE 本身已经是字符类（自带方括号），再套一层会变成嵌套集合、判据全灭。
+_CJK_CHAR_RE = re.compile(_CJK_LIKE)
+
+
+def _is_ascii_alnum(ch: str) -> bool:
+    return bool(ch) and ch.isascii() and ch.isalnum()
+
+
+def _is_cjk_like(ch: str) -> bool:
+    return bool(ch) and bool(_CJK_CHAR_RE.match(ch))
+
+
+def _neighbor(text: str, index: int, step: int) -> str:
+    """沿 step 方向跳过空格后的第一个有意义字符（越界返回空串）。"""
+    j = index
+    while 0 <= j < len(text) and text[j] == " ":
+        j += step
+    return text[j] if 0 <= j < len(text) else ""
+
+
+def _tex_is_escaped(text: str, index: int) -> bool:
+    """index 处的字符前有奇数个反斜杠即为「被转义」，此时它不是定界符。"""
+    backslashes = 0
+    cursor = index - 1
+    while cursor >= 0 and text[cursor] == "\\":
+        backslashes += 1
+        cursor -= 1
+    return backslashes % 2 == 1
+
+
+def _math_region_flags(text: str) -> bytearray:
+    r"""逐字符标记「已经在数学区里」，供 R10 避让。
+
+    定界符按就近配对（与 ``lecture_export.split_math`` 同一模型）：库里存量数据有
+    落单的 ``$``，配不上对就当正文字面放过——若按奇偶一刀切，一个脏 ``$`` 会把后面
+    整页正文都当成数学区，规则当场失效，得不偿失。
+    """
+    flags = bytearray(len(text))
+    cursor = 0
+    length = len(text)
+    while cursor < length:
+        for opening, closing in _MATH_DELIMS:
+            if not text.startswith(opening, cursor) or _tex_is_escaped(text, cursor):
+                continue
+            end = text.find(closing, cursor + len(opening))
+            while end >= 0 and _tex_is_escaped(text, end):
+                end = text.find(closing, end + len(closing))
+            if end < 0:
+                continue
+            end += len(closing)
+            flags[cursor:end] = b"\x01" * (end - cursor)
+            cursor = end
+            break
+        else:
+            cursor += 1
+    for env in _MATH_ENV_RE.finditer(text):
+        flags[env.start():env.end()] = b"\x01" * (env.end() - env.start())
+    return flags
+
+
+def wrap_bare_math_variables(text: str) -> tuple[str, int, list[str]]:
+    r"""给中文语境里单独成词的小写数学变量补上 $ 定界符（R10）。"""
+    if not text:
+        return text, 0, []
+    flags = _math_region_flags(text)
+    pieces: list = []
+    cursor = 0
+    count = 0
+    samples: list = []
+    for match in _BARE_VAR_RE.finditer(text):
+        start, end = match.start(), match.end()
+        if flags[start]:
+            continue  # 已经在数学区里：再包 $ 会把定界符配错
+        prev_char = text[start - 1] if start else ""
+        next_char = text[end] if end < len(text) else ""
+        if prev_char in _BARE_VAR_REJECT_NEIGHBOR or next_char in _BARE_VAR_REJECT_NEIGHBOR:
+            continue
+        left = _neighbor(text, start - 1, -1)
+        right = _neighbor(text, end, 1)
+        if not (_is_cjk_like(left) or _is_cjk_like(right)):
+            continue
+        # 跳过空格之后仍然贴着 ASCII 字母或数字的，不包：
+        #   「5 m」「2 mol」——数字打头的是单位；
+        #   「sin x」「log 2 x」——前面是函数名的尾巴，包成 ``sin $x$`` 只会把
+        #   「函数名正体 + 变元斜体」的毛病摆得更显眼（那属于 \sin 归一化的事）。
+        if _is_ascii_alnum(left) or _is_ascii_alnum(right):
+            continue
+        count += 1
+        if len(samples) < MAX_NOTE_SAMPLES:
+            samples.append(_sample(text[max(0, start - 12):end + 12]))
+        pieces.append(text[cursor:start])
+        pieces.append("$" + match.group(0) + "$")
+        cursor = end
+    if not count:
+        return text, 0, []
+    pieces.append(text[cursor:])
+    return "".join(pieces), count, samples
+
+
+
 def _note(label: str, count: int, samples: list[str]) -> str:
     parts = ["%s：%d 处" % (label, count)]
     if samples:
@@ -580,5 +716,18 @@ def repair_latex_before_compile(tex_content: str) -> tuple[str, list[str]]:
     if n:
         notes.append(_note(
             r"答案正文里的裸 # 是 LaTeX 保留字符，已转义为 \# 以免编译中断", n, samples))
+
+    # R10 裸变量补 $：只处理 \begin{document} 之后的正文区，导言区的宏定义不碰。
+    anchor = _BEGIN_DOC_RE.search(text)
+    if anchor:
+        # 从 \begin{document} 之后起算：定位样例里不该混进定界符本身，
+        # 否则 Toast 会写成「例：document} 若 p 是 q …」这种看不懂的东西。
+        body = text[anchor.end():]
+        body, n, samples = wrap_bare_math_variables(body)
+        if n:
+            text = text[: anchor.end()] + body
+            notes.append(_note(
+                "中文语境里单独成词的数学变量没包 $（卷面会排成正体字母），已自动补上定界符",
+                n, samples))
 
     return text, notes
