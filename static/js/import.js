@@ -6750,21 +6750,26 @@
                 }
                 if (kind === 'image-only') {
                     if (pendingLabel) {
-                        run.push({ labelEl: pendingLabel, bodyEl: el });
+                        run.push({ labelEl: pendingLabel, bodyEl: el, hasImage: true });
                         pendingLabel = null;
                         return;
                     }
+                    // ⚠️ 严格守卫：没有标号的整行图**绝不吸附**到前一个选项格里。
+                    // 前一个选项已经带图时再塞一张，等于把「无主幽灵图」伪装成该选项的
+                    // 内容——卷面上看是四个选项配图齐全，实际源码里它谁都不属于（2024
+                    // 大庆卷第 4 题实测：MinerU 丢 B 标号后第 4 片就这么挂进了选项区）。
+                    // 归属交回后端 figure_repair / 配图条，渲染层不再自作聪明。
                     const last = run[run.length - 1];
-                    if (last) {
+                    if (last && !last.hasImage && !(last.extraEls || []).length) {
                         (last.extraEls = last.extraEls || []).push(el);
+                        last.hasImage = true;
                         return;
                     }
-                    flush();
                     return;
                 }
                 if (kind === 'option') {
                     pendingLabel = null;
-                    run.push({ bodyEl: el });
+                    run.push({ bodyEl: el, hasImage: !!(el.querySelector && el.querySelector('img')) });
                     return;
                 }
                 flush();

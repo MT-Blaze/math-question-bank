@@ -19,6 +19,9 @@ import os
 import re
 from html.parser import HTMLParser
 
+# 补集号自愈与导出前预检共用同一份实现（见 mathbank/latex_preflight R9）：
+# 入库时就写对，卡片预览与题库源码才不会带着错字形示人；导出前再跑一遍是幂等兜底。
+from mathbank.latex_preflight import repair_complement_glyphs
 from mathbank.math_markdown import (
     compact_solution_markdown,
     normalize_fillin_macro,
@@ -690,6 +693,51 @@ def extract_leading_question_number(md: str) -> tuple[str, str]:
 # ---------------------------------------------------------------------------
 # 唯一入库归一化入口（三条录入路径在此汇合）
 # ---------------------------------------------------------------------------
+_EMPTY_ITEM_SHELL_RE = re.compile(
+    r"^\\item(?:\s*[A-H\uFF21-\uFF28]\s*[.．、,，:：)）]?)?$"
+)
+# choices 环境整体块（含跨行的环境体）。非贪婪：连写多个环境时逐个判定。
+_CHOICES_ENV_BLOCK_RE = re.compile(
+    r"^[ \t]*\\begin\{choices\}[ \t]*\n(.*?)\n[ \t]*\\end\{choices\}[ \t]*$",
+    re.S | re.M,
+)
+
+
+def strip_empty_solution_choices(text: str) -> str:
+    r"""删掉**解析**里彻底空壳的 ``\begin{choices}...\end{choices}`` 环境。
+
+    实测形态（2024 大庆实验高一期中第 2 题）：MinerU 在解析区误留了一个孤零零的
+    「B.」标号行，归一化的选项包装器把它当成选项，于是【分析】与【详解】之间凭空多出
+    一个只有空 ``\item`` 的 choices 环境——导出后卷面上是一片诡异的空白选项。
+
+    判据只收「空壳」：环境体内除了空白与**不带任何内容的** ``\item``（``\item A．``
+    这种只剩标号壳的也算）以外什么都没有。带文字、带图片的环境一律不碰——那是真选项，
+    删了就是篡改教师的内容。
+
+    只对解析侧调用（``normalize_for_storage(is_answer=True)``）：题干里的空壳环境是
+    「选项丢了」的现场证据，必须留着让人看见、交给回填逻辑或人工核对，不能静默删。
+    """
+    if not text or r"\begin{choices}" not in text:
+        return text
+
+    def _is_shell_body(body: str) -> bool:
+        for line in body.split("\n"):
+            stripped = line.strip()
+            if not stripped or _EMPTY_ITEM_SHELL_RE.match(stripped):
+                continue
+            return False
+        return True
+
+    cleaned = _CHOICES_ENV_BLOCK_RE.sub(
+        lambda m: "" if _is_shell_body(m.group(1)) else m.group(0), text
+    )
+    if cleaned == text:
+        return text
+    # 删掉整块后留下的连续空行压回一个自然段间隔，首尾空白一并去掉。
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip("\n")
+
+
 def normalize_for_storage(value: str, question_type: str = "", is_answer: bool = False) -> str:
     """入库前对题干/解析执行的**唯一**完整归一化链，顺序即语义，不可调换。
 
@@ -720,11 +768,16 @@ def normalize_for_storage(value: str, question_type: str = "", is_answer: bool =
     # 模式是换行命令，后面紧跟的控制词会被当正文排出，公式直接错。必须早于结构层与
     # 字符层，否则 ``\\includegraphics`` 这类形态谁都认不出来。
     value = restore_doubled_control_words(value)
+    # 补集号 ∁ 的字形错乱必须最早修：后面字符层会把 R 之类包成 \mathrm{R}，
+    # 判据就认不出来了（针对 \check{\partial}_{R} 这类形态）。
+    value = repair_complement_glyphs(value)[0]
     value = strip_page_markers(value)
     value = normalize_fillin_macro(value)
     value = normalize_content_for_latex_storage(value, question_type)
     value = normalize_question_math_markdown(value)
     if is_answer:
+        # 空壳选项环境必须在结构层之后删：那个垃圾环境正是选项包装器自己造出来的。
+        value = strip_empty_solution_choices(value)
         value = compact_solution_markdown(value)
     else:
         # 题干与解析共用同一条空行口径：3 个以上换行 = 一个自然段，压回 \n\n。
@@ -809,6 +862,24 @@ def clean_choice_stem_parentheses(text: str) -> str:
     return cleaned
 
 
+def _split_trailing_figure_lines(head: str) -> tuple[str, str]:
+    """把「题干文字」与题干末尾的**独立配图行**拆开，返回 ``(文字, 配图块)``。
+
+    作答括号必须补在题干文字末尾，而不是尾随配图之后：MinerU 路线的原卷配图常常正好
+    落在「题干句子」与「选项区」之间（figure_repair R4 补回题干的韦恩图就是这个位置），
+    若不拆开，``clean_choice_stem_parentheses`` 的 ``$`` 锚定的末尾括号判据会失效——
+    实测大庆卷第 2 题因此留下 ``…为（）`` 与 ``\\paren`` 并存的双括号，且括号还被排到
+    韦恩图后面去了。配图行原样保留在文字之后，版面顺序不变。
+    """
+    lines = head.split("\n")
+    for i in range(len(lines) - 1, -1, -1):
+        stripped = lines[i].strip()
+        if not stripped or _IMG_ONLY_LINE_RE.match(stripped):
+            continue
+        return "\n".join(lines[: i + 1]), "\n".join(lines[i + 1:]).strip()
+    return head, ""
+
+
 def normalize_choice_paren_macro(value: str, question_type: str = "") -> str:
     """把选择题题干末尾的作答空括号归一为 ``\\paren``（exam-zh 命令）。
 
@@ -822,8 +893,14 @@ def normalize_choice_paren_macro(value: str, question_type: str = "") -> str:
         return value
     if r"\begin{choices}" in value:
         head, sep, tail = value.partition(r"\begin{choices}")
-        head = clean_choice_stem_parentheses(head)
-        return head.rstrip() + r" \paren" + "\n" + sep + tail
-    cleaned = clean_choice_stem_parentheses(value)
-    return cleaned.rstrip() + r" \paren"
+        prose, figures = _split_trailing_figure_lines(head)
+        head = clean_choice_stem_parentheses(prose) + r" \paren"
+        if figures:
+            head += "\n" + figures
+        return head.rstrip() + "\n" + sep + tail
+    prose, figures = _split_trailing_figure_lines(value)
+    cleaned = clean_choice_stem_parentheses(prose) + r" \paren"
+    if figures:
+        cleaned += "\n" + figures
+    return cleaned.rstrip()
 

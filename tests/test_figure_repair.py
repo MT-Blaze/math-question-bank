@@ -157,3 +157,117 @@ def test_seed_layouts_preserves_existing_entries():
     figure_repair.repair_parsed_questions([q])
     assert q["image_layouts"]["mineru_9_1.jpg"] == {"align": "left", "size": "large"}
     assert q["image_layouts"]["mineru_9_4.jpg"] == {"align": "center", "size": "small"}
+
+
+def test_r1_forces_missing_label_when_no_empty_slot():
+    """R1 强制补标号：A/B/C 都带图、第 4 片躺在解析里 -> 补出 D 标号行，凑齐 4 个选项。
+
+    只把图搬回「已有空选项」是不够的：MinerU 丢标号时选项区压根没有第 4 行，
+    图搬回去仍然凑不成四选项（线上第 4 题实测就是 3 个 \\item + 1 张无主图）。
+    """
+    q = _q(
+        "函数图象（）\n\nA．\n![](/static/uploads/mineru_9_1.jpg)\n\n"
+        "B．\n![](/static/uploads/mineru_9_2.jpg)\n\n"
+        "C．\n![](/static/uploads/mineru_9_3.jpg)",
+        "【答案】A\n\n【解析】\n\n![](/static/uploads/mineru_9_4.jpg)\n\n【分析】看图",
+    )
+    notes = figure_repair.repair_parsed_questions([q])
+    assert any(rec.get("forced_label") for rec in q["_figure_repair"])
+    assert any("补出标号行" in n for n in notes)
+    assert re.search(r"(?m)^\s*D．\s*$", q["content"])
+    assert "mineru_9_4.jpg" in q["content"]
+    assert not re.search(r"(?m)^\s*!\[", q["answer_markdown"])
+    assert len(re.findall(r"!\[[^\]]*\]\(", q["content"])) == 4
+    # 归一化之后必须是同一个 choices 环境里的 4 个 \item
+    from mathbank.latex_normalize import normalize_for_storage
+    stored = normalize_for_storage(q["content"], q.get("question_type") or "single_choice")
+    assert stored.count(r"\item") == 4
+    assert stored.count(r"\begin{choices}") == 1
+
+
+def test_r1_refuses_tail_synthesis_when_labels_have_a_hole():
+    """标号缺中间那个（A、D 有，B、C 没有）：补哪个位置判不准，整题不动（保守红线）。"""
+    content = (
+        "图（）\n\nA．\n![](/static/uploads/mineru_9_1.jpg)\n\n"
+        "D．\n![](/static/uploads/mineru_9_2.jpg)"
+    )
+    answer = "【解析】\n\n![](/static/uploads/mineru_9_3.jpg)\n\n【分析】x"
+    q = _q(content, answer)
+    assert figure_repair.repair_parsed_questions([q]) == []
+    assert q["content"] == content and q["answer_markdown"] == answer
+
+
+def test_r4_backfills_stem_figure_from_image_paths():
+    """R4 原卷配图回补：题干写着「图中阴影部分」，正文却没有任何引用 -> 补回选项区之前。
+
+    不补的话这张图只活在 image_paths 里，卡片预览把它当题干配图吊在选项下方，
+    成一张正文查无此图的「幽灵图」（2024 大庆卷第 2 题的韦恩图）。
+    """
+    url = "/static/uploads/mineru_9_11.jpg"
+    q = _q(
+        "已知全集 $U = \\mathbf{R}$，则图中阴影部分表示的集合为（）\n\n"
+        "A. $(-2,0]$ B. $(2,5)$ C. $[-2,0]$ D. $(-2,5)$",
+        "【答案】D\n\n【详解】由图知阴影部分为 $\\complement_{R}(A\\cap B)$",
+    )
+    q["image_paths"] = [url]
+    notes = figure_repair.repair_parsed_questions([q])
+    assert any("R4" in n for n in notes)
+    assert url in q["content"]
+    # 补在题干文字之后、选项行之前
+    assert q["content"].index(url) < q["content"].index("A. $(-2,0]$")
+    # 题干配图不是选项图，不能被播种成 small（会把韦恩图缩到看不清）
+    assert not q.get("image_layouts")
+
+
+def test_r4_refuses_when_ambiguous():
+    """R4 的三条保守边界：题干没提图 / 候选不止一张 / 图已被解析用过，都不动。"""
+    url = "/static/uploads/mineru_9_11.jpg"
+    no_word = _q("求集合 $A$ 的子集个数。\n\nA. 2 B. 4 C. 8 D. 16", "【答案】B")
+    no_word["image_paths"] = [url]
+    assert figure_repair.repair_parsed_questions([no_word]) == []
+
+    two_candidates = _q("则图中阴影部分为（）\n\nA. 1 B. 2 C. 3 D. 4", "【答案】A")
+    two_candidates["image_paths"] = [url, "/static/uploads/mineru_9_12.jpg"]
+    assert figure_repair.repair_parsed_questions([two_candidates]) == []
+
+    used_in_answer = _q("则图中阴影部分为（）\n\nA. 1 B. 2 C. 3 D. 4", "【详解】见图 " + url)
+    used_in_answer["image_paths"] = [url]
+    assert figure_repair.repair_parsed_questions([used_in_answer]) == []
+
+
+def test_daqing_q4_step6_strip_keeps_every_option_image():
+    """钉死 2026-10-19 线上链路：step 6 剥图不许把第二张选项图剥走，否则 R3 看不见 B。
+
+    实测那次重传只剩 3 个 \\item + 一张无主幽灵图，根因不在 figure_repair，而在
+    ``_strip_image_reference`` 的 last_meaningful：它只剥本轮那一个 url 的图片语法，
+    于是处理第二张选项图时，上一张图被当成「有意义内容」，标号依据消失，图被剥进
+    image_paths —— R3 再保守也修不到一张正文里已经看不见的图。
+    """
+    from mathbank.parsing_pipeline import _strip_image_reference, apply_storage_normalization
+
+    plan = plan_pdf_local_split(_staged_markdown(), None, False)
+    blk = next(b for b in plan.all_blocks if "大致图象" in (b.content or ""))
+    q = blk.to_parsed_question({})
+    refs = re.findall(
+        r"!\[[^\]]*\]\(([^)\s]+)", (q["content"] or "") + "\n" + (q["answer_markdown"] or "")
+    )
+    q["image_paths"] = list(dict.fromkeys(refs))
+
+    stripped = q["content"]
+    for url in q["image_paths"]:
+        stripped = _strip_image_reference(stripped, url)
+    assert len(re.findall(r"!\[[^\]]*\]\(", stripped)) == 3, "题干里的三张选项图必须一张都不丢: " + stripped
+    q["content"] = stripped.strip()
+
+    figure_repair.repair_parsed_questions([q])
+    assert {rec["rule"] for rec in q["_figure_repair"]} == {"R1", "R3"}
+    apply_storage_normalization([q])
+
+    content = q["content"]
+    assert content.count(r"\begin{choices}") == 1, content
+    assert len(re.findall(r"(?m)^\s*\\item\b", content)) == 4, content
+    assert content.count(r"\includegraphics") == 4, content
+    assert not re.search(r"(?m)^\s*!\[", q["answer_markdown"]), q["answer_markdown"]
+    # 四张图都在正文里被显式引用 -> 前端配图条不该再挂任何一张（归一化后按 basename 比）
+    names = {str(u).rsplit("/", 1)[-1] for u in (q.get("image_paths") or [])}
+    assert names and all(name in content for name in names), (names, content)

@@ -5552,3 +5552,82 @@ def test_choice_image_grid_preview_contract():
     assert "formData.append('image_layouts'" in js
     assert ".choices-grid.choices-image-grid" in css
     assert "object-fit: contain" in css
+
+def test_unlabeled_floating_image_is_not_glued_into_option_cell():
+    """严格守卫：没有标号的整行图不许被吸附进「已经带图」的选项格。
+
+    2024 大庆卷第 4 题实测：MinerU 丢 B 标号后，预览把那张无主图塞进了 A 的格子，
+    卷面看着是四个选项配图齐全，源码里它谁都不属于——渲染层替后端圆谎，脏数据就永久
+    查不出来。归属交回 figure_repair / 配图条，预览只按源码画。
+    前一个选项本身没图时仍照常吸附（那是「标号段 + 尾随图」的正常形态，不是幽灵图）。
+    """
+    import_source = _read(STATIC_JS_DIR / "import.js")
+    start = import_source.index("const PARSED_CHOICE_LABEL_RE")
+    end = import_source.index("function parsedCardImageSlot(", start)
+    source = import_source[start:end]
+    for token in ("!last.hasImage", "hasImage: true"):
+        assert token in source, "选项重组缺少幽灵图守卫关键字: " + token
+
+    script = (
+        "class FakeEl {\n"
+        "  constructor(tag, text, hasImg) {\n"
+        "    this.tagName = tag; this.nodes = []; this._text = text || '';\n"
+        "    this._hasImg = !!hasImg; this.parentNode = null;\n"
+        "  }\n"
+        "  get children() { return this.nodes; }\n"
+        "  get firstChild() { return this.nodes[0] || null; }\n"
+        "  appendChild(n) { this.nodes.push(n); n.parentNode = this; return n; }\n"
+        "  insertBefore(n, ref) {\n"
+        "    const i = this.nodes.indexOf(ref);\n"
+        "    if (i < 0) this.nodes.push(n); else this.nodes.splice(i, 0, n);\n"
+        "    n.parentNode = this; return n;\n"
+        "  }\n"
+        "  removeChild(n) { const i = this.nodes.indexOf(n); if (i >= 0) this.nodes.splice(i, 1); return n; }\n"
+        "  querySelector(sel) { return (sel === 'img' && this._hasImg) ? {} : null; }\n"
+        "  querySelectorAll() { return []; }\n"
+        "  setAttribute() {}\n"
+        "  cloneNode() { return new FakeEl(this.tagName, this._text, false); }\n"
+        "  get textContent() { return this._text; }\n"
+        "  set textContent(v) { this._text = String(v); this.nodes = []; }\n"
+        "}\n"
+        + source.replace(
+            "function groupParsedCardOptionParagraphs(container) {",
+            "function groupParsedCardOptionParagraphs(container) {\n"
+            "  const _gridMarker = (el) => { el._grid = true; return el; };\n"
+            "  if (typeof document === 'undefined') {\n"
+            "    globalThis.document = { createElement: (tag) => _gridMarker(new FakeEl(tag.toUpperCase())) };\n"
+            "  }\n"
+            "  return _groupParsedCardOptionParagraphsInner(container);\n"
+            "}\n"
+            "function _groupParsedCardOptionParagraphsInner(container) {",
+        )
+    ) + (
+        "// 形态一：A 已经有图，后面又冒出一张无标号图 —— 绝不进 A 的格子\n"
+        "const c1 = new FakeEl('DIV');\n"
+        "const p1 = (t, img) => { const el = new FakeEl('P', t, img); c1.appendChild(el); return el; };\n"
+        "p1('函数在区间上的大致图象为（ ）');\n"
+        "p1('A'); p1('', true); p1('', true);\n"
+        "p1('B'); p1('', true); p1('C'); p1('', true); p1('D'); p1('', true);\n"
+        "groupParsedCardOptionParagraphs(c1);\n"
+        "const grids1 = c1.nodes.filter(n => n._grid);\n"
+        "if (grids1.length !== 1) throw new Error('应重组出 1 个网格: ' + grids1.length);\n"
+        "if (grids1[0].nodes.length !== 4) throw new Error('网格仍应是 4 个选项格: ' + grids1[0].nodes.length);\n"
+        "const ghost = c1.nodes.filter(n => !n._grid && n._hasImg && !n._text);\n"
+        "if (ghost.length !== 1) throw new Error('无标号图应留在网格之外，实际 ' + ghost.length);\n"
+        "// 形态二：文字选项 + 尾随独立配图 —— 正常吸附，不算幽灵图\n"
+        "const c2 = new FakeEl('DIV');\n"
+        "const p2 = (t, img) => { const el = new FakeEl('P', t, img); c2.appendChild(el); return el; };\n"
+        "p2('如图（ ）');\n"
+        "p2('A．106'); p2('', true); p2('B．105'); p2('C．104'); p2('D．103');\n"
+        "groupParsedCardOptionParagraphs(c2);\n"
+        "const grids2 = c2.nodes.filter(n => n._grid);\n"
+        "if (grids2.length !== 1) throw new Error('形态二应重组: ' + grids2.length);\n"
+        "if (grids2[0].nodes.length !== 4) throw new Error('形态二网格应 4 格: ' + grids2[0].nodes.length);\n"
+        "if (c2.nodes.filter(n => !n._grid && n._hasImg).length !== 0) {\n"
+        "  throw new Error('文字选项后的尾随图应被收进该选项格');\n"
+        "}\n"
+        "console.log('OK');\n"
+    )
+    result = _run_node_script(script)
+    assert result.returncode == 0, result.stderr
+    assert "OK" in result.stdout

@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import re
 
-__all__ = ["repair_latex_before_compile", "MAX_NOTE_SAMPLES"]
+__all__ = ["repair_latex_before_compile", "repair_complement_glyphs", "MAX_NOTE_SAMPLES"]
 
 # 每条规则最多附几个样例进上报文案：够定位即可，整卷样例会把响应头撑爆。
 MAX_NOTE_SAMPLES = 3
@@ -458,6 +458,56 @@ def _degrade_unclosed_dollars(text: str) -> tuple[str, int, list[str]]:
     return "".join(chars), len(hit), samples
 
 
+# ---------------------------------------------------------------------------
+# R9 补集符号 ∁ 的字形错乱（2026-10-19 大庆卷第 2 题实测）
+# ---------------------------------------------------------------------------
+# 原卷的「∁_R(A)」是补集号，MinerU 按字形映射常给出三种坏形态：
+#   \check{\partial}_{R}(A\cap B)   —— 认成「带帽的偏导号」
+#   \check{\mathrm{o}}_{\mathrm{R}} —— 认成「带帽的字母 o」（同一卷重跑换版本后就这样）
+#   \partial_{R}(A)                —— 帽子整个丢了
+# XeLaTeX 不会报错（\partial、\check 都是合法宏），于是卷面安静地排出
+# 「ȯ_R(A∩B)」「∂_R(A∩B)」——教师看到的是错的集合运算。补集号 \complement 由 amssymb
+# 提供，导出模板（paper_helper / word_export_helper）都已 \usepackage{amssymb}。
+#
+# 判据刻意收紧，偏导号是微积分的正常符号，绝不能一律改写：
+#   1) \check{...} 里只可能是 \partial 或字母 o（含 \mathrm/\mathbb 包法），
+#      且后面紧跟 _{下标} 或 ( ——\check{A} 这类「点的记号」不在此列；
+#   2) 裸 \partial 只在「下标是数集字母 R/N/Z/Q/U（可带 \mathbf 等字体包装）」时改写，
+#      \partial_{x}、\frac{\partial y}{\partial x} 这些偏导写法一个都不碰。
+_CHECK_COMPLEMENT_RE = re.compile(
+    r"\\check\s*\{\s*(?:\\partial|\\(?:mathrm|mathbb|mathbf|operatorname)\s*\{\s*[oO]\s*\}|[oO])\s*\}"
+    r"(?=\s*(?:_|[\(（]))"
+)
+_SET_LETTER = r"(?:\\(?:mathbf|mathrm|mathbb)\s*\{\s*[RNZQU]\s*\}|[RNZQU])"
+_PARTIAL_COMPLEMENT_RE = re.compile(
+    r"\\partial(?=\s*_\s*(?:\{" + _SET_LETTER + r"\}|" + _SET_LETTER + r"))"
+)
+
+
+# lambda 替换：字符串替换会先把反斜杠交给 re 解释（bad escape），换成图里的字面量最稳。
+_COMPLEMENT_MACRO = "\\complement"
+
+
+def repair_complement_glyphs(text: str) -> tuple[str, int, list[str]]:
+    r"""把 MinerU 误映射的补集号还原成 \complement（R9）。"""
+    if not text:
+        return text, 0, []
+    samples: list = []
+    count = 0
+    for pattern in (_CHECK_COMPLEMENT_RE, _PARTIAL_COMPLEMENT_RE):
+        matches = list(pattern.finditer(text))
+        if not matches:
+            continue
+        count += len(matches)
+        if len(samples) < MAX_NOTE_SAMPLES:
+            for m in matches[: MAX_NOTE_SAMPLES - len(samples)]:
+                start = max(0, m.start() - 6)
+                samples.append(text[start:m.end() + 12].strip())
+        text = pattern.sub(lambda m: _COMPLEMENT_MACRO, text)
+    return text, count, samples
+
+
+
 def _note(label: str, count: int, samples: list[str]) -> str:
     parts = ["%s：%d 处" % (label, count)]
     if samples:
@@ -517,6 +567,13 @@ def repair_latex_before_compile(tex_content: str) -> tuple[str, list[str]]:
     if n:
         notes.append(_note(
             r"蕴含箭头 ⇒⇔ 在中文字体里亦缺字形，已换成 \ensuremath 等价宏以免静默缺字", n, samples))
+
+    # R9 独立于其它规则：它只改写「补集号被认成偏导号/带帽 o」这一种字形错乱。
+    text, n, samples = repair_complement_glyphs(text)
+    if n:
+        notes.append(_note(
+            r"补集号 ∁ 在库里被写成了 \check{\partial}/\partial（字形映射错误），"
+            r"已还原为 \complement", n, samples))
 
     # R8 的裸 # 判据按「\begin{document} 之后」划界，放在最后与前面规则互不干扰。
     text, n, samples = _escape_bare_hashes(text)

@@ -646,3 +646,37 @@ def test_export_notes_header_names_match_the_backend():
         assert header in routes, "后端不再发 %s" % header
         assert header in _HELPER_SRC, "前端还在读 %s" % header
     assert 'quote("' in routes and 'safe=""' in routes, "中文说明必须百分号编码，否则非 ASCII 头值会被截断"
+
+
+def test_complement_glyph_self_heal_r9():
+    r"""R9：MinerU 把补集号 ∁ 认成 \check{\partial} / \check{\mathrm{o}} / \partial_{R}。
+
+    原卷写的是「∁_R(A∩B)」，MinerU 按字形给出三种坏形态。XeLaTeX 不报错（\partial、
+    \check 都是合法宏），于是卷面安静地排出 ȯ_R(A∩B) / ∂_R(A∩B)——教师看到的是错的
+    集合运算。本规则把它们还原成 amssymb 的 \complement，且**绝不碰偏导号**：
+    \frac{\partial y}{\partial x}、\partial_{x}u 里的下标是变量，不在数集字母表里。
+    """
+    src = (
+        "解析：$\\check{\\partial}_{R}(A\\cap B)$ 与 "
+        "$\\check{\\mathrm{o}}_{\\mathrm{R}}(A\\cup B)$，"
+        "偏导 $\\frac{\\partial y}{\\partial x}$ 不动，集合 $\\partial_{U}B$ 要改"
+    )
+    fixed, notes = repair_latex_before_compile(src)
+    assert r"\complement_{R}(A\cap B)" in fixed, fixed
+    assert r"\complement_{\mathrm{R}}(A\cup B)" in fixed, fixed
+    assert r"\complement_{U}B" in fixed, fixed
+    assert r"\frac{\partial y}{\partial x}" in fixed, fixed
+    assert r"\check" not in fixed, fixed
+    assert any("补集" in note for note in notes), notes
+
+    # 幂等：第二次调用必须零改写、零提示（路由层与编译入口各跑一次的契约）
+    again, notes2 = repair_latex_before_compile(fixed)
+    assert again == fixed and notes2 == [], (again, notes2)
+
+
+def test_complement_glyph_heal_does_not_touch_point_marks():
+    r"""R9 的零误伤边界：\check{A} 这类「带帽的点/角」与已是 \complement 的存量数据都不动。"""
+    src = "点 $\\check{A}$ 与 $\\check{O}$，补集已写作 $\\complement_{U}A$，$\\partial_{x}u$ 是偏导"
+    fixed, notes = repair_latex_before_compile(src)
+    assert fixed == src, fixed
+    assert not any("补集" in note for note in notes), notes

@@ -20,6 +20,8 @@ from mathbank.latex_normalize import (
     normalize_content_for_latex_storage,
     _split_merged_choice_items,
     _split_merged_option_content,
+    strip_empty_solution_choices,
+    normalize_for_storage,
 )
 
 
@@ -770,3 +772,50 @@ def test_split_merged_choice_items_unifies_item_indent():
     assert out.count(r"\item ") == 4, out
     # 幂等：已统一的再跑一遍不变
     assert _split_merged_choice_items(out) == out
+
+
+def test_solution_empty_choices_shell_is_purged():
+    """解析里的空壳 choices 环境必须彻底删掉（2024 大庆卷第 2 题实测脏形）。
+
+    MinerU 在解析区误留一个孤零零的「B.」标号行，选项包装器把它当成选项，于是
+    【分析】与【详解】之间凭空多出一个只有空 \\item 的 choices 环境——卷面上是一片
+    莫名其妙的空白选项。
+    """
+    answer = (
+        "【答案】D\n\n【解析】\n\n【分析】利用集合的交并补运算，及韦恩图求阴影部分对应的集合.\n\n"
+        "B.\n\n"
+        "【详解】由题设得 $(-2,0]$。\n\n故选：D"
+    )
+    out = normalize_for_storage(answer, is_answer=True)
+    assert "choices" not in out, out
+    assert "\\item" not in out, out
+    assert "【分析】" in out and "【详解】" in out and "故选：D" in out
+    # 幂等：删干净之后再跑一遍必须字节不变
+    assert normalize_for_storage(out, is_answer=True) == out
+
+
+def test_solution_real_choices_env_is_kept():
+    """真选项环境不许被空壳清洗误删：带文字、带图片的都原样保留。"""
+    for body in ("\\begin{choices}\n    \\item 2 条\n  \\end{choices}",
+                 "\\begin{choices}\n    \\item \\includegraphics{a.jpg}\n  \\end{choices}"):
+        text = "解析：\n\n" + body + "\n\n故选：A"
+        out = normalize_for_storage(text, is_answer=True)
+        assert "\\begin{choices}" in out and "\\item" in out, out
+        assert out.count("choices") == 2, out
+
+
+def test_stem_empty_choices_shell_is_not_purged():
+    """题干里的空壳环境是「选项丢了」的现场证据，必须留着给人看见/回填，不许静默删。"""
+    stem = "如图（）\n\\begin{choices}\n    \\item \n  \\end{choices}"
+    out = normalize_for_storage(stem, question_type="single_choice")
+    assert "choices" in out, out
+
+
+def test_complement_glyph_repaired_at_storage_time():
+    r"""补集号自愈也挂在入库链上：卡片预览与题库源码里就不该留着 \check{\partial}。"""
+    answer = "所以 $\\check{\\partial}_{R}(A\\cap B)=\\{x\\mid-2<x<5\\}$ ，阴影部分为 $\\check{\\mathrm{o}}_{\\mathrm{R}}(A\\cup B)$"
+    out = normalize_for_storage(answer, is_answer=True)
+    assert "\\complement_{R}(A\\cap B)" in out, out
+    assert "\\complement_{\\mathrm{R}}(A\\cup B)" in out, out
+    assert "\\partial" not in out and "\\check" not in out, out
+    assert normalize_for_storage(out, is_answer=True) == out

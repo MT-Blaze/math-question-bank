@@ -150,7 +150,14 @@ def _strip_image_reference(text: str, image_url: str) -> str:
         else:
             kept.append(pattern.sub("", line))
         # 供下一行判断：去掉图片语法后仍然非空的行才算得上「标号行」。
-        remainder = pattern.sub("", kept[-1]).strip()
+        # ⚠️ 必须剥掉**所有**图片语法，不能只剥本轮 ``image_url`` 那一张：MinerU 的
+        # 「裸标号一行 + 每幅选项图各占一行」形态里，处理第二张图时上一行是第一张
+        # 选项图，只剥当前 url 会让它残留成「有意义内容」，于是 last_meaningful 不再是
+        # 标号行，第二张选项图被误判成普通配图剥走（实测 2024 大庆卷第 4 题：B 选项
+        # 的图从此只活在 image_paths 里，选项环境剩三个 \item，预览挂一张无主幽灵图）。
+        # 前端 parsedCardChoiceImagePaths 的同名判据早就是「剥全部图片语法」口径，
+        # 这里对齐它，否则后端剥图、前端认图两边打架。
+        remainder = _IMAGE_SYNTAX_RE.sub("", kept[-1]).strip()
         if remainder:
             last_meaningful = remainder
     return "\n".join(kept)

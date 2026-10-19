@@ -676,8 +676,11 @@ def test_post_process_collects_staged_mineru_images(tmp_path):
     assert result[0]["image_paths"] == [staged]
     # 整页原图绝不能混进 image_paths（否则每道题都会挂一张整页图）
     assert page not in result[0]["image_paths"]
-    # 题干里的内联引用被静默摘掉，改由配图条展示（避免重复渲染）
-    assert "mineru_1758100000_1.jpg" not in result[0]["content"]
+    # 口径变更（2026-10-19）：step 6 会把这类引用从正文摘掉，但**导出侧只渲染正文里
+    # 显式引用的图**（配图条只活在预览），摘掉等于卷面丢图、题干「如图」查无此图。
+    # figure_repair R4 现在会把这类原卷配图补回正文；配图条按「正文已引用则跳过」去重。
+    assert "mineru_1758100000_1.jpg" in result[0]["content"]
+    assert "如图" in result[0]["content"]
 
 
 def test_post_process_collects_staged_images_from_referenced_images(tmp_path):
@@ -757,8 +760,10 @@ def test_post_process_keeps_choice_images_in_content(tmp_path):
     # 选项图（全角「A．」/「B．」行）必须保留
     assert "mineru_1_1.jpg" in content
     assert "mineru_1_2.jpg" in content
-    # 普通题干配图应被摘掉，改由配图条统一展示（避免同一张图渲染两次）
-    assert "mineru_1_3.jpg" not in content
+    # 普通题干配图：step 6 摘掉之后由 R4 补回正文（导出侧只认正文引用，摘掉就是丢图），
+    # 且必须补在「如图」那句旁边，而不是让句子悬空。
+    assert "mineru_1_3.jpg" in content, content
+    assert content.index("mineru_1_3.jpg") > content.index("如图"), content
     # 三张图仍然都归本题（生命周期依据不能丢）
     assert len(result[0]["image_paths"]) == 3
 
