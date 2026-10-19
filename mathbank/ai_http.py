@@ -128,7 +128,15 @@ def _post_bounded(
     kwargs = dict(request_kwargs)
     kwargs["stream"] = True
     requested = float(kwargs.get("timeout") or 60)
-    kwargs["timeout"] = min(requested, float(read_timeout) if read_timeout else 30.0)
+    short_read = min(requested, 30.0)
+    if read_timeout:
+        # 显式传入的 read_timeout 就是「单次读等待」上限，不再与调用方 timeout 取 min：
+        # min 只能收紧不能放宽，timeout=180 + read_timeout=240 时 240 永远不生效，
+        # 整卷拆题这类缓冲型响应会在首字节（TTFB）到达前被 180s 误杀（线上已复现）。
+        # 连接上限仍取短值；慢速吐字与取消响应由 deadline_seconds 墙上时钟兜底。
+        kwargs["timeout"] = (short_read, float(read_timeout))
+    else:
+        kwargs["timeout"] = short_read
     started = time.monotonic()
     deadline = started + deadline_seconds if deadline_seconds else None
 

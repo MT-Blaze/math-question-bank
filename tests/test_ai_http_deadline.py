@@ -103,11 +103,13 @@ def test_bounded_read_honors_explicit_read_timeout(monkeypatch):
 
     captured = _install_fake(monkeypatch, [b'{"ok":1}'])
     ai_http._post_bounded("http://x/v1", {"json": {}, "timeout": 180}, read_timeout=240)
-    assert captured["kwargs"]["timeout"] == 180  # min(180, 240)
+    # 显式 read_timeout 是读上限本身，不再被调用方 timeout 用 min 压死
+    assert captured["kwargs"]["timeout"] == (30.0, 240.0)
 
     captured2 = _install_fake(monkeypatch, [b'{"ok":1}'])
     ai_http._post_bounded("http://x/v1", {"json": {}, "timeout": 180}, read_timeout=120)
-    assert captured2["kwargs"]["timeout"] == 120  # min(180, 120)
+    # 读按显式值放宽，连接仍取短上限
+    assert captured2["kwargs"]["timeout"] == (30.0, 120.0)
 
 
 def test_post_chat_completion_passes_read_timeout_through(monkeypatch):
@@ -124,4 +126,5 @@ def test_post_chat_completion_passes_read_timeout_through(monkeypatch):
     ai_http.post_chat_completion(
         _Provider(), {}, timeout=180, deadline_seconds=480, read_timeout=240
     )
-    assert captured["kwargs"]["timeout"] == 180
+    # 放宽必须真的生效：老路整卷拆题曾被 min(180, 240)=180 静默压回 180s
+    assert captured["kwargs"]["timeout"] == (30.0, 240.0)

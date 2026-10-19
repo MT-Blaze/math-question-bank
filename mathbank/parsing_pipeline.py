@@ -988,7 +988,9 @@ def apply_storage_normalization(parsed_questions: list) -> list:
 # 整卷拆题是**非流式、一次性生成**：模型要读完整个卷面再一次性吐出全部题目 JSON，
 # 首字节（TTFB）往往是整个生成时间，远超 _post_bounded 默认的 30s 读上限。这里显式
 # 放宽单次读等待，避免把正常的长响应误判成超时（整体仍受 deadline_seconds 约束）。
-AI_SPLIT_READ_TIMEOUT_SECONDS = 240
+# 取 480s 与整卷 deadline（AI_SPLIT_DEADLINE_SECONDS）对齐：老路大卷实测墙钟最差
+# ~309s（含 qwen3.8-flash 思考输出），若只放宽到 240s 仍会把正常长响应误杀。
+AI_SPLIT_READ_TIMEOUT_SECONDS = 480
 
 
 def _sanitize_answers(
