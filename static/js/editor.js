@@ -1802,6 +1802,9 @@ function deleteDraft(id) {
         const choicesGridPending = new Set();
         let choicesGridRafId = null;
         let choicesGridResizeObserver = null;
+        // 滚轮映射只在 editor.js 求值时绑一次；组卷页反复调适配函数，靠这个标记
+        // 保证 document 级监听不会被重复挂上去。
+        let choicesMathWheelBound = false;
 
         function getPreferredChoicesColumns(grid) {
             const stored = parseInt(grid.dataset.preferredColumns || '', 10);
@@ -1943,15 +1946,73 @@ function deleteDraft(id) {
             if (!grid || !grid.isConnected) return;
             grid.querySelectorAll('.choices-math-scroll').forEach(function (math) {
                 math.classList.remove('choices-math-scroll');
+                // 外层那一格的滚动态跟着一起清：仍只走这一趟查询，不加第二遍遍历。
+                const staleContent = math.closest('.choices-content');
+                if (staleContent) staleContent.classList.remove('choices-content-scrolled');
             });
+            const scrolled = new Set();
             grid.querySelectorAll('.choices-content .katex').forEach(function (math) {
                 if (math.closest('.katex-display')) return;
                 const content = math.closest('.choices-content');
                 if (!content) return;
-                if (math.getBoundingClientRect().width > content.clientWidth + 1) {
+                // 容差取 2px：fitOversizedChoicesContent 的比例来自取整后的
+                // scrollWidth / clientWidth，缩完常常只差零点几像素，按 1px 判会把
+                // 「其实已经装得下」的式子误标成滚动态、白挂一根滚动条。
+                if (math.getBoundingClientRect().width > content.clientWidth + 2) {
                     math.classList.add('choices-math-scroll');
+                    scrolled.add(content);
                 }
             });
+            // 式子已由内层滚动盒接管，给外层那一格挂标记，CSS 据此不再出第二条
+            // （.choices-content 本身是 overflow-x: auto，混排格子会双层同时冒条）。
+            // 但只在外层「确实没自己的东西要滚」时才挂：格子里若还藏着不可断的长词，
+            // 外层那条滚动条是真在干活，压掉它等于把尾巴彻底藏起来（实测 220 个 Z）。
+            scrolled.forEach(function (content) {
+                if (content.scrollWidth > content.clientWidth + 2) return;
+                content.classList.add('choices-content-scrolled');
+            });
+            // 到这一步才绑滚轮映射：没有溢出公式的页面不必为非 passive 的 wheel 监听付费。
+            if (scrolled.size) bindChoicesMathWheelScroll();
+        }
+
+        // 滚轮映射：Windows 鼠标没有横向滚轮，指针停在超宽式子上推滚轮本该横向走。
+        // 只接管「真的能横滚」的滚轮，且顶到左右两端就把事件放行给页面 —— 否则用户
+        // 滚到头会发现整页推不动，像被一条公式卡住。触控板给了 deltaX 时优先用它。
+        function scrollChoicesMathByWheel(math, deltaX, deltaY) {
+            const maxX = math.scrollWidth - math.clientWidth;
+            if (maxX <= 0) return false;
+            const delta = Math.abs(deltaX) >= Math.abs(deltaY) ? deltaX : deltaY;
+            if (!delta) return false;
+            // 1px 容差：scrollWidth / clientWidth 都是取整值，正好贴边时别把事件吞掉。
+            const atStart = math.scrollLeft <= 1;
+            const atEnd = math.scrollLeft >= maxX - 1;
+            if ((delta < 0 && atStart) || (delta > 0 && atEnd)) return false;
+            math.scrollLeft = Math.min(Math.max(math.scrollLeft + delta, 0), maxX);
+            return true;
+        }
+
+        // 懒绑：由 markUnshrinkableChoiceMath 第一次真标出溢出公式时调用，靠标记只生效一次。
+        function bindChoicesMathWheelScroll() {
+            if (choicesMathWheelBound) return;
+            choicesMathWheelBound = true;
+            document.addEventListener('wheel', function (event) {
+                // Ctrl/Meta 是浏览器缩放快捷键，Alt 是各家横向滚动的既有惯例，都不抢。
+                if (event.ctrlKey || event.metaKey || event.altKey) return;
+                const target = event.target;
+                if (!target || typeof target.closest !== 'function') return;
+                const math = target.closest('.choices-math-scroll');
+                if (!math) return;
+                // Firefox 的滚轮按「行」、翻页按「页」给增量，不换算成像素就滑得没力气。
+                let factor = 1;
+                if (event.deltaMode === 1) {
+                    factor = 16;
+                } else if (event.deltaMode === 2) {
+                    factor = math.clientHeight || 100;
+                }
+                if (scrollChoicesMathByWheel(math, event.deltaX * factor, event.deltaY * factor)) {
+                    event.preventDefault();
+                }
+            }, { passive: false });
         }
 
         function applyChoicesGridColumns(grid, selected) {

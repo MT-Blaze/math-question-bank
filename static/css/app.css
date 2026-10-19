@@ -855,6 +855,66 @@ header, main {
     scrollbar-width: thin;
 }
 
+/* 2026-10-20 防裁切留白（补上游 static/css/app.css:1497 那条一直没移植过来的设定）：
+ * KaTeX 的分式、根号、上下标、大括号是 vlist **绝对定位**堆上去的，墨迹本来就超出
+ * .katex 的标称 line box（KaTeX 自己的 issue #2808 就是这个），而外层
+ * .choices-content 与滚动盒都是 overflow-y: hidden —— 不留白就被上下咬掉一截
+ * （\dfrac 的分子、\sqrt 的根尖、行末下标最常见）。padding 撑进 line box，
+ * 让内外两层裁切同时避开，口径与上游一致。
+ * 副作用要知情：每条式子的实测宽度多算 0.5em，而列数测量与
+ * fitOversizedChoicesContent 读的是同一个 scrollWidth，口径自洽，只是「刚好卡满
+ * 4 列」的题更容易降一档到 2 列 —— 这正是上游的取舍。 */
+.choices-grid .choices-content .katex {
+    /* display 必须是 inline-block：inline 盒的纵向 padding 与绝对定位的 vlist 墨迹
+     * 都撑不起 line box，外层 .choices-content 的 overflow-y: hidden 照样把分子/分母
+     * 削掉约 1px（实测 0.88px 上 / 1.45px 下）。改成 inline-block 后 KaTeX 自己算出的
+     * .base 高度才真正参与行高，上面的留白才有处可留。上游同口径。 */
+    display: inline-block;
+    padding: 0.4em 0.25em;
+}
+
+/* 滚动盒底部额外留白：4px 滚动条是从内部吃掉高度的（Windows 非 overlay 条），
+ * 不留就把分母的下降笔画压在条底下。用 max() 而不是纯 em —— 缩到 FLOOR=0.5 时
+ * 0.55em 只剩 3px 出头，兜不住固定像素的条；浏览器不认 max() 时整条声明作废，
+ * 退回上面的 0.4em，不会更糟。
+ * overscroll-behavior-x 只收横向：滚到头不去推整页横滚/浏览器后退手势。 */
+.choices-grid .choices-content .katex.choices-math-scroll {
+    padding-bottom: max(0.55em, 5px);
+    overscroll-behavior-x: contain;
+}
+
+/* 细滚动条（G1）：上面那句 scrollbar-width: thin 在 Chromium 里根本不生效——
+ * 全站 static/css/app.css:714 定义了 ::-webkit-scrollbar，而只要作者写了
+ * ::-webkit-scrollbar，标准 scrollbar-width/scrollbar-color 就被忽略（MDN 有明文），
+ * 于是超宽式子拿到的是那条 8px 经典占位条。想细只能回到同一个 pseudo 上顶掉它。
+ * 全局 thumb 带 border: 2px solid transparent + background-clip: content-box，
+ * 条高降到 4px 后 content box 被边框吃干、滑块整个隐身，所以这里必须把边框清零。 */
+.choices-grid .choices-content .katex.choices-math-scroll::-webkit-scrollbar {
+    height: 4px;
+}
+.choices-grid .choices-content .katex.choices-math-scroll::-webkit-scrollbar-track {
+    background: transparent;
+}
+.choices-grid .choices-content .katex.choices-math-scroll::-webkit-scrollbar-thumb {
+    border: 0;
+    border-radius: 9999px;
+    background: rgba(100, 116, 139, 0.45);
+    background-clip: border-box;
+}
+
+/* 双滚动条收口（G3）：上游的 .choices-content 是 overflow: visible（上游
+ * static/css/app.css:1480），天生只有内层一条；我们的 .choices-content 是
+ * overflow-x: auto，「公式 + 前后文字」混排的格子会外层一条、内层一条一起冒出来。
+ * markUnshrinkableChoiceMath 给已进滚动态、且自己确实没东西要滚的那一格挂
+ * .choices-content-scrolled：式子交给内层滚动盒，外层继续裁切、不再出第二条。
+ * 「自己没东西要滚」这个前提是硬要求：格子里若还塞着不可断的长词（实测 220 个 Z
+ * 就把外层撑出 500px），那条滚动条是真在干活，压掉它等于把尾巴彻底藏起来。
+ * 这里不能写 overflow-x: visible —— 一轴 visible、另一轴 hidden 时，visible 按
+ * 规范会算成 auto，等于什么都没改。hidden 全站兼容，同样不会长出第二条。 */
+.choices-grid .choices-content.choices-content-scrolled {
+    overflow-x: hidden;
+}
+
 /* 组卷题库流的虚拟滚动骨架（由 paper.js 的 buildPaperStreamScaffold 生成）：
  * 滚动容器必须 position:relative——虚拟窗口用 root.offsetTop 换算视口区间，
  * offsetParent 不是滚动容器时算出来的窗口区间会整体错位。 */

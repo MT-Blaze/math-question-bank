@@ -169,6 +169,23 @@
 - **每帧只读一次布局**：`_measureChrome()` 缓存 `offsetTop`/`clientHeight`，`_scrollTop` 每帧只从滚动容器读一次；
   多读一次就是一次强制同步布局。选项网格试列数（`adaptChoicesGridNodes`）合并成整批一次，滚动中直接顺延，
   停手后由 settle 落点统一补算。
+- **超宽公式三级降级（仅选项区）**：`adaptChoicesGridNodes` 先「4→2→1 试列数」，落到 1 列仍装不下才由
+  `fitOversizedChoicesContent` 整行等比缩字号（`--choices-scale`，下限 0.5，用 `font-size` 不用
+  `transform: scale()`——后者不改布局宽度，滚动条照样在）；缩到底仍装不下的那一条由
+  `markUnshrinkableChoiceMath` 单独挂 `.choices-math-scroll` 给它自己的横向滚动条（**先缩字号、后滚动**，
+  判据容差 2px，防 `scrollWidth` 取整把「其实装得下」误标）。四条 CSS 契约必须同时成立，回归已锁：
+  ① `.choices-content .katex` 要 `display: inline-block` + `padding: .4em .25em`——KaTeX 的分式/根号是
+  绝对定位的 vlist，墨迹超出标称 line box 且撑不起行盒，`.choices-content` 的 `overflow-y: hidden`
+  不留白就削掉分子/分母（实测 0.88px 上、1.45px 下）；② 全站 `::-webkit-scrollbar{height:8px}` 会一路
+  管到滚动盒，而 Chromium 只要作者写了 `::-webkit-scrollbar` 就忽略标准 `scrollbar-width`，细条只能在
+  同一个 pseudo 上顶成 4px（thumb 的 2px 透明边框须清零，否则 4px 条里滑块被自己的边框吃干而隐身）；
+  ③ 外层那一格**只在它自己没有东西要滚时**才挂 `.choices-content-scrolled` 压成 `overflow-x: hidden`
+  （写 `visible` 无效：一轴 visible + 一轴 hidden 时 visible 按规范算成 auto；格子里若还有不可断的长词，
+  外层那条滚动条是真在干活，压掉它等于把尾巴藏起来）；④ 滚轮映射 `scrollChoicesMathByWheel` 由首次
+  标出溢出公式时懒绑一个非 passive 的 document `wheel`，顶到左右两端必须把事件放行给页面。
+  **易误判处**：KaTeX 会把「可断」的长式子拆成多个 `.base` 自然换行，所以只有整块不可断的式子
+  （`\left(...\right)`、矩阵、单个长分式）才真走进缩放/滚动这条路——别拿「长堆求和没滚动条」当 bug。
+  范围**不含题干/填空/解答**（待办池盘点 2026-10-19 已记为真实缺口）。
 - **Tailwind Play CDN 闸门（`static/js/tailwind_gate.js`）**：Play CDN 在 `documentElement` 上挂着「class/childList
   一变就重扫整棵文档生成 CSS」的观察器，实测占滚动期主线程 self-time 的 23%。闸门只登记精确匹配该签名的观察器
   （盯 `disabled` 等业务观察器绝不关），滚动/批量重建期间 `pause()`，停手或 900ms 硬上限到点时 `resume()` 并用一次
