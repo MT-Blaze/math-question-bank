@@ -1,0 +1,3261 @@
+[
+    {
+        "type": "text",
+        "text": "大庆实验中学 2024-2025 学年度上学期高一年级期中考试",
+        "text_level": 1,
+        "bbox": [
+            159,
+            59,
+            836,
+            83
+        ],
+        "page_idx": 0
+    },
+    {
+        "type": "text",
+        "text": "数学试题",
+        "text_level": 1,
+        "bbox": [
+            440,
+            97,
+            556,
+            120
+        ],
+        "page_idx": 0
+    },
+    {
+        "type": "text",
+        "text": "第I卷（选择题，共60分）",
+        "bbox": [
+            373,
+            131,
+            613,
+            149
+        ],
+        "page_idx": 0
+    },
+    {
+        "type": "text",
+        "text": "一、单项选择题：本大题共8小题，每小题5分，共60分.",
+        "text_level": 2,
+        "bbox": [
+            84,
+            159,
+            613,
+            177
+        ],
+        "page_idx": 0
+    },
+    {
+        "type": "text",
+        "text": "1. 已知集合 $M = \\{-1, 1, 2, 4\\}$ ， $N = \\{1, 2, 4, 16\\}$ ，给出下列四个对应法则，请由函数定义判断，其中能构成从 M 到 N 的函数的是（）\n\nA. $y = 2x$ B. $y = x + 2$ C. $y = 2^{|x|}$ D. $y = 2^{x}$",
+        "bbox": [
+            84,
+            189,
+            910,
+            326
+        ],
+        "page_idx": 0
+    },
+    {
+        "type": "image",
+        "img_path": "images/9cf2c5d3a36843281e7ec5599fb8bc163616d8172d2defc65d8c25fffcad24b5.jpg",
+        "image_caption": [],
+        "image_footnote": [],
+        "content": "",
+        "bbox": [
+            779,
+            267,
+            905,
+            357
+        ],
+        "page_idx": 0
+    },
+    {
+        "type": "text",
+        "text": "【分析】利用函数的定义，逐项判断即可.",
+        "bbox": [
+            92,
+            392,
+            413,
+            407
+        ],
+        "page_idx": 0
+    },
+    {
+        "type": "text",
+        "text": "【详解】对于 A，集合 M 中的元素 -1 在集合 N 中没有元素与之对应，A 不是；\n对于 B，集合 M 中的元素 1 在集合 N 中没有元素与之对应，B 不是；\n对于 C，集合 M 中的每个元素，按照 $y = 2^{|x|}$ ，在集合 N 中都有唯一元素与之对应，C 是；\n对于 D，集合 M 中的元素 -1 在集合 N 中没有元素与之对应，D 不是.\n故选：C",
+        "bbox": [
+            84,
+            420,
+            789,
+            558
+        ],
+        "page_idx": 0
+    },
+    {
+        "type": "text",
+        "text": "2. 已知全集 $U = \\mathbf{R}$ ，集合 $A = \\{x \\mid x \\geq 5 \\text{ 或 } x \\leq 0\\}$ ， $B = \\{x \\mid x > 2 \\text{ 或 } x \\notin -2\\}$ ，则图中阴影部分表示的集合为（）",
+        "bbox": [
+            84,
+            571,
+            910,
+            621
+        ],
+        "page_idx": 0
+    },
+    {
+        "type": "image",
+        "img_path": "images/9f4fe36cfcf46d5fb5171bf11a5c95a47582d41d657507949f06284b3be1fbfb.jpg",
+        "image_caption": [],
+        "image_footnote": [],
+        "content": "",
+        "bbox": [
+            90,
+            634,
+            277,
+            728
+        ],
+        "page_idx": 0
+    },
+    {
+        "type": "text",
+        "text": "A. $(-2,0]$ B. $(2,5)$ C. $[-2,0] \\cup (2,5)$ D. $(-2,0] \\cup (2,5)$",
+        "bbox": [
+            84,
+            745,
+            647,
+            804
+        ],
+        "page_idx": 0
+    },
+    {
+        "type": "text",
+        "text": "【答案】D  \n【解析】  \n【分析】利用集合的交并补运算，及韦恩图求阴影部分对应的集合.",
+        "bbox": [
+            90,
+            818,
+            606,
+            891
+        ],
+        "page_idx": 0
+    },
+    {
+        "type": "page_number",
+        "text": "第 1 页/共 20 页",
+        "bbox": [
+            440,
+            910,
+            554,
+            925
+        ],
+        "page_idx": 0
+    },
+    {
+        "type": "text",
+        "text": "B.",
+        "bbox": [
+            495,
+            648,
+            515,
+            662
+        ],
+        "page_idx": 1
+    },
+    {
+        "type": "text",
+        "text": "【详解】由题设 $A \\cup B = \\{x \\mid x \\leq 0 \\text{ 或 } x > 2\\}$ ， $A \\cap B = \\{x \\mid x \\leq -2 \\text{ 或 } x^{3} 5\\}$ ，\n所以 $\\check{\\partial}_{R}(A\\cap B)=\\{x\\mid-2<x<5\\}$ ，由图知，阴影部分为 $\\check{\\partial}_{R}(A\\cap B)\\cap(A\\cup B)$ ，\n所以 $\\check{\\partial}_{R}(A\\cap B)\\cap(A\\cup B)=(-2,0]\\cup(2,5)$ .",
+        "bbox": [
+            85,
+            61,
+            697,
+            156
+        ],
+        "page_idx": 1
+    },
+    {
+        "type": "text",
+        "text": "故选：D",
+        "bbox": [
+            85,
+            170,
+            159,
+            185
+        ],
+        "page_idx": 1
+    },
+    {
+        "type": "text",
+        "text": "3. 已知： $p: \\frac{1}{x-2} \\geq 1$ ， $q: \\log_{2}(x-a) \\geq 1$ . 若 p 是 q 的充分不必要条件，则实数 a 的取值范围为（）\n\nA. (0,1)\n\nB. (0,1]\n\nC. $(-∞,0]$ D. $(-∞,1]$",
+        "bbox": [
+            84,
+            195,
+            895,
+            298
+        ],
+        "page_idx": 1
+    },
+    {
+        "type": "text",
+        "text": "【分析】解分式不等式、对数不等式求对应 $x$ 范围，结合充分不必要条件有 $a + 2 \\leq 2$ ，即可得范围.  \n【详解】由 $p: \\frac{1}{x - 2} \\geq 1 \\Rightarrow 1 - \\frac{1}{x - 2} = \\frac{x - 3}{x - 2} \\leq 0$ ，可得 $\\left\\{ \\begin{array}{l} (x - 2)(x - 3) \\leq 0 \\\\ x - 2 \\neq 0 \\end{array} \\right. \\Rightarrow 2 < x \\leq 3$ ；  \n由 $q: \\log_2(x - a) \\geq 1 \\Rightarrow x - a \\geq 2 \\Rightarrow x \\geq a + 2$ ，  \n因为 $p$ 是 $q$ 的充分不必要条件，则 $a + 2 \\leq 2 \\Rightarrow a \\leq 0$ ：  \n故选：C",
+        "bbox": [
+            87,
+            363,
+            858,
+            531
+        ],
+        "page_idx": 1
+    },
+    {
+        "type": "text",
+        "text": "4. 函数 $f(x) = \\frac{\\mathrm{e}^x - \\mathrm{e}^{-x}}{x^2 + 1}$ 在 $[-3, 3]$ 上的大致图象为（）",
+        "bbox": [
+            84,
+            545,
+            542,
+            580
+        ],
+        "page_idx": 1
+    },
+    {
+        "type": "image",
+        "img_path": "images/06a42bdfcf16b12b0f0d175ffb7966d6ce57e611564e46e0986b1ea9defa107f.jpg",
+        "image_caption": [
+            "A."
+        ],
+        "image_footnote": [],
+        "content": "",
+        "bbox": [
+            117,
+            590,
+            315,
+            715
+        ],
+        "page_idx": 1
+    },
+    {
+        "type": "image",
+        "img_path": "images/1f57db3410a2d5c476f2d40938bc41430356bc7fca60f53fbca2c8d2212a302f.jpg",
+        "image_caption": [],
+        "image_footnote": [],
+        "content": "",
+        "bbox": [
+            524,
+            590,
+            722,
+            715
+        ],
+        "page_idx": 1
+    },
+    {
+        "type": "image",
+        "img_path": "images/d8bb2f97d54305b2dbbd20799dfaa68f0887a6018c2f64e80b363bfaf5856c5c.jpg",
+        "image_caption": [
+            "C.",
+            "D."
+        ],
+        "image_footnote": [],
+        "content": "",
+        "bbox": [
+            115,
+            721,
+            315,
+            846
+        ],
+        "page_idx": 1
+    },
+    {
+        "type": "text",
+        "text": "【答案】A",
+        "bbox": [
+            92,
+            856,
+            176,
+            871
+        ],
+        "page_idx": 1
+    },
+    {
+        "type": "text",
+        "text": "【解析】",
+        "bbox": [
+            92,
+            883,
+            156,
+            898
+        ],
+        "page_idx": 1
+    },
+    {
+        "type": "image",
+        "img_path": "images/5227f2e8ec8540497ec6dfdefd0081bf328f5bbe41095b116386c8961baabb8e.jpg",
+        "image_caption": [],
+        "image_footnote": [],
+        "content": "",
+        "bbox": [
+            524,
+            721,
+            726,
+            847
+        ],
+        "page_idx": 1
+    },
+    {
+        "type": "page_number",
+        "text": "第 2 页/共 20 页",
+        "bbox": [
+            440,
+            910,
+            554,
+            925
+        ],
+        "page_idx": 1
+    },
+    {
+        "type": "text",
+        "text": "【分析】由函数的奇偶性，可排除 B；由 $f(2)>1$ 时，可排除选项 CD，可得出正确答案\n\n【详解】 $f(-x)=\\frac{\\mathrm{e}^{-x}-\\mathrm{e}^{x}}{x^{2}+1}=-f(x)$ ，所以函数 $y=f(x)$ 是奇函数，排除选项 B，\n\n又 $f(2)=\\frac{\\mathrm{e}^{2}-\\mathrm{e}^{-2}}{5}>1$ ，排除选项 CD，\n\n故选：A",
+        "bbox": [
+            87,
+            61,
+            778,
+            219
+        ],
+        "page_idx": 2
+    },
+    {
+        "type": "text",
+        "text": "5. 已知函数 $g(x)$ 既是二次函数又是幂函数，若函数 $f(x)=\\frac{x^{3}}{g(x)+1}+1$ ，则 $f(-2024)+f(-2023)+\\cdots+f(-1)+f(0)+f(1)+\\cdots+f(2023)+f(2024)=(\\quad)$ A. 2024 B. 2025 C. 4048 D. 4049",
+        "bbox": [
+            84,
+            236,
+            786,
+            344
+        ],
+        "page_idx": 2
+    },
+    {
+        "type": "text",
+        "text": "【分析】根据已知有 $f(x)=\\frac{x^{3}}{x^{2}+1}+1$ ，进而可得 $f(x)+f(-x)=2$ 、 $f(0)=1$ ，利用对称性求目标式的值.\n【详解】由题可知： $f(x)=\\frac{x^{3}}{x^{2}+1}+1$ ，则 $f(-x)=-\\frac{x^{3}}{x^{2}+1}+1$ 所以 $f(x)+f(-x)=2$ ，且 $f(0)=1$ 则 $f(-2024)+f(-2023)+\\cdots+f(-1)+f(0)+f(1)\\cdots+f(2023)+f(2024)$ $=2024\\times[f(-1)+f(1)]+f(0)=2024\\times2+1=4049$ .\n故选：D",
+        "bbox": [
+            85,
+            414,
+            910,
+            680
+        ],
+        "page_idx": 2
+    },
+    {
+        "type": "text",
+        "text": "6. 已知 $y = f(x + 2)$ 是定义在 R 上的偶函数，且对任意的 $2 \\leq x_{1} < x_{2}$ ，都有 $(x_{1} - x_{2})[f(x_{1}) - f(x_{2})] < 0$ 恒成立，则关于 x 的不等式 $f(2x) > f(x-1)$ 的解集为（）\n\nA. $\\left(-\\infty, -\\frac{5}{3}\\right)$ B. $(1, +\\infty)$ C. $\\left(-\\frac{5}{3}, 1\\right)$ D. $\\left(-1, \\frac{5}{3}\\right)$",
+        "bbox": [
+            82,
+            690,
+            909,
+            860
+        ],
+        "page_idx": 2
+    },
+    {
+        "type": "text",
+        "text": "【答案】D",
+        "bbox": [
+            92,
+            873,
+            176,
+            889
+        ],
+        "page_idx": 2
+    },
+    {
+        "type": "page_number",
+        "text": "第 3 页/共 20 页",
+        "bbox": [
+            440,
+            910,
+            554,
+            925
+        ],
+        "page_idx": 2
+    },
+    {
+        "type": "text",
+        "text": "【解析】",
+        "bbox": [
+            92,
+            58,
+            157,
+            74
+        ],
+        "page_idx": 3
+    },
+    {
+        "type": "text",
+        "text": "【分析】根据题设有 $f(x)$ 在 $[2, +\\infty)$ 上递减，且函数图象关于 $x = 2$ 对称，利用单调性和对称性解不等式求解集.",
+        "bbox": [
+            85,
+            90,
+            910,
+            141
+        ],
+        "page_idx": 3
+    },
+    {
+        "type": "text",
+        "text": "【详解】由题设， $f(x)$ 在 $[2,+\\infty)$ 上递减，且函数图象关于 x=2 对称，",
+        "bbox": [
+            90,
+            155,
+            640,
+            172
+        ],
+        "page_idx": 3
+    },
+    {
+        "type": "text",
+        "text": "根据 $f(2x) > f(x - 1)$ ，则 $|2x - 2| < |x - 1 - 2| \\Rightarrow 2|x - 1| < |x - 3|$ ，",
+        "bbox": [
+            85,
+            191,
+            618,
+            210
+        ],
+        "page_idx": 3
+    },
+    {
+        "type": "text",
+        "text": "所以 $4(x - 1)^2 < (x - 3)^2 \\Rightarrow 3x^2 - 2x - 5 = (3x - 5)(x + 1) < 0$ ，可得 $-1 < x < \\frac{5}{3}$ .",
+        "bbox": [
+            85,
+            221,
+            705,
+            256
+        ],
+        "page_idx": 3
+    },
+    {
+        "type": "text",
+        "text": "故选：D",
+        "bbox": [
+            85,
+            263,
+            159,
+            278
+        ],
+        "page_idx": 3
+    },
+    {
+        "type": "text",
+        "text": "7. 若关于 $x$ 的不等式 $0 \\leq ax^2 + bx + c \\leq 1 (a > 0)$ 的解集为 $\\{x \\mid -1 \\leq x \\leq 2\\}$ ，则 $a + 2b + c$ 的取值范围是（）A. $\\left[-1, \\frac{1}{3}\\right]$ B. $\\left[-\\frac{1}{3}, 1\\right)$ C. $\\left(-\\infty, -\\frac{1}{3}\\right)$ D. $[1, +\\infty)$",
+        "bbox": [
+            84,
+            292,
+            884,
+            451
+        ],
+        "page_idx": 3
+    },
+    {
+        "type": "text",
+        "text": "【答案】B",
+        "bbox": [
+            92,
+            466,
+            176,
+            482
+        ],
+        "page_idx": 3
+    },
+    {
+        "type": "text",
+        "text": "【解析】",
+        "bbox": [
+            92,
+            494,
+            156,
+            508
+        ],
+        "page_idx": 3
+    },
+    {
+        "type": "text",
+        "text": "【分析】根据题设及对应二次函数性质知 $f(x)=ax^{2}+bx+c(a>0)$ 的对称轴为 $x=\\frac{1}{2}$ 且 $\\left\\{\\begin{aligned}f(-1)&=f(2)=1\\\\ f(\\frac{1}{2})&\\geq0\\end{aligned}\\right.$ 求参数关系及范围，进而求目标式范围.\n【详解】由题设，二次函数 $f(x)=ax^{2}+bx+c(a>0)$ 的对称轴为 $x=-\\frac{b}{2a}=\\frac{1}{2}$ ，则 b=-a，\n且 $\\left\\{\\begin{aligned}f(-1)=f(2)=1\\\\ f(\\frac{1}{2})&\\geq0\\end{aligned}\\right.$ ，即 $\\left\\{\\begin{aligned}a-b+c=1\\\\ 4a+2b+c=1\\\\ \\frac{a}{4}+\\frac{b}{2}+c\\geq0\\end{aligned}\\right.$ ，所以 $\\left\\{\\begin{aligned}c=1-2a\\\\ 4c-a\\geq0\\end{aligned}\\right.$ ，可得 $0<a\\leq\\frac{4}{9}$ ，\n所以 $a+2b+c=1-3a\\in[-\\frac{1}{3},1)$ .\n故选：B",
+        "bbox": [
+            85,
+            523,
+            907,
+            825
+        ],
+        "page_idx": 3
+    },
+    {
+        "type": "text",
+        "text": "8. 设函数 $f(x) = \\frac{5}{2} - \\frac{1}{2^x + 1}$ ，正实数 $a$ ， $b$ 满足 $f(a) + f(b - 1) = 4$ ，则 $\\frac{b^2}{a + 1} + \\frac{a^2}{b + 2}$ 的最小值为（）",
+        "bbox": [
+            84,
+            839,
+            910,
+            877
+        ],
+        "page_idx": 3
+    },
+    {
+        "type": "page_number",
+        "text": "第 4 页/共 20 页",
+        "bbox": [
+            440,
+            910,
+            554,
+            925
+        ],
+        "page_idx": 3
+    },
+    {
+        "type": "text",
+        "text": "A. $\\frac{4}{15}$ B. $\\frac{1}{4}$ C. $\\frac{1}{2}$ D. 1",
+        "bbox": [
+            85,
+            61,
+            737,
+            99
+        ],
+        "page_idx": 4
+    },
+    {
+        "type": "text",
+        "text": "【解析】",
+        "bbox": [
+            92,
+            141,
+            156,
+            156
+        ],
+        "page_idx": 4
+    },
+    {
+        "type": "text",
+        "text": "【分析】由题设可得 $a + b = 1$ ，应用基本不等式“1”的代换求目标式的最小值，注意等号成立条件.  \n【详解】由题设 $\\frac{5}{2} -\\frac{1}{2^a + 1} +\\frac{5}{2} -\\frac{1}{2^{b - 1} + 1} = 4$ ，则 $\\frac{1}{2^a + 1} +\\frac{1}{2^{b - 1} + 1} = 1$ ，整理得 $a + b = 1$ 所以 $\\frac{b^2}{a + 1} +\\frac{a^2}{b + 2} = \\frac{1}{4} [(a + 1) + (b + 2)](\\frac{b^2}{a + 1} +\\frac{a^2}{b + 2}) = \\frac{1}{4} [a^2 +b^2 +\\frac{b^2(b + 2)}{a + 1} +\\frac{a^2(a + 1)}{b + 2} ]$ $\\geq \\frac{1}{4}[a^2 +b^2 +2\\sqrt{\\frac{b^2(b + 2)}{a + 1}\\cdot\\frac{a^2(a + 1)}{b + 2}} ] = \\frac{1}{4} (a^2 +b^2 +2ab) = \\frac{(a + b)^2}{4} = \\frac{1}{4},$ 当且仅当 $\\frac{b^2(b + 2)}{a + 1} = \\frac{a^2(a + 1)}{b + 2}$ ，即 $a = \\frac{3}{5},b = \\frac{2}{5}$ 时等号成立，  \n所以目标式最小值为 $\\frac{1}{4}$ .  \n故选：B",
+        "bbox": [
+            85,
+            168,
+            847,
+            450
+        ],
+        "page_idx": 4
+    },
+    {
+        "type": "text",
+        "text": "二、多项选择题：本大题共4小题，每小题5分，共20分.",
+        "text_level": 2,
+        "bbox": [
+            85,
+            464,
+            613,
+            483
+        ],
+        "page_idx": 4
+    },
+    {
+        "type": "text",
+        "text": "9. 下列命题为真命题的是（）\nA. 若 $a > b > 0$ ，则 $ac^2 > bc^2$ B. 若 $a > b > 0$ ，则 $a^2 > b^2$ C. 若 $a < b < 0$ ，则 $\\frac{1}{a} > \\frac{1}{b}$ D. 若 $a > b > 0$ ， $c < d < 0$ ， $m < 0$ ，则 $\\frac{m}{a - c} > \\frac{m}{b - d}$ 【答案】BCD\n【解析】\n【分析】利用不等式性质判断 A、B、C，应用作差法判断 D.\n【详解】A: $c = 0$ 时有 $ac^2 = bc^2$ ，错；\nB: 由 $a > b > 0$ ，必有 $a^2 > b^2$ ，对；\nC: 由 $a < b < 0$ ，即 $|a| > |b| > 0$ ，则 $\\frac{1}{a} > \\frac{1}{b}$ ，对；\nD: $\\frac{m}{a - c} - \\frac{m}{b - d} = \\frac{mb - md - ma + mc}{(a - c)(b - d)} = \\frac{m(b - a + c - d)}{(a - c)(b - d)}$ $b - a < 0, c - d < 0$ ，且 $m < 0$ ， $-c > -d > 0$ ， $a > b > 0$ ，故 $a - c > b - d > 0$ ，\n所以 $\\frac{m}{a - c} - \\frac{m}{b - d} > 0$ ，即 $\\frac{m}{a - c} > \\frac{m}{b - d}$ ，对.",
+        "bbox": [
+            82,
+            492,
+            611,
+            913
+        ],
+        "page_idx": 4
+    },
+    {
+        "type": "page_number",
+        "text": "第 5 页/共 20 页",
+        "bbox": [
+            440,
+            910,
+            554,
+            925
+        ],
+        "page_idx": 4
+    },
+    {
+        "type": "text",
+        "text": "",
+        "bbox": [
+            85,
+            61,
+            717,
+            128
+        ],
+        "page_idx": 5
+    },
+    {
+        "type": "text",
+        "text": "故选：BCD",
+        "bbox": [
+            85,
+            133,
+            181,
+            148
+        ],
+        "page_idx": 5
+    },
+    {
+        "type": "text",
+        "text": "10. 已知 $m, n \\in (0,1) \\cup (1, +\\infty)$ ，若 $\\log_m 2 = \\frac{1}{1 - 2a}$ ， $\\log_n 2 = \\frac{1}{a^2}$ ，则下列命题正确的是（）A. 若 $a = 2$ ，则 $mn = 2$ B. 若 $a > 2$ ，则 $mn > 2$ C. 若 $\\frac{n}{m} = 4$ ，则 $a = 1$ D. 若 $\\frac{n}{m} > 4$ ，则 $a > 1$",
+        "bbox": [
+            84,
+            164,
+            833,
+            287
+        ],
+        "page_idx": 5
+    },
+    {
+        "type": "text",
+        "text": "【答案】AB",
+        "bbox": [
+            92,
+            300,
+            189,
+            315
+        ],
+        "page_idx": 5
+    },
+    {
+        "type": "text",
+        "text": "【解析】",
+        "bbox": [
+            92,
+            326,
+            156,
+            343
+        ],
+        "page_idx": 5
+    },
+    {
+        "type": "text",
+        "text": "【分析】利用对数的运算性质，用 $a$ 表示出 $mn, \\frac{n}{m}$ ，结合各项判断正误。【详解】A： $a = 2$ 时， $\\log_m 2 = \\frac{\\ln 2}{\\ln m} = -\\frac{1}{3}$ ， $\\log_n 2 = \\frac{\\ln 2}{\\ln n} = \\frac{1}{4}$ ，故 $\\ln m = -3\\ln 2$ ， $\\ln n = 4\\ln 2$ ，所以 $\\ln m + \\ln n = \\ln 2 \\Rightarrow mn = 2$ ，对；B：同 A 分析， $\\ln m = (1 - 2a)\\ln 2$ ， $\\ln n = a^2\\ln 2$ ，",
+        "bbox": [
+            87,
+            351,
+            650,
+            479
+        ],
+        "page_idx": 5
+    },
+    {
+        "type": "text",
+        "text": "若 $a > 2$ ，则 $\\ln m + \\ln n = (a - 1)^2\\ln 2\\Rightarrow mn = 2^{(a - 1)^2} > 2$ ，对；",
+        "bbox": [
+            84,
+            497,
+            579,
+            516
+        ],
+        "page_idx": 5
+    },
+    {
+        "type": "text",
+        "text": "C: 由 B 分析， $\\ln n - \\ln m = \\ln \\frac{n}{m} = (a^{2} + 2a - 1) \\cdot \\ln 2 = 2 \\ln 2 \\Rightarrow a^{2} + 2a - 1 = 2$ ，",
+        "bbox": [
+            85,
+            529,
+            715,
+            561
+        ],
+        "page_idx": 5
+    },
+    {
+        "type": "equation",
+        "text": "$$\na ^ {2} + 2 a - 1 > 2 \\Rightarrow a ^ {2} + 2 a - 3 = (a + 3) (a - 1) > 0\n$$",
+        "text_format": "latex",
+        "bbox": [
+            211,
+            598,
+            596,
+            615
+        ],
+        "page_idx": 5
+    },
+    {
+        "type": "equation",
+        "text": "$$\na > 1\n$$",
+        "text_format": "latex",
+        "bbox": [
+            635,
+            602,
+            675,
+            615
+        ],
+        "page_idx": 5
+    },
+    {
+        "type": "equation",
+        "text": "$$\na <   - 3\n$$",
+        "text_format": "latex",
+        "bbox": [
+            695,
+            602,
+            751,
+            615
+        ],
+        "page_idx": 5
+    },
+    {
+        "type": "text",
+        "text": "故选：AB",
+        "bbox": [
+            87,
+            634,
+            171,
+            648
+        ],
+        "page_idx": 5
+    },
+    {
+        "type": "text",
+        "text": "11. 已知函数 $f(x)=\\left\\{\\begin{aligned}\\left|\\log_{2}(x-1)\\right|, &1<x\\leq3\\\\ x^{2}-8x+16, &x>3\\end{aligned}\\right.$ ，若方程 $y=f(x)-m$ 有 4 个不同的零点 $x_{1}$ ， $x_{2}$ ， $x_{3}$ ， $x_{4}$ ，且 $x_{1}<x_{2}<x_{3}<x_{4}$ ，则（）\n\nA. 0<m<2\n\nB. $x_{1}+x_{2}=x_{1}x_{2}$ C. $x_{3}+x_{4}=8$ D. $\\left(\\frac{1}{x_{1}}+\\frac{1}{x_{2}}\\right)\\left(x_{3}^{2}+x_{4}^{2}\\right)$ 的最小值是 32",
+        "bbox": [
+            84,
+            659,
+            907,
+            833
+        ],
+        "page_idx": 5
+    },
+    {
+        "type": "page_number",
+        "text": "第 6 页/共 20 页",
+        "bbox": [
+            440,
+            910,
+            554,
+            925
+        ],
+        "page_idx": 5
+    },
+    {
+        "type": "text",
+        "text": "【分析】根据解析式画出 $f(x)$ 的大致图象，数形结合研究 $f(x)$ 与 $y = m$ 交点横坐标，得 $0 < m < 1$ ，并由对数函数、二次函数性质得 $(x_{1} - 1)(x_{2} - 1) = 1$ 、 $x_{3} + x_{4} = 8$ ，进而判断各项正误.",
+        "bbox": [
+            85,
+            58,
+            910,
+            108
+        ],
+        "page_idx": 6
+    },
+    {
+        "type": "text",
+        "text": "【详解】由题设 $f(x)$ 的大致图象如下， $x_{1}$ ， $x_{2}$ ， $x_{3}$ ， $x_{4}$ 为 $f(x)$ 与 $y = m$ 交点横坐标，",
+        "bbox": [
+            92,
+            128,
+            769,
+            145
+        ],
+        "page_idx": 6
+    },
+    {
+        "type": "image",
+        "img_path": "images/bc0e0859039ae3395a9f971a4d9ac5b73259f47e47de750c653e580c6a34bdf2.jpg",
+        "image_caption": [],
+        "image_footnote": [],
+        "content": "",
+        "bbox": [
+            90,
+            159,
+            280,
+            241
+        ],
+        "page_idx": 6
+    },
+    {
+        "type": "text",
+        "text": "由图知， $\\frac{3}{2}<x_{1}<2<x_{2}<3<x_{3}<4<x_{4}<5,\\quad0<m<1$ ，A错；",
+        "bbox": [
+            85,
+            249,
+            594,
+            282
+        ],
+        "page_idx": 6
+    },
+    {
+        "type": "text",
+        "text": "且 $(x_{1} - 1)(x_{2} - 1) = 1\\Rightarrow x_{1} + x_{2} = x_{1}x_{2}$ ， $x_{3} + x_{4} = 8$ ，B、C对；",
+        "bbox": [
+            87,
+            294,
+            574,
+            311
+        ],
+        "page_idx": 6
+    },
+    {
+        "type": "text",
+        "text": "由 $\\left(\\frac{1}{x_{1}}+\\frac{1}{x_{2}}\\right)\\left(x_{3}^{2}+x_{4}^{2}\\right)=(x_{3}+x_{4})^{2}-2x_{3}x_{4}=64-2x_{3}x_{4}$ ，而 $15<x_{3}x_{4}<16$ ，",
+        "bbox": [
+            87,
+            326,
+            678,
+            370
+        ],
+        "page_idx": 6
+    },
+    {
+        "type": "text",
+        "text": "所以 $\\left(\\frac{1}{x_1} +\\frac{1}{x_2}\\right)\\left(x_3^2 +x_4^2\\right)\\in (32,34)$ ，无最小值，D错.",
+        "bbox": [
+            85,
+            382,
+            509,
+            426
+        ],
+        "page_idx": 6
+    },
+    {
+        "type": "text",
+        "text": "故选：BC",
+        "bbox": [
+            85,
+            439,
+            169,
+            454
+        ],
+        "page_idx": 6
+    },
+    {
+        "type": "text",
+        "text": "12. 已知 $f(x)$ 是定义在 $\\mathbf{R}$ 上的不恒为零的函数，对于任意 $x, y \\in \\mathbf{R}$ 都满足 $f(xy) = yf(x) + xf(y)$ ，则下列说法正确的是（）  \nA. $f(0) = 0$ B. $f(x)$ 是偶函数  \nC. 若 $f(3) = 3$ ，则 $f\\left(\\frac{1}{3}\\right) = -\\frac{1}{3}$ D. 若当 $x > 1$ 时， $f(x) < 0$ ，则 $g(x) = \\frac{f(x)}{x}$ 在 $(0, +\\infty)$ 单调递减",
+        "bbox": [
+            82,
+            469,
+            910,
+            703
+        ],
+        "page_idx": 6
+    },
+    {
+        "type": "text",
+        "text": "【答案】ACD",
+        "bbox": [
+            92,
+            715,
+            200,
+            732
+        ],
+        "page_idx": 6
+    },
+    {
+        "type": "text",
+        "text": "【解析】",
+        "bbox": [
+            92,
+            744,
+            156,
+            759
+        ],
+        "page_idx": 6
+    },
+    {
+        "type": "text",
+        "text": "【分析】A 令 x=y=0 判断；B 令 y=-x 结合 $f(x)$ 在 R 上的不恒为零判断；C 令 $y=\\frac{1}{x}\\neq0$ 得 $f(x)=-x^{2}f\\left(\\frac{1}{x}\\right)$ ，再由已知求 $f\\left(\\frac{1}{3}\\right)$ ；D 若 $x,y\\neq0$ ，由题设得 $g(xy)=g(x)+g(y)$ ，令 $xy=x_{1}>x=x_{2}>0$ 结合单调性定义及已知判断单调性.",
+        "bbox": [
+            87,
+            778,
+            910,
+            904
+        ],
+        "page_idx": 6
+    },
+    {
+        "type": "page_number",
+        "text": "第 7 页/共 20 页",
+        "bbox": [
+            440,
+            910,
+            554,
+            925
+        ],
+        "page_idx": 6
+    },
+    {
+        "type": "text",
+        "text": "【详解】A：令 $x = y = 0$ ，可得 $f(0) = 0$ ，对；  \nB：令 $y = -x$ ，则 $f(-x^2) = -xf(x) + xf(-x) = x[f(-x) - f(x)]$ ，由 $f(x)$ 在 $\\mathbf{R}$ 上的不恒为零，故 $f(-x) - f(x) = 0$ 不恒成立，错；  \nC：令 $y = \\frac{1}{x} \\neq 0$ ，则 $f(1) = \\frac{f(x)}{x} + xf\\left(\\frac{1}{x}\\right) = 0$ ，则 $f(x) = -x^2 f\\left(\\frac{1}{x}\\right)$ ，令 $x = \\frac{1}{3}$ ，则 $f\\left(\\frac{1}{3}\\right) = -\\frac{1}{9} f(3) = -\\frac{1}{3}$ ，对；  \nD：若 $x, y \\neq 0$ ，则 $\\frac{f(xy)}{xy} = \\frac{f(x)}{x} + \\frac{f(y)}{y}$ ，即 $g(xy) = g(x) + g(y)$ ，取 $xy = x_1 > x = x_2 > 0$ ，则 $g(x_1) - g(x_2) = g\\left(\\frac{x_1}{x_2}\\right)$ ，显然 $\\frac{x_1}{x_2} > 1$ ，即 $f\\left(\\frac{x_1}{x_2}\\right) < 0$ 所以 $g(x_1) - g(x_2) < 0$ ，即 $g(x_1) < g(x_2)$ ，故 $g(x) = \\frac{f(x)}{x}$ 在 $(0, +\\infty)$ 单调递减，对.故选：ACD",
+        "bbox": [
+            82,
+            61,
+            749,
+            466
+        ],
+        "page_idx": 7
+    },
+    {
+        "type": "text",
+        "text": "第II卷（非选择题，共90分）",
+        "text_level": 2,
+        "bbox": [
+            359,
+            475,
+            626,
+            492
+        ],
+        "page_idx": 7
+    },
+    {
+        "type": "text",
+        "text": "三、填空题：本题共4小题，每小题5分，共20分.",
+        "text_level": 2,
+        "bbox": [
+            84,
+            502,
+            552,
+            520
+        ],
+        "page_idx": 7
+    },
+    {
+        "type": "text",
+        "text": "13. 已知函数 $f(x)=\\ln\\left(x+\\sqrt{1+x^{2}}\\right)+2x^{3}+3x$ ，则不等式 $f(\\lg x)<f(2)$ 的解集是 \\_\\_\\_\\_。\n【答案】(0,100)\n【解析】\n【分析】根据题意，先分析函数的奇偶性，再分析该函数的单调性即可得.\n【详解】 $f(-x)=\\ln\\left(-x+\\sqrt{1+x^{2}}\\right)-2x^{3}-x$ 则 $f(x)+f(-x)=\\ln\\left(x+\\sqrt{1+x^{2}}\\right)+2x^{3}+x+\\ln\\left(-x+\\sqrt{1+x^{2}}\\right)-2x^{3}-x$ $=\\ln\\left(x+\\sqrt{1+x^{2}}\\right)\\left(-x+\\sqrt{1+x^{2}}\\right)=\\ln\\left(x^{2}+1-x^{2}\\right)=0$ 又 $x+\\sqrt{1+x^{2}}>x+|x|>0$",
+        "bbox": [
+            85,
+            530,
+            840,
+            804
+        ],
+        "page_idx": 7
+    },
+    {
+        "type": "text",
+        "text": "故 $f(x)$ 的定义域为 R，故 $f(x)$ 为奇函数，",
+        "bbox": [
+            85,
+            809,
+            423,
+            825
+        ],
+        "page_idx": 7
+    },
+    {
+        "type": "text",
+        "text": "当 $x > 0$ 时，有 $y = \\ln \\left(x + \\sqrt{1 + x^2}\\right), y = 2x^3 + x$ 均为单调递增函数，故 $f(x)$ 在 $(0, +\\infty)$ 上为增函数，又 $f(x)$ 为奇函数，故该函数在定义域 $\\mathbb{R}$ 上单调递增，",
+        "bbox": [
+            85,
+            835,
+            862,
+            891
+        ],
+        "page_idx": 7
+    },
+    {
+        "type": "page_number",
+        "text": "第 8 页/共 20 页",
+        "bbox": [
+            440,
+            910,
+            554,
+            925
+        ],
+        "page_idx": 7
+    },
+    {
+        "type": "text",
+        "text": "即 $f(\\lg x) < f(2)$ 可得 $\\lg x < 2$ ，解得 $0 < x < 100$",
+        "bbox": [
+            85,
+            61,
+            492,
+            80
+        ],
+        "page_idx": 8
+    },
+    {
+        "type": "text",
+        "text": "故答案为： $(0,100)$ .",
+        "bbox": [
+            85,
+            99,
+            253,
+            117
+        ],
+        "page_idx": 8
+    },
+    {
+        "type": "text",
+        "text": "14. 定义：[x]表示不超过 x 的最大整数，如 $\\left[-1.6\\right]=-2,\\quad\\left[1.8\\right]=1$ ，已知函数 $f(x)=\\left[\\frac{2x+3}{x+1}\\right]$ ， $x \\in (-\\infty, -2) \\cup (0, +\\infty)$ ，则函数 $f(x)$ 的值域为 \\_\\_\\_\\_.",
+        "bbox": [
+            85,
+            135,
+            838,
+            212
+        ],
+        "page_idx": 8
+    },
+    {
+        "type": "text",
+        "text": "【答案】 $\\{1,2\\}$",
+        "bbox": [
+            90,
+            228,
+            206,
+            247
+        ],
+        "page_idx": 8
+    },
+    {
+        "type": "text",
+        "text": "【解析】",
+        "bbox": [
+            92,
+            262,
+            157,
+            279
+        ],
+        "page_idx": 8
+    },
+    {
+        "type": "text",
+        "text": "【分析】根据新定义及分式型函数的值域，求 $f(x)$ 在 $x \\in (-\\infty, -2)$ 、 $x \\in (0, +\\infty)$ 上对应值域，即可得结果.",
+        "bbox": [
+            85,
+            294,
+            910,
+            344
+        ],
+        "page_idx": 8
+    },
+    {
+        "type": "text",
+        "text": "【详解】由 $f(x)=\\left[2+\\frac{1}{x+1}\\right]$ ,",
+        "bbox": [
+            90,
+            357,
+            337,
+            395
+        ],
+        "page_idx": 8
+    },
+    {
+        "type": "text",
+        "text": "当 $x \\in (-\\infty, -2)$ 时， $2 + \\frac{1}{x + 1} \\in (1, 2)$ ，则 $f(x) = 1$ ；",
+        "bbox": [
+            85,
+            406,
+            497,
+            441
+        ],
+        "page_idx": 8
+    },
+    {
+        "type": "text",
+        "text": "当 $x \\in (0, +\\infty)$ 时， $2 + \\frac{1}{x + 1} \\in (2,3)$ ，则 $f(x) = 2$ 。",
+        "bbox": [
+            87,
+            444,
+            489,
+            478
+        ],
+        "page_idx": 8
+    },
+    {
+        "type": "text",
+        "text": "所以函数 $f(x)$ 的值域为 $\\{1,2\\}$ .",
+        "bbox": [
+            85,
+            487,
+            332,
+            507
+        ],
+        "page_idx": 8
+    },
+    {
+        "type": "text",
+        "text": "故答案为： $\\{1,2\\}$",
+        "bbox": [
+            85,
+            525,
+            223,
+            544
+        ],
+        "page_idx": 8
+    },
+    {
+        "type": "text",
+        "text": "15. 函数 $f(x) = \\log_a(ax^2 - 4x + 9)$ 在区间[1,3]上严格递增，则实数 $a$ 的取值范围是 \\_\\_\\_\\_.",
+        "bbox": [
+            85,
+            558,
+            855,
+            582
+        ],
+        "page_idx": 8
+    },
+    {
+        "type": "text",
+        "text": "【答案】 $\\left(\\frac{1}{3},\\frac{2}{3}\\right]\\cup\\left[2,+\\infty\\right)$",
+        "bbox": [
+            90,
+            598,
+            297,
+            636
+        ],
+        "page_idx": 8
+    },
+    {
+        "type": "text",
+        "text": "【解析】",
+        "bbox": [
+            92,
+            651,
+            157,
+            667
+        ],
+        "page_idx": 8
+    },
+    {
+        "type": "text",
+        "text": "【分析】运用复合函数的单调性分别研究当 $a > 1$ 与 $0 < a < 1$ 时 $g(x) = ax^2 - 4x + 9$ 在[1,3]上的单调性，且 $g(x) > 0$ 在[1,3]恒成立，结合二次函数的单调性即可求得结果.",
+        "bbox": [
+            87,
+            683,
+            910,
+            738
+        ],
+        "page_idx": 8
+    },
+    {
+        "type": "text",
+        "text": "【详解】由题意知，a>0 且 $a\\neq1$ ，",
+        "bbox": [
+            90,
+            753,
+            364,
+            769
+        ],
+        "page_idx": 8
+    },
+    {
+        "type": "text",
+        "text": "令 $g(x)=ax^{2}-4x+9$ ，则其对称轴为 $x=\\frac{4}{2a}=\\frac{2}{a}$ ，",
+        "bbox": [
+            85,
+            777,
+            492,
+            812
+        ],
+        "page_idx": 8
+    },
+    {
+        "type": "text",
+        "text": "①当 $a > 1$ 时，由复合函数的单调性可知， $g(x)$ 在[1,3]上单调递增，且 $g(x) > 0$ 在[1,3]恒成立，",
+        "bbox": [
+            84,
+            822,
+            835,
+            840
+        ],
+        "page_idx": 8
+    },
+    {
+        "type": "page_number",
+        "text": "第9页/共20页",
+        "bbox": [
+            440,
+            910,
+            554,
+            925
+        ],
+        "page_idx": 8
+    },
+    {
+        "type": "text",
+        "text": "则 $\\left\\{ \\begin{array}{l} a > 1 \\\\ \\frac{2}{a} \\leq 1 \\\\ g(1) = a + 5 > 0 \\end{array} \\right.$ ，解得 $a \\geq 2$ ，",
+        "bbox": [
+            87,
+            57,
+            357,
+            139
+        ],
+        "page_idx": 9
+    },
+    {
+        "type": "text",
+        "text": "②当 $0 < a < 1$ 时，由复合函数的单调性可知， $g(x)$ 在 $[1,3]$ 上单调递减，且 $g(x) > 0$ 在 $[1,3]$ 恒成立，则 $\\left\\{ \\begin{array}{c} 0 < a < 1 \\\\ \\frac{2}{a} \\geq 3 \\\\ g(3) = 9a - 3 > 0 \\end{array} \\right.$ ，解得 $\\frac{1}{3} < a \\leq \\frac{2}{3}$ ，综述： $a \\geq 2$ 或 $\\frac{1}{3} < a \\leq \\frac{2}{3}$ . 故答案为： $\\left(\\frac{1}{3}, \\frac{2}{3}\\right] \\cup [2, +\\infty)$ .",
+        "bbox": [
+            82,
+            153,
+            867,
+            361
+        ],
+        "page_idx": 9
+    },
+    {
+        "type": "text",
+        "text": "16. 已知函数 $f(x) = 4^x - m \\cdot 2^{x+1} + m^2 - 3$ ，若 $f(x)$ 的图象上存在不同的两个点关于原点对称，则实数 $m$ 的取值范围为 \\_\\_\\_\\_.",
+        "bbox": [
+            85,
+            374,
+            907,
+            426
+        ],
+        "page_idx": 9
+    },
+    {
+        "type": "text",
+        "text": "【答案】 $\\left(1 - \\sqrt{3},2\\sqrt{2}\\right]$",
+        "bbox": [
+            92,
+            437,
+            275,
+            464
+        ],
+        "page_idx": 9
+    },
+    {
+        "type": "text",
+        "text": "【解析】",
+        "bbox": [
+            92,
+            474,
+            156,
+            491
+        ],
+        "page_idx": 9
+    },
+    {
+        "type": "text",
+        "text": "【分析】根据 $f(x)$ 的图象上存在不同的两个点关于原点对称列方程，利用换元法来求得 m 的取值范围.",
+        "bbox": [
+            92,
+            506,
+            890,
+            524
+        ],
+        "page_idx": 9
+    },
+    {
+        "type": "equation",
+        "text": "$$\nf (x) = \\left(2 ^ {x}\\right) ^ {2} - 2 m \\cdot 2 ^ {x} + m ^ {2} - 3\n$$",
+        "text_format": "latex",
+        "bbox": [
+            159,
+            539,
+            411,
+            564
+        ],
+        "page_idx": 9
+    },
+    {
+        "type": "text",
+        "text": "由于 $f(x)$ 的图象上存在不同的两个点关于原点对称，  \n所以 $f(-x) = -f(x)$ 有解，  \n即 $\\left(2^{-x}\\right)^2 - 2m \\cdot 2^{-x} + m^2 - 3 = -\\left(2^x\\right)^2 + 2m \\cdot 2^x - m^2 + 3$ ， $\\left(2^x\\right)^2 + \\frac{1}{\\left(2^x\\right)^2} - 2m \\cdot \\left(2^x + \\frac{1}{2^x}\\right) + 2m^2 - 6 = 0$ ①，  \n令 $t = 2^x + \\frac{1}{2^x} \\geq 2\\sqrt{2^x \\cdot \\frac{1}{2^x}} = 2$ ，当且仅当 $2^x = \\frac{1}{2^x}, x = 0$ 时等号成立，则 $t^2 - 2 = \\left(2^x\\right)^2 + \\frac{1}{\\left(2^x\\right)^2}$ ，则①可化为 $t^2 - 2m \\cdot t + 2m^2 - 8 = 0$ ，  \n依题意，此方程在 $(2, +\\infty)$ 上有解，  \n当 $\\Delta = 4m^2 - 4(2m^2 - 8) = -4m^2 + 32 = 0$ ，解得 $m = \\pm 2\\sqrt{2}$ ，第10页/共20页",
+        "bbox": [
+            82,
+            577,
+            626,
+            928
+        ],
+        "page_idx": 9
+    },
+    {
+        "type": "text",
+        "text": "当 $m = 2\\sqrt{2}$ 时， $t^2 - 4\\sqrt{2} t + 8 = (t - 2\\sqrt{2})^2 = 0, t = 2\\sqrt{2}$ ，符合题意.",
+        "bbox": [
+            87,
+            57,
+            616,
+            84
+        ],
+        "page_idx": 10
+    },
+    {
+        "type": "text",
+        "text": "当 $m = -2\\sqrt{2}$ 时， $t^2 + 4\\sqrt{2} t + 8 = (t + 2\\sqrt{2})^2 = 0, t = -2\\sqrt{2}$ ，不符合题意.",
+        "bbox": [
+            87,
+            93,
+            663,
+            122
+        ],
+        "page_idx": 10
+    },
+    {
+        "type": "text",
+        "text": "当 $\\Delta = -4m^2 + 32 > 0$ ，即 $-2\\sqrt{2} < m < 2\\sqrt{2}$ ②时，",
+        "bbox": [
+            87,
+            135,
+            480,
+            154
+        ],
+        "page_idx": 10
+    },
+    {
+        "type": "text",
+        "text": "设 $g(t) = t^2 - 2m \\cdot t + 2m^2 - 8(t > 2)$ ， $g(t)$ 的开口向上，对称轴 $t = m$ ，",
+        "bbox": [
+            85,
+            171,
+            650,
+            192
+        ],
+        "page_idx": 10
+    },
+    {
+        "type": "text",
+        "text": "要使 $g(t)$ 在 $(2, +\\infty)$ 上有零点，",
+        "bbox": [
+            85,
+            210,
+            332,
+            229
+        ],
+        "page_idx": 10
+    },
+    {
+        "type": "text",
+        "text": "则 $g(2)=4+4m+2m^{2}-8<0$ 或 $\\left\\{\\begin{aligned}g(2)&=4-4m+2m^{2}-8\\leq0\\\\ m&>2\\end{aligned}\\right.$",
+        "bbox": [
+            85,
+            244,
+            598,
+            285
+        ],
+        "page_idx": 10
+    },
+    {
+        "type": "text",
+        "text": "解得 $1 - \\sqrt{3} < m < 1 + \\sqrt{3}$ 或 $m \\geq 1 + \\sqrt{3}$ ，",
+        "bbox": [
+            85,
+            300,
+            400,
+            321
+        ],
+        "page_idx": 10
+    },
+    {
+        "type": "text",
+        "text": "结合②得 $1-\\sqrt{3}<m<2\\sqrt{2}$ .",
+        "bbox": [
+            85,
+            338,
+            309,
+            357
+        ],
+        "page_idx": 10
+    },
+    {
+        "type": "text",
+        "text": "综上所述，m 的取值范围是 $\\left(1-\\sqrt{3},2\\sqrt{2}\\right]$ .",
+        "bbox": [
+            85,
+            373,
+            421,
+            399
+        ],
+        "page_idx": 10
+    },
+    {
+        "type": "text",
+        "text": "故答案为： $\\left(1 - \\sqrt{3},2\\sqrt{2}\\right]$",
+        "bbox": [
+            85,
+            409,
+            292,
+            436
+        ],
+        "page_idx": 10
+    },
+    {
+        "type": "text",
+        "text": "【点睛】易错点睛：",
+        "bbox": [
+            90,
+            447,
+            240,
+            463
+        ],
+        "page_idx": 10
+    },
+    {
+        "type": "text",
+        "text": "对称点条件的正确使用：在列出关于原点对称的条件时，容易因条件代入不准确而导致方程错误.在运用对称点条件时，需确保每个代入步骤的符号处理正确.",
+        "bbox": [
+            84,
+            475,
+            905,
+            519
+        ],
+        "page_idx": 10
+    },
+    {
+        "type": "text",
+        "text": "一元二次方程的解集判断：在判断一元二次方程的解的存在性时，特别是对参数的范围进行分类讨论时，容易遗漏某些特殊情况或边界条件。因此，在讨论每种情况时，要确保所有可能性都得到了充分考虑。",
+        "bbox": [
+            84,
+            531,
+            890,
+            575
+        ],
+        "page_idx": 10
+    },
+    {
+        "type": "text",
+        "text": "四、解答题：本大题共6小题，其中17题满分10分，其余各题满分12分，共70分.",
+        "text_level": 2,
+        "bbox": [
+            85,
+            586,
+            845,
+            602
+        ],
+        "page_idx": 10
+    },
+    {
+        "type": "text",
+        "text": "17. 设函数 $f(x) = \\sqrt{-x^2 - 3x + 18}$ 的定义域为 A， $g(x) = \\lg \\left[ (x - a - 1)(2a - x) \\right] (a < 1)$ 的定义域为 B.",
+        "bbox": [
+            85,
+            615,
+            902,
+            637
+        ],
+        "page_idx": 10
+    },
+    {
+        "type": "text",
+        "text": "（1）求集合A，B；",
+        "bbox": [
+            94,
+            652,
+            252,
+            667
+        ],
+        "page_idx": 10
+    },
+    {
+        "type": "text",
+        "text": "(2) 若 $B \\subseteq A$ ，求实数 a 的取值范围.",
+        "bbox": [
+            94,
+            678,
+            391,
+            695
+        ],
+        "page_idx": 10
+    },
+    {
+        "type": "text",
+        "text": "【答案】（1） $A=[-6,3]$ ， $B=(2a,a+1)$ ;",
+        "bbox": [
+            92,
+            709,
+            428,
+            728
+        ],
+        "page_idx": 10
+    },
+    {
+        "type": "text",
+        "text": "(2) $[-3,1)$ .",
+        "bbox": [
+            94,
+            747,
+            191,
+            765
+        ],
+        "page_idx": 10
+    },
+    {
+        "type": "text",
+        "text": "【解析】",
+        "bbox": [
+            92,
+            781,
+            156,
+            796
+        ],
+        "page_idx": 10
+    },
+    {
+        "type": "text",
+        "text": "【分析】（1）由根式、对数的性质求函数定义域，确定集合；",
+        "bbox": [
+            92,
+            809,
+            557,
+            825
+        ],
+        "page_idx": 10
+    },
+    {
+        "type": "text",
+        "text": "(2) 根据包含关系列不等式求参数范围.",
+        "bbox": [
+            94,
+            837,
+            405,
+            852
+        ],
+        "page_idx": 10
+    },
+    {
+        "type": "text",
+        "text": "【小问 1 详解】",
+        "bbox": [
+            92,
+            864,
+            210,
+            879
+        ],
+        "page_idx": 10
+    },
+    {
+        "type": "page_number",
+        "text": "第 11 页/共 20 页",
+        "bbox": [
+            436,
+            910,
+            559,
+            925
+        ],
+        "page_idx": 10
+    },
+    {
+        "type": "text",
+        "text": "由题意， $-x^{2}-3x+18\\geqslant0$ ，即 $x^{2}+3x-18\\leq0$ ，解得 $-6\\leq x\\leq3$ ，即 $A=[-6,3]$ 由题意， $(x-a-1)(2a-x)>0$ ，因为a<1，则 $a+1>2a$ ，可得 $2a<x<a+1$ ，\n即 $B=(2a,a+1)$ .",
+        "bbox": [
+            85,
+            61,
+            731,
+            156
+        ],
+        "page_idx": 11
+    },
+    {
+        "type": "text",
+        "text": "【小问 2 详解】",
+        "bbox": [
+            90,
+            170,
+            210,
+            185
+        ],
+        "page_idx": 11
+    },
+    {
+        "type": "text",
+        "text": "因为 $B \\subseteq A$ ，所以 $\\left\\{ \\begin{array}{l} 2a \\geq -6 \\\\ a + 1 \\leq 3 \\end{array} \\right.$ ，解得 $-3 \\leq a \\leq 2$ ，",
+        "bbox": [
+            85,
+            198,
+            465,
+            239
+        ],
+        "page_idx": 11
+    },
+    {
+        "type": "text",
+        "text": "又 $a < 1$ ，所以 $-3 \\leq a < 1$ ，即实数 $a$ 的取值范围[-3,1).",
+        "bbox": [
+            85,
+            256,
+            522,
+            274
+        ],
+        "page_idx": 11
+    },
+    {
+        "type": "text",
+        "text": "18. 已知函数 $f(x) = \\log_3(3x) \\cdot \\log_3\\frac{x}{27} + 4$ ， $x \\in [1, 27]$ .",
+        "bbox": [
+            85,
+            287,
+            532,
+            321
+        ],
+        "page_idx": 11
+    },
+    {
+        "type": "text",
+        "text": "（1）求函数 $f(x)$ 的值域；",
+        "bbox": [
+            92,
+            330,
+            299,
+            348
+        ],
+        "page_idx": 11
+    },
+    {
+        "type": "text",
+        "text": "（2）若不等式 $f\\left(3^t\\right) - kt \\geq 0$ 在 $t \\in \\left[\\frac{1}{2}, 4\\right]$ 上有解，求实数 $k$ 的取值范围.",
+        "bbox": [
+            92,
+            365,
+            655,
+            405
+        ],
+        "page_idx": 11
+    },
+    {
+        "type": "text",
+        "text": "【答案】(1) $[0,4]$ ;",
+        "bbox": [
+            92,
+            423,
+            248,
+            442
+        ],
+        "page_idx": 11
+    },
+    {
+        "type": "text",
+        "text": "(2) $\\left(-\\infty,\\frac{9}{4}\\right]$ .",
+        "bbox": [
+            94,
+            458,
+            211,
+            498
+        ],
+        "page_idx": 11
+    },
+    {
+        "type": "text",
+        "text": "【解析】",
+        "bbox": [
+            92,
+            512,
+            157,
+            527
+        ],
+        "page_idx": 11
+    },
+    {
+        "type": "text",
+        "text": "【分析】（1）由题设有 $f(x)=\\left(\\log_{3}x\\right)^{2}-2\\log_{3}x+1$ ，应用换元法，令 $\\log_{3}x=t(t\\in[0,3])$ ，将问题化为求二次函数的值域；",
+        "bbox": [
+            85,
+            542,
+            910,
+            594
+        ],
+        "page_idx": 11
+    },
+    {
+        "type": "text",
+        "text": "（2）同（1）换元，问题化为 $t \\in \\left[\\frac{1}{2}, 4\\right]$ ， $k \\leq t + \\frac{1}{t} - 2$ 能成立，结合对勾函数性质求右侧最大值，即可得范围.",
+        "bbox": [
+            85,
+            607,
+            910,
+            677
+        ],
+        "page_idx": 11
+    },
+    {
+        "type": "text",
+        "text": "【小问 1 详解】",
+        "bbox": [
+            90,
+            688,
+            208,
+            703
+        ],
+        "page_idx": 11
+    },
+    {
+        "type": "text",
+        "text": "由 $f(x) = (1 + \\log_3 x) \\cdot (\\log_3 x - 3) + 4 = (\\log_3 x)^2 - 2\\log_3 x + 1$",
+        "bbox": [
+            85,
+            719,
+            589,
+            739
+        ],
+        "page_idx": 11
+    },
+    {
+        "type": "text",
+        "text": "设 $\\log_3 x = t(t \\in [0, 3])$ ，则 $y = t^2 - 2t + 1$",
+        "bbox": [
+            85,
+            755,
+            423,
+            776
+        ],
+        "page_idx": 11
+    },
+    {
+        "type": "text",
+        "text": "当 t=1 时，取得最小值 0；当 t=3 时，取得最大值 4，",
+        "bbox": [
+            85,
+            790,
+            512,
+            806
+        ],
+        "page_idx": 11
+    },
+    {
+        "type": "text",
+        "text": "所以函数的值域为[0,4].",
+        "bbox": [
+            85,
+            818,
+            272,
+            834
+        ],
+        "page_idx": 11
+    },
+    {
+        "type": "text",
+        "text": "【小问 2 详解】",
+        "bbox": [
+            90,
+            846,
+            210,
+            860
+        ],
+        "page_idx": 11
+    },
+    {
+        "type": "text",
+        "text": "由 $f(x) = (\\log_3 x - 1)^2$",
+        "bbox": [
+            85,
+            876,
+            277,
+            896
+        ],
+        "page_idx": 11
+    },
+    {
+        "type": "page_number",
+        "text": "第 12 页/共 20 页",
+        "bbox": [
+            436,
+            910,
+            559,
+            925
+        ],
+        "page_idx": 11
+    },
+    {
+        "type": "text",
+        "text": "令 $g(t) = f(3^t) - kt$ ，则 $g(t) = f(3^t) - kt = (t - 1)^2 -kt\\geq 0$",
+        "bbox": [
+            85,
+            59,
+            569,
+            82
+        ],
+        "page_idx": 12
+    },
+    {
+        "type": "text",
+        "text": "又 $t \\in \\left[\\frac{1}{2}, 4\\right]$ , $k \\leq \\frac{(t - 1)^2}{t} = t + \\frac{1}{t} - 2$ 能成立,",
+        "bbox": [
+            85,
+            96,
+            445,
+            137
+        ],
+        "page_idx": 12
+    },
+    {
+        "type": "text",
+        "text": "设 $h(t) = t + \\frac{1}{t} - 2$ ，函数在 $\\left[\\frac{1}{2}, 1\\right]$ 上单调递减，在 $(1,4]$ 上单调递增.",
+        "bbox": [
+            85,
+            152,
+            616,
+            193
+        ],
+        "page_idx": 12
+    },
+    {
+        "type": "text",
+        "text": "又 $h\\left(\\frac{1}{2}\\right) = \\frac{1}{2}, h(4) = \\frac{9}{4}$ ，所以 $h(t)_{\\max} = \\frac{9}{4}$ ，",
+        "bbox": [
+            85,
+            208,
+            450,
+            247
+        ],
+        "page_idx": 12
+    },
+    {
+        "type": "text",
+        "text": "由不等式 $g(t) = f(3^t) - kt \\geq 0$ 在 $t \\in \\left[\\frac{1}{2}, 4\\right]$ 上有解，得 $k \\leq h(t)_{\\max}$ ，",
+        "bbox": [
+            85,
+            263,
+            621,
+            304
+        ],
+        "page_idx": 12
+    },
+    {
+        "type": "text",
+        "text": "因此， $k$ 的取值范围是 $\\left(-\\infty ,\\frac{9}{4}\\right]$",
+        "bbox": [
+            85,
+            319,
+            342,
+            359
+        ],
+        "page_idx": 12
+    },
+    {
+        "type": "text",
+        "text": "19. 已知幂函数 $f(x) = (2m^2 - 9m + 10)x^m$ 为奇函数， $g(x) = f(x) + \\frac{k}{x} (k \\in \\mathbf{R})$ .",
+        "bbox": [
+            85,
+            369,
+            722,
+            403
+        ],
+        "page_idx": 12
+    },
+    {
+        "type": "text",
+        "text": "（1）若 $g(2) = 5$ ，求 $k$",
+        "bbox": [
+            92,
+            414,
+            289,
+            432
+        ],
+        "page_idx": 12
+    },
+    {
+        "type": "text",
+        "text": "（2）已知 $k \\leq 3$ ，若关于 $x$ 的不等式 $g(x) - 2k^2 > 0$ 在 $[1, +\\infty)$ 上恒成立，求 $k$ 的取值范围.",
+        "bbox": [
+            92,
+            450,
+            791,
+            470
+        ],
+        "page_idx": 12
+    },
+    {
+        "type": "text",
+        "text": "【答案】(1) k = -6",
+        "bbox": [
+            92,
+            485,
+            257,
+            500
+        ],
+        "page_idx": 12
+    },
+    {
+        "type": "text",
+        "text": "(2) $\\left(-\\frac{1}{2},1\\right).$",
+        "bbox": [
+            95,
+            514,
+            208,
+            552
+        ],
+        "page_idx": 12
+    },
+    {
+        "type": "text",
+        "text": "【解析】",
+        "bbox": [
+            92,
+            568,
+            157,
+            583
+        ],
+        "page_idx": 12
+    },
+    {
+        "type": "text",
+        "text": "【分析】（1）根据幂函数的定义可得 $m = \\frac{3}{2}$ 或 $m = 3$ ，结合奇偶性即可求解 $m = 3$ ，进而可得 $g(x)$ 的表达式，代入即可求解，",
+        "bbox": [
+            85,
+            590,
+            910,
+            650
+        ],
+        "page_idx": 12
+    },
+    {
+        "type": "text",
+        "text": "(2) 利用单调性的定义求解 $h(x)$ 的单调性, 即可根据单调性求解函数的最值, 问题转化成 $1 + k - 2k^2 > 0$ , 即可求解.",
+        "bbox": [
+            85,
+            664,
+            905,
+            714
+        ],
+        "page_idx": 12
+    },
+    {
+        "type": "text",
+        "text": "【小问 1 详解】",
+        "bbox": [
+            90,
+            725,
+            210,
+            741
+        ],
+        "page_idx": 12
+    },
+    {
+        "type": "text",
+        "text": "对于幂函数 $f(x)=(2m^{2}-9m+10)x^{m}$ ，得 $2m^{2}-9m+10=1$ ，解得 $m=\\frac{3}{2}$ 或 m=3，",
+        "bbox": [
+            85,
+            750,
+            757,
+            781
+        ],
+        "page_idx": 12
+    },
+    {
+        "type": "text",
+        "text": "当 $m = \\frac{3}{2}$ 时， $f(x) = x^{\\frac{3}{2}}$ 不是奇函数，舍去，",
+        "bbox": [
+            85,
+            785,
+            436,
+            820
+        ],
+        "page_idx": 12
+    },
+    {
+        "type": "text",
+        "text": "当 $m = 3$ 时， $f(x) = x^3$ 是奇函数，满足题意.",
+        "bbox": [
+            87,
+            829,
+            445,
+            848
+        ],
+        "page_idx": 12
+    },
+    {
+        "type": "equation",
+        "text": "$$\n\\therefore g (x) = x ^ {3} + \\frac {k}{x}, \\because g (2) = 8 + \\frac {k}{2} = 5, \\therefore k = - 6.\n$$",
+        "text_format": "latex",
+        "bbox": [
+            87,
+            869,
+            497,
+            904
+        ],
+        "page_idx": 12
+    },
+    {
+        "type": "page_number",
+        "text": "第 13 页/共 20 页",
+        "bbox": [
+            436,
+            910,
+            559,
+            925
+        ],
+        "page_idx": 12
+    },
+    {
+        "type": "text",
+        "text": "【小问 2 详解】",
+        "bbox": [
+            92,
+            58,
+            210,
+            74
+        ],
+        "page_idx": 13
+    },
+    {
+        "type": "text",
+        "text": "关于 $x$ 的不等式 $g(x) - 2k^2 > 0$ 在 $[1, +\\infty)$ 上恒成立，即 $x^3 + \\frac{k}{x} - 2k^2 > 0$ 在 $[1, +\\infty)$ 上恒成立，",
+        "bbox": [
+            85,
+            90,
+            811,
+            131
+        ],
+        "page_idx": 13
+    },
+    {
+        "type": "text",
+        "text": "令 $h(x) = x^3 +\\frac{k}{x} -2k^2$ ，下面先研究函数 $h(x)$ 的单调性",
+        "bbox": [
+            85,
+            145,
+            529,
+            181
+        ],
+        "page_idx": 13
+    },
+    {
+        "type": "text",
+        "text": "$\\forall x_{1},x_{2}\\in [1, + \\infty)$ ，不妨设 $x_{1} > x_{2}$ ，则 $h(x_{1}) - h(x_{2}) = x_{1}^{3} + \\frac{k}{x_{1}} -\\left(x_{2}^{3} + \\frac{k}{x_{2}}\\right)$",
+        "bbox": [
+            87,
+            199,
+            670,
+            239
+        ],
+        "page_idx": 13
+    },
+    {
+        "type": "equation",
+        "text": "$$\n= \\left(x _ {1} ^ {3} - x _ {2} ^ {3}\\right) + \\left(\\frac {k}{x _ {1}} - \\frac {k}{x _ {2}}\\right) = \\left(x _ {1} - x _ {2}\\right) \\left(x _ {1} ^ {2} + x _ {2} ^ {2} + x _ {1} x _ {2} - \\frac {k}{x _ {1} x _ {2}}\\right),\n$$",
+        "text_format": "latex",
+        "bbox": [
+            87,
+            253,
+            552,
+            294
+        ],
+        "page_idx": 13
+    },
+    {
+        "type": "text",
+        "text": "$\\because x_{1} > x_{2} \\geq 1, k \\leq 3 \\therefore x_{1} - x_{2} > 0, x_{1}x_{2} > 1, x_{1}^{2} + x_{2}^{2} + x_{1}x_{2} > 3, \\frac{k}{x_{1}x_{2}} < 3$",
+        "bbox": [
+            87,
+            311,
+            690,
+            350
+        ],
+        "page_idx": 13
+    },
+    {
+        "type": "text",
+        "text": "∴ $h(x_{1})-h(x_{2})>0$ ，即 $h(x_{1})>h(x_{2})$ ,",
+        "bbox": [
+            87,
+            366,
+            410,
+            387
+        ],
+        "page_idx": 13
+    },
+    {
+        "type": "text",
+        "text": "故 $h(x) = x^3 +\\frac{k}{x}$ 在 $[1, + \\infty)$ 上单调递增， $\\therefore h(x)_{\\min} = h(1) = 1 + k - 2k^2$",
+        "bbox": [
+            85,
+            405,
+            655,
+            441
+        ],
+        "page_idx": 13
+    },
+    {
+        "type": "text",
+        "text": "由题意， $1+k-2k^{2}>0$ ，解得 $-\\frac{1}{2}<k<1$ ，所以k的取值范围是 $\\left(-\\frac{1}{2},1\\right)$ .",
+        "bbox": [
+            85,
+            458,
+            670,
+            498
+        ],
+        "page_idx": 13
+    },
+    {
+        "type": "text",
+        "text": "20. 已知函数 $f(x) = \\log_9(9^x + 1) + kx (x \\in \\mathbf{R})$ 是偶函数，其中 $k$ 为实数.",
+        "bbox": [
+            84,
+            514,
+            653,
+            535
+        ],
+        "page_idx": 13
+    },
+    {
+        "type": "text",
+        "text": "(1) 求 k 的值;",
+        "bbox": [
+            94,
+            550,
+            211,
+            565
+        ],
+        "page_idx": 13
+    },
+    {
+        "type": "text",
+        "text": "（2）若函数 $g(x) = 9^{f(x)} \\cdot 3^x - 2m \\cdot 3^x + 1 (0 \\leqslant x \\leqslant 2)$ ，是否存在实数 $m$ ，使得 $g(x)$ 的最小值为 0？若存在，求出实数 $m$ 的值；若不存在，请说明理由.",
+        "bbox": [
+            87,
+            580,
+            910,
+            630
+        ],
+        "page_idx": 13
+    },
+    {
+        "type": "text",
+        "text": "【答案】(1) $k=-\\frac{1}{2}$ ;",
+        "bbox": [
+            92,
+            638,
+            268,
+            671
+        ],
+        "page_idx": 13
+    },
+    {
+        "type": "text",
+        "text": "(2) 存在 $m = \\sqrt{2}$ .",
+        "bbox": [
+            95,
+            683,
+            233,
+            700
+        ],
+        "page_idx": 13
+    },
+    {
+        "type": "text",
+        "text": "【解析】",
+        "bbox": [
+            92,
+            715,
+            156,
+            732
+        ],
+        "page_idx": 13
+    },
+    {
+        "type": "text",
+        "text": "【分析】（1）根据偶函数性质得到恒等式，求参数值即可；",
+        "bbox": [
+            92,
+            744,
+            539,
+            760
+        ],
+        "page_idx": 13
+    },
+    {
+        "type": "text",
+        "text": "（2）由题设有 $g(x) = 3^{2x} - 2m \\cdot 3^x + 2$ ，应用换元法，令 $t = 3^x$ 且 $t \\in [1,9]$ ，结合二次函数性质，讨论对称轴与区间 $[1,9]$ 的位置研究最小值，即可得参数值.",
+        "bbox": [
+            85,
+            774,
+            910,
+            831
+        ],
+        "page_idx": 13
+    },
+    {
+        "type": "text",
+        "text": "【小问 1 详解】",
+        "bbox": [
+            92,
+            846,
+            210,
+            862
+        ],
+        "page_idx": 13
+    },
+    {
+        "type": "text",
+        "text": "因函数 $f(x) = \\log_9(9^x + 1) + kx$ （ $k \\in \\mathbf{R}$ ）是偶函数，",
+        "bbox": [
+            85,
+            875,
+            507,
+            896
+        ],
+        "page_idx": 13
+    },
+    {
+        "type": "page_number",
+        "text": "第 14 页/共 20 页",
+        "bbox": [
+            436,
+            910,
+            559,
+            925
+        ],
+        "page_idx": 13
+    },
+    {
+        "type": "equation",
+        "text": "$$\nf (- x) - f (x) = \\left[ \\log_ {9} (9 ^ {- x} + 1) - k x \\right] - \\left[ \\log_ {9} (9 ^ {x} + 1) + k x \\right]\n$$",
+        "text_format": "latex",
+        "bbox": [
+            107,
+            57,
+            566,
+            85
+        ],
+        "page_idx": 14
+    },
+    {
+        "type": "equation",
+        "text": "$$\n= \\log_ {9} \\frac {9 ^ {- x} + 1}{9 ^ {x} + 1} - 2 k x = \\log_ {9} 9 ^ {- x} - 2 k x = - (2 k + 1) x = 0,\n$$",
+        "text_format": "latex",
+        "bbox": [
+            87,
+            101,
+            522,
+            136
+        ],
+        "page_idx": 14
+    },
+    {
+        "type": "text",
+        "text": "因 $x\\in R$ 且不恒为0，故 $2k+1=0$ ，得 $k=-\\frac{1}{2}$ .",
+        "bbox": [
+            85,
+            147,
+            453,
+            181
+        ],
+        "page_idx": 14
+    },
+    {
+        "type": "text",
+        "text": "【小问 2 详解】",
+        "bbox": [
+            90,
+            187,
+            210,
+            204
+        ],
+        "page_idx": 14
+    },
+    {
+        "type": "text",
+        "text": "由（1），得 $f(x) = \\log_9(9^x + 1) - \\frac{1}{2} x = \\log_9(3^x + 3^{-x})$",
+        "bbox": [
+            85,
+            212,
+            526,
+            244
+        ],
+        "page_idx": 14
+    },
+    {
+        "type": "equation",
+        "text": "$$\ng (x) = 9 ^ {f (x)} \\cdot 3 ^ {x} - 2 m \\cdot 3 ^ {x} + 1 = \\left(3 ^ {x} + 3 ^ {- x}\\right) \\cdot 3 ^ {x} - 2 m \\cdot 3 ^ {x} + 1 = 3 ^ {2 x} - 2 m \\cdot 3 ^ {x} + 2\n$$",
+        "text_format": "latex",
+        "bbox": [
+            107,
+            254,
+            695,
+            275
+        ],
+        "page_idx": 14
+    },
+    {
+        "type": "text",
+        "text": "设 $t = 3^{x}$ ，因 $0\\leq x\\leq 2$ ，则 $t\\in [1,9]$ ， $h(t) = t^2 -2mt + 2$ ，其对称轴为 $t = m$",
+        "bbox": [
+            85,
+            291,
+            702,
+            313
+        ],
+        "page_idx": 14
+    },
+    {
+        "type": "text",
+        "text": "①当 $m \\geq 9$ 时， $h(t)$ 在区间 $[1,9]$ 上单调递减，则 $h(t)_{\\min} = h(9) = 83 - 18m = 0$ ，解得 $m = \\frac{83}{18} < 9$ ，不符题意，舍去；",
+        "bbox": [
+            84,
+            332,
+            905,
+            400
+        ],
+        "page_idx": 14
+    },
+    {
+        "type": "text",
+        "text": "②当 $1 < m < 9$ 时， $h(t)$ 在区间 $[1,9]$ 上先减后增，故 $h(t)_{\\min} = h(m) = -m^2 + 2 = 0$ ，解得 $m = \\pm \\sqrt{2}$ ，故 $m = \\sqrt{2}$ ；",
+        "bbox": [
+            85,
+            412,
+            904,
+            470
+        ],
+        "page_idx": 14
+    },
+    {
+        "type": "text",
+        "text": "③当 $m \\leqslant 1$ 时， $h(t)$ 在区间 $[1,9]$ 上单调递增，则 $h(t)_{\\min} = h(1) = 3 - 2m = 0$ ，解得 $m = \\frac{3}{2} > 1$ ，不符题意，舍去.",
+        "bbox": [
+            84,
+            482,
+            907,
+            539
+        ],
+        "page_idx": 14
+    },
+    {
+        "type": "text",
+        "text": "故存在 $m = \\sqrt{2}$ ，使得 $g(x)$ 的最小值为0.",
+        "bbox": [
+            85,
+            552,
+            410,
+            571
+        ],
+        "page_idx": 14
+    },
+    {
+        "type": "text",
+        "text": "21. 已知函数的定义域为 $D$ ，对于给定的 $k(k \\in \\mathbf{N}^*)$ ，若存在 $[a, b] \\subseteq D$ ，使得函数 $f(x)$ 满足：",
+        "bbox": [
+            84,
+            588,
+            821,
+            609
+        ],
+        "page_idx": 14
+    },
+    {
+        "type": "text",
+        "text": "①函数 $f(x)$ 在 $[a,b]$ 是单调函数；",
+        "bbox": [
+            84,
+            627,
+            354,
+            645
+        ],
+        "page_idx": 14
+    },
+    {
+        "type": "text",
+        "text": "②函数 $f(x)$ 在 $[a,b]$ 上的值域是 $[ka,kb]$ ，则称 $[a,b]$ 是函数 $f(x)$ 的 k 级“理想区间”.",
+        "bbox": [
+            84,
+            662,
+            756,
+            683
+        ],
+        "page_idx": 14
+    },
+    {
+        "type": "text",
+        "text": "（1）判断函数 $f(x)=\\frac{1}{x}$ ， $x\\in(0,+\\infty)$ 是否存在1级“理想区间”？若存在，请写出其中2个符合题意的区间.\n（直接写结果）",
+        "bbox": [
+            92,
+            699,
+            910,
+            751
+        ],
+        "page_idx": 14
+    },
+    {
+        "type": "text",
+        "text": "（2）证明：函数 $g(x)=\\mathrm{e}^{x}$ 存在3级“理想区间”；",
+        "bbox": [
+            92,
+            766,
+            467,
+            784
+        ],
+        "page_idx": 14
+    },
+    {
+        "type": "text",
+        "text": "（3）设函数 $h(x) = \\frac{4x}{x^2 + 1}$ ， $x \\in [0,1]$ ，已知函数 $h(x)$ 单调递增，若函数 $h(x)$ 存在 $k$ 级“理想区间”，求 $k$ 的值.",
+        "bbox": [
+            85,
+            796,
+            910,
+            853
+        ],
+        "page_idx": 14
+    },
+    {
+        "type": "text",
+        "text": "【答案】（1）存在， $\\left[\\frac{1}{2},2\\right],\\left[\\frac{1}{3},3\\right]$",
+        "bbox": [
+            90,
+            865,
+            364,
+            907
+        ],
+        "page_idx": 14
+    },
+    {
+        "type": "page_number",
+        "text": "第 15 页/共 20 页",
+        "bbox": [
+            436,
+            910,
+            559,
+            925
+        ],
+        "page_idx": 14
+    },
+    {
+        "type": "text",
+        "text": "（2）证明见解析 （3）2或3.",
+        "bbox": [
+            94,
+            58,
+            352,
+            74
+        ],
+        "page_idx": 15
+    },
+    {
+        "type": "text",
+        "text": "【解析】",
+        "bbox": [
+            92,
+            86,
+            157,
+            102
+        ],
+        "page_idx": 15
+    },
+    {
+        "type": "text",
+        "text": "【分析】（1）直接由“理想区间”的定义判断即可.",
+        "bbox": [
+            92,
+            114,
+            465,
+            130
+        ],
+        "page_idx": 15
+    },
+    {
+        "type": "text",
+        "text": "（2）由题意结合函数 $f(x)$ 的单调性得 $\\left\\{\\begin{aligned}\\mathrm{e}^{a}&=3a,\\\\ \\mathrm{e}^{b}&=3b\\end{aligned}\\right.$ ，即方程 $\\mathrm{e}^{x}=3x$ 有两个不等实根.设 $h(x)=\\mathrm{e}^{x}-3x$ ，由零点存在定理知 $h(x)$ 有零点 $x_{1}$ ， $x_{2}$ ，所以方程组有解，即函数 $f(x)=\\mathrm{e}^{x}$ 存在3级“理想区间”",
+        "bbox": [
+            87,
+            141,
+            910,
+            253
+        ],
+        "page_idx": 15
+    },
+    {
+        "type": "text",
+        "text": "（3）根据函数 $g(x) = \\frac{4x}{x^2 + 1}$ 在 $[0,1]$ 上为单调递增得到 $\\left\\{ \\begin{array}{l} g(a) = ka, \\\\ g(b) = kb \\end{array} \\right.$ ，转化为方程 $\\frac{4x}{x^2 + 1} = kx$ 在 $[0,1]$ 上有两个不等实根进而转化为 $kx^2 + k - 4 = 0$ 在 $(0,1]$ 至少有一个实根。分 $k = 4$ 、 $k > 4$ 、 $0 < k < 4$ 三种情况，分别求得满足条件的 $\\mathbf{k}$ 即可。",
+        "bbox": [
+            85,
+            263,
+            909,
+            372
+        ],
+        "page_idx": 15
+    },
+    {
+        "type": "text",
+        "text": "【小问 1 详解】",
+        "bbox": [
+            92,
+            382,
+            208,
+            398
+        ],
+        "page_idx": 15
+    },
+    {
+        "type": "text",
+        "text": "存在. $\\left[\\frac{1}{2},2\\right],\\left[\\frac{1}{3},3\\right]$",
+        "bbox": [
+            85,
+            412,
+            243,
+            453
+        ],
+        "page_idx": 15
+    },
+    {
+        "type": "text",
+        "text": "【小问 2 详解】",
+        "bbox": [
+            92,
+            466,
+            210,
+            482
+        ],
+        "page_idx": 15
+    },
+    {
+        "type": "text",
+        "text": "设函数 $f(x)=\\mathrm{e}^{x}$ 存在 3 级“理想区间”，则存在区间 $[a,b]$ ，使 $f(x)$ 的值域是 $[3a,3b]$ .",
+        "bbox": [
+            85,
+            495,
+            761,
+            517
+        ],
+        "page_idx": 15
+    },
+    {
+        "type": "text",
+        "text": "因为函数 $f(x) = \\mathrm{e}^x$ 在 $\\mathbf{R}$ 上单调递增，",
+        "bbox": [
+            85,
+            533,
+            384,
+            552
+        ],
+        "page_idx": 15
+    },
+    {
+        "type": "text",
+        "text": "所以 $\\left\\{ \\begin{array}{l} \\mathrm{e}^{a} = 3a, \\\\ \\mathrm{e}^{b} = 3b \\end{array} \\right.$ ，即方程 $\\mathrm{e}^{x} = 3x$ 有两个不等实根.",
+        "bbox": [
+            85,
+            568,
+            468,
+            609
+        ],
+        "page_idx": 15
+    },
+    {
+        "type": "text",
+        "text": "设 $h(x) = \\mathrm{e}^{x} - 3x$",
+        "bbox": [
+            87,
+            626,
+            235,
+            645
+        ],
+        "page_idx": 15
+    },
+    {
+        "type": "text",
+        "text": "可知， $h(0) = \\mathrm{e}^{0} - 3\\times 0 = 1 > 0$ ， $h(1) = \\mathrm{e}^{1} - 3\\times 1 <   0$ ， $h(2) = \\mathrm{e}^2 -3\\times 2 > 0$",
+        "bbox": [
+            85,
+            662,
+            695,
+            682
+        ],
+        "page_idx": 15
+    },
+    {
+        "type": "text",
+        "text": "由零点存在定理知，存在 $x_{1}\\in (0,1)$ ， $x_{2}\\in (1,2)$ ，使 $h(x_{1}) = 0$ ， $h(x_{2}) = 0$",
+        "bbox": [
+            85,
+            700,
+            682,
+            720
+        ],
+        "page_idx": 15
+    },
+    {
+        "type": "text",
+        "text": "设 $a = x_{1}$ ， $b = x_{2}$ ，所以方程组有解，即函数 $f(x) = \\mathrm{e}^{x}$ 存在3级“理想区间”.",
+        "bbox": [
+            87,
+            738,
+            685,
+            756
+        ],
+        "page_idx": 15
+    },
+    {
+        "type": "text",
+        "text": "【小问 3 详解】",
+        "bbox": [
+            92,
+            772,
+            208,
+            787
+        ],
+        "page_idx": 15
+    },
+    {
+        "type": "text",
+        "text": "若函数 $g(x)$ 存在 $k$ 级“理想区间”，则存在区间 $[a,b]$ ，函数 $g(x)$ 的值域是 $[ka, kb]$ .",
+        "bbox": [
+            85,
+            801,
+            736,
+            822
+        ],
+        "page_idx": 15
+    },
+    {
+        "type": "text",
+        "text": "因为 $g(x) = \\frac{4x}{x^2 + 1}$ ，任取 $x_1, x_2 \\in [0,1]$ ，且 $x_1 < x_2$ ，",
+        "bbox": [
+            85,
+            832,
+            504,
+            866
+        ],
+        "page_idx": 15
+    },
+    {
+        "type": "page_number",
+        "text": "第 16 页/共 20 页",
+        "bbox": [
+            436,
+            910,
+            559,
+            925
+        ],
+        "page_idx": 15
+    },
+    {
+        "type": "text",
+        "text": "有 $g(x_{1}) - g(x_{2}) = \\frac{4x_{1}}{x_{1}^{2} + 1} -\\frac{4x_{2}}{x_{2}^{2} + 1} = \\frac{4(x_{1} - x_{2})(1 - x_{1}x_{2})}{(x_{1}^{2} + 1)(x_{2}^{2} + 1)}$",
+        "bbox": [
+            84,
+            58,
+            549,
+            101
+        ],
+        "page_idx": 16
+    },
+    {
+        "type": "text",
+        "text": "因为 $0 \\leq x_{1} < x_{2} \\leq 1$ ，所以 $x_{1} - x_{2} < 0, 1 - x_{1}x_{2} > 0$",
+        "bbox": [
+            84,
+            117,
+            480,
+            135
+        ],
+        "page_idx": 16
+    },
+    {
+        "type": "text",
+        "text": "所以 $g(x_{1}) - g(x_{2}) < 0$ ，即 $g(x_{1}) < g(x_{2})$",
+        "bbox": [
+            84,
+            153,
+            447,
+            173
+        ],
+        "page_idx": 16
+    },
+    {
+        "type": "text",
+        "text": "所以函数 $g(x) = \\frac{4x}{x^2 + 1}$ 在 $[0,1]$ 上为单调递增函数.",
+        "bbox": [
+            84,
+            181,
+            492,
+            219
+        ],
+        "page_idx": 16
+    },
+    {
+        "type": "text",
+        "text": "所以 $\\left\\{\\begin{aligned}g(a)&=ka,\\\\ g(b)&=kb\\end{aligned}\\right.$ ，于是方程 $\\frac{4x}{x^{2}+1}=kx$ 在 $[0,1]$ 上有两个不等实根.",
+        "bbox": [
+            84,
+            225,
+            623,
+            267
+        ],
+        "page_idx": 16
+    },
+    {
+        "type": "text",
+        "text": "即 $x\\left(kx^{2} + k - 4\\right) = 0$ 在 $[0,1]$ 上有两个不等实根.",
+        "bbox": [
+            85,
+            281,
+            465,
+            304
+        ],
+        "page_idx": 16
+    },
+    {
+        "type": "text",
+        "text": "显然 $x = 0$ 是方程的一个解，所以 $kx^{2} + k - 4 = 0$ 在 $(0,1]$ 至少有一个实根.",
+        "bbox": [
+            85,
+            321,
+            660,
+            340
+        ],
+        "page_idx": 16
+    },
+    {
+        "type": "text",
+        "text": "（1）当 $k = 4$ 时， $x_{1} = x_{2} = 0$ ，不合题意，舍；",
+        "bbox": [
+            92,
+            359,
+            458,
+            376
+        ],
+        "page_idx": 16
+    },
+    {
+        "type": "text",
+        "text": "（2）当 $k > 4$ 时，方程无实根，舍；",
+        "bbox": [
+            94,
+            392,
+            368,
+            407
+        ],
+        "page_idx": 16
+    },
+    {
+        "type": "text",
+        "text": "（3）0<k<4时， $x_{1}=\\sqrt{\\frac{4-k}{k}},x_{2}=-\\sqrt{\\frac{4-k}{k}}$ （舍），",
+        "bbox": [
+            92,
+            420,
+            504,
+            462
+        ],
+        "page_idx": 16
+    },
+    {
+        "type": "text",
+        "text": "所以 $x_{1} = \\sqrt{\\frac{4 - k}{k}}\\leq 1$ ，解出 $k\\geq 2$",
+        "bbox": [
+            84,
+            478,
+            354,
+            517
+        ],
+        "page_idx": 16
+    },
+    {
+        "type": "text",
+        "text": "所以 $2 \\leq k < 4$ ，又因为 $k \\in N^{*}$ ，所以 k = 2 或 k = 3。",
+        "bbox": [
+            84,
+            530,
+            497,
+            546
+        ],
+        "page_idx": 16
+    },
+    {
+        "type": "text",
+        "text": "22. 设定义在 $\\mathbf{R}$ 上的函数 $f(x)$ 满足：①对 $\\forall x, y \\in \\mathbf{R}$ ，都有 $f(x + y) = \\frac{f(x) + f(y)}{1 + f(x)f(y)}$ ；② $x > 0$ 时， $f(x) > 0$ ；③不存在 $x \\in \\mathbf{R}$ ，使得 $|f(x)| = 1$ .",
+        "bbox": [
+            84,
+            558,
+            895,
+            638
+        ],
+        "page_idx": 16
+    },
+    {
+        "type": "text",
+        "text": "（1）求证： $f(x)$ 为奇函数；",
+        "bbox": [
+            92,
+            655,
+            315,
+            673
+        ],
+        "page_idx": 16
+    },
+    {
+        "type": "text",
+        "text": "(2) 求证: $f(x)$ 在 $\\mathbf{R}$ 上单调递增;",
+        "bbox": [
+            92,
+            692,
+            373,
+            709
+        ],
+        "page_idx": 16
+    },
+    {
+        "type": "text",
+        "text": "（3）若 $f(1) = \\frac{1}{2}$ ，不等式 $\\frac{4 + 5f(mx)}{5 + 4f(mx)} > \\frac{1 + 2f(m\\sqrt{x})}{2 + f(m\\sqrt{x})}$ 对 $\\forall x \\in [0, +\\infty)$ 恒成立，试求 $m$ 的取值范围.",
+        "bbox": [
+            92,
+            728,
+            877,
+            782
+        ],
+        "page_idx": 16
+    },
+    {
+        "type": "text",
+        "text": "【答案】（1）证明见解析",
+        "bbox": [
+            92,
+            799,
+            287,
+            816
+        ],
+        "page_idx": 16
+    },
+    {
+        "type": "text",
+        "text": "(2) 证明见解析 (3) [0,4)",
+        "bbox": [
+            92,
+            831,
+            349,
+            848
+        ],
+        "page_idx": 16
+    },
+    {
+        "type": "text",
+        "text": "【解析】",
+        "bbox": [
+            92,
+            864,
+            157,
+            879
+        ],
+        "page_idx": 16
+    },
+    {
+        "type": "page_number",
+        "text": "第 17 页/共 20 页",
+        "bbox": [
+            436,
+            910,
+            559,
+            925
+        ],
+        "page_idx": 16
+    },
+    {
+        "type": "text",
+        "text": "【分析】（1）赋值法求得 $f(0)=0$ ，然后再令 y=-x 可证得奇函数；",
+        "bbox": [
+            90,
+            61,
+            628,
+            80
+        ],
+        "page_idx": 17
+    },
+    {
+        "type": "text",
+        "text": "（2）由已知先证得 $-1 < f(x) < 1$ ，再根据单调性定义可得答案；",
+        "bbox": [
+            92,
+            99,
+            594,
+            117
+        ],
+        "page_idx": 17
+    },
+    {
+        "type": "text",
+        "text": "（3）由已知求出 $f(2) = \\frac{4}{5}$ ，然后已知不等式化简后由函数 $f(x)$ 的单调性转化为二次不等式恒成立，从而求得 $m$ 的范围，最后再由二次函数性质可得答案.",
+        "bbox": [
+            85,
+            127,
+            902,
+            187
+        ],
+        "page_idx": 17
+    },
+    {
+        "type": "text",
+        "text": "【小问1详解】",
+        "bbox": [
+            90,
+            197,
+            211,
+            214
+        ],
+        "page_idx": 17
+    },
+    {
+        "type": "text",
+        "text": "$f(x)$ 的定义域为 R，关于原点对称，",
+        "bbox": [
+            87,
+            229,
+            381,
+            247
+        ],
+        "page_idx": 17
+    },
+    {
+        "type": "text",
+        "text": "令 $x = y = 0$ ，得 $f(0) = \\frac{2f(0)}{1 + [f(0)]^2}$ ，解得 $f(0) = 0$ 或 $\\left[f(0)\\right]^2 = 1$",
+        "bbox": [
+            85,
+            260,
+            645,
+            307
+        ],
+        "page_idx": 17
+    },
+    {
+        "type": "text",
+        "text": "又不存在 $x \\in R$ ，使得 $\\left|f(x)\\right| = 1$ ，∴ $f(0) = 0$ ，",
+        "bbox": [
+            85,
+            319,
+            470,
+            341
+        ],
+        "page_idx": 17
+    },
+    {
+        "type": "text",
+        "text": "令 $y = -x$ ，得 $\\frac{f(x) + f(-x)}{1 + f(x)f(-x)} = f(x - x) = f(0) = 0$",
+        "bbox": [
+            85,
+            354,
+            529,
+            397
+        ],
+        "page_idx": 17
+    },
+    {
+        "type": "text",
+        "text": "$\\therefore f(x) + f(-x) = 0, f(-x) = -f(x),$",
+        "bbox": [
+            87,
+            412,
+            418,
+            432
+        ],
+        "page_idx": 17
+    },
+    {
+        "type": "text",
+        "text": "∴ $f(x)$ 为奇函数；",
+        "bbox": [
+            87,
+            451,
+            236,
+            469
+        ],
+        "page_idx": 17
+    },
+    {
+        "type": "text",
+        "text": "【小问 2 详解】",
+        "bbox": [
+            90,
+            483,
+            210,
+            500
+        ],
+        "page_idx": 17
+    },
+    {
+        "type": "text",
+        "text": "x>0 时， $\\frac{x}{2}>0,\\quad f\\left(\\frac{x}{2}\\right)>0,$",
+        "bbox": [
+            87,
+            514,
+            334,
+            552
+        ],
+        "page_idx": 17
+    },
+    {
+        "type": "text",
+        "text": "$\\therefore f(x) = f\\left(\\frac{x}{2} + \\frac{x}{2}\\right) = \\frac{2f\\left(\\frac{x}{2}\\right)}{1 + \\left[f\\left(\\frac{x}{2}\\right)\\right]^2} \\leqslant 1$ ，当且仅当 $f\\left(\\frac{x}{2}\\right) = 1$ ，等号成立，",
+        "bbox": [
+            85,
+            567,
+            685,
+            650
+        ],
+        "page_idx": 17
+    },
+    {
+        "type": "text",
+        "text": "又不存在 $x \\in \\mathbf{R}$ ，使得 $\\left|f(x)\\right| = 1$ ， $\\therefore f\\left(\\frac{x}{2}\\right) \\neq 1$ ， $\\therefore x > 0$ 时， $0 < f(x) < 1$ ，",
+        "bbox": [
+            84,
+            662,
+            697,
+            701
+        ],
+        "page_idx": 17
+    },
+    {
+        "type": "text",
+        "text": "又∵ $f(x)$ 为奇函数，∴x<0时， $f(x)=-f(-x)\\in(-1,0)$ ,",
+        "bbox": [
+            85,
+            719,
+            574,
+            738
+        ],
+        "page_idx": 17
+    },
+    {
+        "type": "text",
+        "text": "∴对 $\\forall x\\in\\mathbf{R}$ ， $-1<f(x)<1$ ，",
+        "bbox": [
+            85,
+            756,
+            329,
+            775
+        ],
+        "page_idx": 17
+    },
+    {
+        "type": "text",
+        "text": "任取 $x_{1} < x_{2}$ ，则 $x_{2} - x_{1} > 0$ ， $f(x_{2} - x_{1}) > 0$ ，",
+        "bbox": [
+            85,
+            793,
+            448,
+            813
+        ],
+        "page_idx": 17
+    },
+    {
+        "type": "equation",
+        "text": "$$\nf \\left(x _ {2} - x _ {1}\\right) = f \\left[ x _ {2} + \\left(- x _ {1}\\right) \\right] = \\frac {f \\left(x _ {2}\\right) + f \\left(- x _ {1}\\right)}{1 + f \\left(x _ {2}\\right) f \\left(- x _ {1}\\right)} = \\frac {f \\left(x _ {2}\\right) - f \\left(x _ {1}\\right)}{1 - f \\left(x _ {2}\\right) f \\left(x _ {1}\\right)},\n$$",
+        "text_format": "latex",
+        "bbox": [
+            107,
+            828,
+            638,
+            869
+        ],
+        "page_idx": 17
+    },
+    {
+        "type": "page_number",
+        "text": "第 18 页/共 20 页",
+        "bbox": [
+            436,
+            910,
+            559,
+            925
+        ],
+        "page_idx": 17
+    },
+    {
+        "type": "equation",
+        "text": "$$\n\\therefore \\frac {f \\left(x _ {2}\\right) - f \\left(x _ {1}\\right)}{1 - f \\left(x _ {2}\\right) f \\left(x _ {1}\\right)} > 0,\n$$",
+        "text_format": "latex",
+        "bbox": [
+            87,
+            60,
+            277,
+            101
+        ],
+        "page_idx": 18
+    },
+    {
+        "type": "text",
+        "text": "又 $f(x_{1}),f(x_{2})\\in(-1,1),\\therefore f(x_{1})f(x_{2})\\in(-1,1),\\therefore 1-f(x_{1})f(x_{2})>0,$",
+        "bbox": [
+            85,
+            116,
+            702,
+            137
+        ],
+        "page_idx": 18
+    },
+    {
+        "type": "text",
+        "text": "$\\therefore f(x_{2}) - f(x_{1}) > 0, f(x_{2}) > f(x_{1}), \\therefore f(x)$ 在 $\\mathbf{R}$ 上单调递增；",
+        "bbox": [
+            87,
+            153,
+            621,
+            174
+        ],
+        "page_idx": 18
+    },
+    {
+        "type": "text",
+        "text": "【小问 3 详解】",
+        "bbox": [
+            90,
+            187,
+            211,
+            204
+        ],
+        "page_idx": 18
+    },
+    {
+        "type": "equation",
+        "text": "$$\nf (2) = f (1 + 1) = \\frac {2 f (1)}{1 + [ f (1) ] ^ {2}} = \\frac {4}{5},\n$$",
+        "text_format": "latex",
+        "bbox": [
+            85,
+            214,
+            376,
+            262
+        ],
+        "page_idx": 18
+    },
+    {
+        "type": "equation",
+        "text": "$$\n\\therefore \\frac {4 + 5 f (m x)}{5 + 4 f (m x)} = \\frac {\\frac {4}{5} + f (m x)}{1 + \\frac {4}{5} f (m x)} = \\frac {f (2) + f (m x)}{1 + f (2) f (m x)} = f (2 + m x),\n$$",
+        "text_format": "latex",
+        "bbox": [
+            87,
+            269,
+            593,
+            337
+        ],
+        "page_idx": 18
+    },
+    {
+        "type": "equation",
+        "text": "$$\n\\frac {1 + 2 f (m \\sqrt {x})}{2 + f (m \\sqrt {x})} = \\frac {\\frac {1}{2} + f (m \\sqrt {x})}{1 + \\frac {1}{2} f (m \\sqrt {x})} = \\frac {f (1) + f (m \\sqrt {x})}{1 + f (1) f (m \\sqrt {x})} = f (1 + m \\sqrt {x}),\n$$",
+        "text_format": "latex",
+        "bbox": [
+            87,
+            344,
+            630,
+            411
+        ],
+        "page_idx": 18
+    },
+    {
+        "type": "text",
+        "text": "∵不等式 $\\frac{4+5f(mx)}{5+4f(mx)}>\\frac{1+2f(m\\sqrt{x})}{2+f(m\\sqrt{x})}$ 对 $\\forall x\\in[0,+\\infty)$ 恒成立，",
+        "bbox": [
+            87,
+            424,
+            579,
+            476
+        ],
+        "page_idx": 18
+    },
+    {
+        "type": "text",
+        "text": "$\\therefore f(2 + mx) > f(1 + m\\sqrt{x})$ 对 $\\forall x\\in [0, + \\infty)$ 恒成立，",
+        "bbox": [
+            87,
+            494,
+            502,
+            518
+        ],
+        "page_idx": 18
+    },
+    {
+        "type": "text",
+        "text": "又 $f(x)$ 在 $\\mathbf{R}$ 上单调递增，",
+        "bbox": [
+            85,
+            535,
+            294,
+            552
+        ],
+        "page_idx": 18
+    },
+    {
+        "type": "text",
+        "text": "$\\therefore 2 + mx > 1 + m\\sqrt{x}$ 对 $\\forall x\\in [0, + \\infty)$ 恒成立，",
+        "bbox": [
+            87,
+            570,
+            436,
+            590
+        ],
+        "page_idx": 18
+    },
+    {
+        "type": "text",
+        "text": "即 $mx - m\\sqrt{x} + 1 > 0$ 对 $\\forall x \\in [0, +\\infty)$ 恒成立，",
+        "bbox": [
+            85,
+            607,
+            436,
+            627
+        ],
+        "page_idx": 18
+    },
+    {
+        "type": "text",
+        "text": "设 $\\sqrt{x} = t$ ， $t\\in [0, + \\infty)$ ，即 $mt^2 -mt + 1 > 0$ 对 $\\forall t\\in [0, + \\infty)$ 成立",
+        "bbox": [
+            85,
+            644,
+            594,
+            665
+        ],
+        "page_idx": 18
+    },
+    {
+        "type": "text",
+        "text": "当 $m = 0$ 时，符合题意；",
+        "bbox": [
+            87,
+            678,
+            273,
+            695
+        ],
+        "page_idx": 18
+    },
+    {
+        "type": "text",
+        "text": "当 $m \\neq 0$ 时， $\\left\\{ \\begin{array}{l} m > 0 \\\\ \\Delta = m^2 - 4m < 0 \\end{array} \\right.$ ，解得： $0 < m < 4$ 。",
+        "bbox": [
+            87,
+            708,
+            497,
+            747
+        ],
+        "page_idx": 18
+    },
+    {
+        "type": "text",
+        "text": "综上可知：m 的取值范围是 $[0,4)$ .",
+        "bbox": [
+            84,
+            766,
+            359,
+            784
+        ],
+        "page_idx": 18
+    },
+    {
+        "type": "text",
+        "text": "【点睛】方法点睛：本题考查抽象函数的奇偶性、单调性，抽象函数的不等式恒成立问题并考查求二次函数的值域．解决抽象函数的基本方法是赋值值，根据函数的奇偶性、单调性的定义进行赋值，从已知式中得出 $f(x)$ 与 $f(-x)$ 的关系，得出 $f(x_{2})-f(x_{1})$ 的正负，赋值时有时需要求出具体的函数值，如本题求$f(0)$ ，在对第（3）问题中不等式进行变形时还需要求得 $f(2) = \\frac{4}{5}$ ，解题的关键就是已知抽象函数的性质： $f(x + y) = \\frac{f(x) + f(y)}{1 + f(x)f(y)}$ ，利用它对 $f(x)$ 进行变形.",
+        "bbox": [
+            84,
+            800,
+            905,
+            879
+        ],
+        "page_idx": 18
+    },
+    {
+        "type": "page_number",
+        "text": "第 19 页/共 20 页",
+        "bbox": [
+            436,
+            910,
+            559,
+            926
+        ],
+        "page_idx": 18
+    },
+    {
+        "type": "text",
+        "text": "",
+        "bbox": [
+            85,
+            53,
+            902,
+            137
+        ],
+        "page_idx": 19
+    },
+    {
+        "type": "page_number",
+        "text": "第 20 页/共 20 页",
+        "bbox": [
+            436,
+            910,
+            559,
+            926
+        ],
+        "page_idx": 19
+    }
+]

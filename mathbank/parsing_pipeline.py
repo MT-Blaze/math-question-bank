@@ -514,13 +514,16 @@ def _flag_missing_options(parsed_questions: list, source_text: str) -> list:
     return parsed_questions
 
 
-def post_process_pdf_parsed_questions(parsed_questions: list, paper_title: str, task_id: str = None, ocr_results: list = None, source_text: str = "", generate_answers_bool: bool = True) -> list:
+def post_process_pdf_parsed_questions(parsed_questions: list, paper_title: str, task_id: str = None, ocr_results: list = None, source_text: str = "", generate_answers_bool: bool = True, figure_layout: dict = None) -> list:
     """PDF 专属解析卡片后处理：正则搜寻 /tmp/ 下的图片，以及将未解析的图n占位符智能映射回真实的裁剪插图图片，
     最后将其灌入 image_paths 数组中，并在 content 中静默清除以配合布局展示。支持文本重合度兜底映射，防大模型删除路径！
 
     ``source_text`` 是喂给拆题模型的整卷源文（MinerU markdown / Word markdown / TeX 源码），
     供内容守恒自检按题切片对账；缺省时退回用 ``ocr_results[0]``，两者都没有则跳过对账。
     """
+    # ``figure_layout`` 只有 MinerU 路线传（``build_figure_layout`` 的产物）：第 7.45 步
+    # 拿它做插图归属的坐标仲裁。Word / TeX / 批量图片三条路线没有 bbox，留空即自动
+    # 降级到文本规则，签名向后兼容（新增关键字参数，老调用点一字不改）。
     import re
     import os
     import glob
@@ -953,9 +956,10 @@ def post_process_pdf_parsed_questions(parsed_questions: list, paper_title: str, 
         print("[配图自检] 全部题目的配图归属未发现异常。")
 
     # 7.45 插图归属修复（MinerU 分支，快慢两路共用）：拼图切片错位会让第 4 片
-    #     落进解析、选项被无标号浮图炸开——确定性形态本地修复（见
-    #     mathbank/figure_repair），拿不准一律不动；记录进卡片 _figure_repair。
-    for note in repair_parsed_questions(parsed_questions):
+    #     落进解析、选项被无标号浮图炸开。有清单坐标就先按 bbox 判归属，判不准或
+    #     没清单才降级走确定性文本规则（见 mathbank/figure_repair）；
+    #     修复动作记录进卡片 _figure_repair。
+    for note in repair_parsed_questions(parsed_questions, figure_layout=figure_layout):
         print(f"[插图归属修复] {note}")
 
     # 7.5 内容守恒自检：把每题输出与源文切片按可数量对账（选项数 / choices 环境 /

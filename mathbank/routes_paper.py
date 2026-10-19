@@ -10,6 +10,7 @@ from PIL import Image
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Response, UploadFile
 from fastapi.responses import JSONResponse
 from mathbank import illustration_crop
+from mathbank import figure_repair
 from mathbank.ai_json import parse_ai_json
 from mathbank.ai_providers import apply_bailian_thinking_policy, apply_deepseek_thinking_policy, inject_reasoning_effort
 from mathbank.asset_security import AssetSecurityError, InvalidImageError, UploadTooLargeError, normalize_raster_image, read_stream_limited, resolve_upload_asset
@@ -1271,6 +1272,14 @@ def run_mineru_pdf_parsing_task(
         # 否则「源自第 N 页」会整体偏移、「查看原页」打开的是错页。
         if page_offset and page_texts:
             page_texts = [""] * page_offset + list(page_texts)
+        # 坐标仲裁输入：清单里每个块都带 bbox 与页码，映射表把清单的 ``images/<sha>.jpg``
+        # 对上 ``stage_images`` 的落盘名（两边唯一的连接键是文件名）。命中缓存同样有清单
+        # （整包归档），所以这条路径不额外花额度；清单缺失时 build 返回 None，
+        # 修复器自动降级走 R1-R4 文本规则，行为与升级前逐字一致。
+        figure_layout = figure_repair.build_figure_layout(
+            mineru_client.collect_content_blocks(result.get("workdir") or workdir),
+            mapping,
+        )
 
         if not markdown.strip():
             raise ValueError("MinerU 未能从 PDF 中提取出可解析的文字内容。")
@@ -1297,6 +1306,7 @@ def run_mineru_pdf_parsing_task(
         final_questions = _main.post_process_pdf_parsed_questions(
             parsed_questions, paper_title, task_id, page_texts or None, markdown,
             generate_answers_bool=generate_answers,
+            figure_layout=figure_layout,
         )
         # 插图归属修复记录进任务诊断（前端 pdf_fast_path 块对未知键容错，仅供排查）。
         figure_repairs = [

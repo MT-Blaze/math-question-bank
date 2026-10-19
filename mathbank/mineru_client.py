@@ -237,6 +237,45 @@ def collect_images(target_dir: str | Path) -> list[Path]:
 _PAGE_INDEX_KEYS = ("page_idx", "page_no", "page")
 
 
+def load_content_list(target_dir: str | Path) -> list:
+    """读取结果包的结构化清单（``*_content_list.json``）原样列表；拿不到返回空表。
+
+    清单是「这段内容/这张图在第几页的什么坐标」的唯一来源：``full.md`` 把逐页信息
+    整个丢掉了。缓存归档的是**整包**，所以命中缓存同样能拿到清单，不需要再花额度。
+    """
+
+    target = Path(target_dir)
+    for path in sorted(target.rglob("*content_list.json")):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(data, list) and data:
+            return data
+    return []
+
+
+def collect_content_blocks(target_dir: str | Path) -> list:
+    """结构化清单 → 坐标仲裁的输入：原样块 + 稳定 ``seq``（即清单里的先后次序）。
+
+    ``seq`` 是几何判定之外的第二条线索：``full.md`` 与 ``content_list.json`` **同序**
+    （实测 35 份缓存卷逐张对齐，口径是 ``image`` + ``chart`` 两类块），所以卡片文本能按序
+    贪心对回块区间，不必做模糊相似度。注意「同序」不等于「同几何位置」——清单里页内 y
+    倒序每卷都有 2~13 处，归属必须看 bbox，这正是 ``figure_repair`` 的活。
+
+    刻意只补 ``seq``、不改任何字段：几何归一化留在 ``figure_repair.build_figure_layout``，
+    本模块不 import 修复器，也不做归属判断（这里拿不到 ``stage_images`` 的映射表）。
+    """
+
+    blocks = []
+    for seq, item in enumerate(load_content_list(target_dir)):
+        if isinstance(item, dict):
+            patched = dict(item)
+            patched["seq"] = seq
+            blocks.append(patched)
+    return blocks
+
+
 def collect_page_texts(target_dir: str | Path) -> list[str]:
     """从结果包里重建「每页文本」，列表索引即页码；拿不到清单时返回空列表。
 
@@ -251,16 +290,7 @@ def collect_page_texts(target_dir: str | Path) -> list[str]:
     ``pdf_crop_*``，而兜底只认 tmp 下的裁剪图 → 这里实际只产出 ``_source_page``。
     """
 
-    target = Path(target_dir)
-    payload: list | None = None
-    for path in sorted(target.rglob("*content_list.json")):
-        try:
-            data = json.loads(path.read_text(encoding="utf-8", errors="replace"))
-        except (OSError, ValueError):
-            continue
-        if isinstance(data, list) and data:
-            payload = data
-            break
+    payload = load_content_list(target_dir)
     if not payload:
         return []
 
