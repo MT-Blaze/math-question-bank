@@ -2902,6 +2902,127 @@
             }
         });
 
+        // PDF 极速路径诊断的人类可读化（写法对齐上面的 Word 提取报告）。
+        // 后端在任务完成时把快路径裁决写进 diagnostics.pdf_fast_path，验收口径要求
+        // 「裁判拒绝率、回退率」在前端可见。这里只做措辞翻译，不参与任何解析判断；
+        // 每个键都可能缺失，因此一律走兜底文案，绝不假设某个键一定存在。
+        function pdfFastPathNumber(value) {
+            return (typeof value === 'number' && isFinite(value)) ? value : null;
+        }
+
+        // 降级原因与异常摘要最长 200 字符，日志里只留前 80 字符，避免技术文本糊屏。
+        function pdfFastPathClip(value, maxChars) {
+            const limit = typeof maxChars === 'number' ? maxChars : 80;
+            const text = String(value === undefined || value === null ? '' : value)
+                .replace(/\s+/g, ' ')
+                .trim();
+            if (!text) return '';
+            return text.length > limit ? text.slice(0, limit) + '…' : text;
+        }
+
+        // 这句要嵌进「原因：…。」模板里，而 degrade_reason 几乎总以句号/问号收尾，
+        // 直接拼会出现「。。」。截断产生省略号时不动，只剥掉原有的句末标点。
+        function pdfFastPathStripTail(value) {
+            const text = pdfFastPathClip(value, 80);
+            if (!text || text.slice(-1) === '…') return text;
+            return text.replace(/[。．.！!？?；;]+$/, '');
+        }
+
+        // 分类耗时：一秒以上换成秒更直观，1 秒以内才用毫秒。
+        function formatPdfFastPathDuration(ms) {
+            const value = pdfFastPathNumber(ms);
+            if (value === null) return '';
+            return value >= 1000 ? ((value / 1000).toFixed(1) + ' 秒') : (Math.round(value) + ' 毫秒');
+        }
+
+        // fallback_reasons 是 dict（gate_hits 计数 + 几个结构化闸门键），只能逐项翻成短句，
+        // 目标是让老师看懂「这卷为什么不适合本地切块」，而不是把原始 JSON 甩给他。
+        function formatPdfFastPathReasons(reasons) {
+            if (!reasons || typeof reasons !== 'object') return '';
+            const parts = [];
+            const gateHits = reasons.gate_hits;
+            if (gateHits && typeof gateHits === 'object' && !Array.isArray(gateHits)) {
+                Object.keys(gateHits).slice(0, 2).forEach(flag => {
+                    // 闸门代号前缀（G6_ 这类）对老师没有意义，只保留中文描述
+                    const label = String(flag).replace(/^[A-Za-z]+\d*_/, '');
+                    const hits = pdfFastPathNumber(gateHits[flag]);
+                    parts.push(hits === null ? label : (label + ' ' + hits + ' 处'));
+                });
+            }
+            if (reasons.monotonic_break_at) {
+                parts.push('题号到 ' + String(reasons.monotonic_break_at).slice(0, 8) + ' 处不再递增');
+            }
+            const gap = reasons.coverage_gap_group;
+            if (Array.isArray(gap) && gap.length >= 2) {
+                parts.push(gap[0] + '~' + gap[1] + ' 之间题号有缺号');
+            }
+            if (reasons.total_out_of_range) parts.push('题号总数不在可信区间');
+            if (reasons.answer_key_restart) parts.push('答案区导致题号重复计数');
+            return pdfFastPathClip(parts.join('；'), 80);
+        }
+
+        // 把快路径诊断翻成日志条目数组 { message, level, toast }。
+        // toast 只在「降级保正文」那一支为真：正文留住了但分类是空的，
+        // 老师必须被提醒去补 refine；回退整卷是设计内的合法路径，不弹窗、不暗示失败。
+        function formatPdfFastPathDiagnostics(fast) {
+            const entries = [];
+            if (!fast || !fast.attempted) return entries;
+            const add = (message, level, toast) => {
+                entries.push({ message: message, level: level || 'info', toast: !!toast });
+            };
+
+            const fallbackLevel = String(fast.fallback_level || '');
+            const cleanBlocks = pdfFastPathNumber(fast.local_blocks);
+            const suspiciousBlocks = pdfFastPathNumber(fast.suspicious_blocks);
+            const keptBlocks = cleanBlocks === null
+                ? suspiciousBlocks
+                : (suspiciousBlocks === null ? cleanBlocks : cleanBlocks + suspiciousBlocks);
+            const keptText = keptBlocks === null ? '全部' : String(keptBlocks);
+            const cleanText = cleanBlocks === null ? '全部' : String(cleanBlocks);
+
+            if (fallbackLevel === 'L2_degrade') {
+                const reason = pdfFastPathStripTail(fast.degrade_reason || fast.ai_error_class || '');
+                add('极速路径降级：AI 分类未成功，' + keptText + ' 道题的正文已完整保留、分类留空并标记为「待refine」，未重烧整卷。原因：' + (reason || '未记录') + '。', 'warning', true);
+                return entries;
+            }
+
+            if (fallbackLevel.indexOf('L1_') === 0) {
+                const judgeNote = fast.trustworthy === false ? '裁判判定本卷结构不适合本地切块，' : '';
+                const reason = fallbackLevel === 'L1_fullpaper_exception'
+                    ? pdfFastPathStripTail(fast.exception_fallback || '')
+                    : formatPdfFastPathReasons(fast.fallback_reasons);
+                const detail = reason ? ('（原因：' + reason + '）') : '';
+                add('本次未走极速路径，' + judgeNote + '已回退整卷拆解' + detail + '，题目结果不受影响。', 'info');
+                return entries;
+            }
+
+            if ((fallbackLevel === 'none' || fallbackLevel === 'L0_microsplit') && fast.ai_ok === true) {
+                const parts = ['本地保留 ' + cleanText + ' 道题'];
+                if (suspiciousBlocks !== null) parts.push('可疑块 ' + suspiciousBlocks);
+                const duration = formatPdfFastPathDuration(fast.ai_ms);
+                parts.push(duration ? ('AI 仅分类耗时 ' + duration) : 'AI 仅完成了分类');
+                const usage = (fast.ai_usage && typeof fast.ai_usage === 'object') ? fast.ai_usage : null;
+                if (usage) {
+                    const totalTokens = pdfFastPathNumber(usage.total_tokens);
+                    const completionTokens = pdfFastPathNumber(usage.completion_tokens);
+                    const tokens = totalTokens === null ? completionTokens : totalTokens;
+                    if (tokens !== null) parts.push('分类输出 ' + tokens + ' tokens');
+                }
+                const ratio = pdfFastPathNumber(fast.preserved_ratio);
+                if (ratio !== null && ratio >= 0 && ratio <= 1) {
+                    parts.push('正文保留率 ' + Math.round(ratio * 100) + '%');
+                }
+                add('极速路径生效：' + parts.join('，') + '。', 'success');
+                return entries;
+            }
+
+            // 极端分支：尝试过但没写下最终档位（老任务/异常中断路径）。只报事实，不猜结论。
+            const anchors = pdfFastPathNumber(fast.anchor_count);
+            const anchorNote = anchors === null ? '' : ('：识别 ' + anchors + ' 个题号锚点');
+            add('极速路径已尝试' + anchorNote + '，最终按整卷拆解结果呈现。', 'info');
+            return entries;
+        }
+
         function pollPdfTaskStatus(taskId, generation) {
             if (!isCurrentDocumentImportTask(generation)) return;
             let lastLog = '';
@@ -2965,6 +3086,20 @@
                         const isWordTask = task.document_type === 'docx';
                         const documentLabel = isWordTask ? 'Word' : 'PDF';
                         appendImportLog(`${documentLabel} 试卷分析并拆解成功！共分析出 ${parsedQuestionsData.length} 道数学题。`, 'success');
+                        // PDF 极速路径可见化：诊断缺失或没尝试过快路径时保持完全安静。
+                        if (!isWordTask && task.diagnostics) {
+                            const fast = task.diagnostics.pdf_fast_path || {};
+                            if (fast && fast.attempted) {
+                                formatPdfFastPathDiagnostics(fast).forEach(entry => {
+                                    appendImportLog(entry.message, entry.level);
+                                    // 只有降级保正文需要弹窗：分类留空必须提醒老师后续补 refine。
+                                    if (entry.toast && typeof showToast === 'function') {
+                                        showToast(entry.message, entry.level);
+                                    }
+                                });
+                            }
+                        }
+
                         if (isWordTask && task.diagnostics) {
                             const report = task.diagnostics;
                             const converted = (report.omml_converted || 0) + (report.mtef_converted || 0);

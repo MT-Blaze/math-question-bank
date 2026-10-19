@@ -5410,3 +5410,133 @@ def test_related_question_dropdown_never_fetches_the_whole_bank():
 
     assert "mode=lean&q=${encodeURIComponent('#' + seqVal)}" in import_source, \
         "题号反查必须走 q=#题号 的 lean 单页"
+
+
+def test_pdf_fast_path_diagnostics_reach_the_import_log():
+    """R1 验收口径：PDF 快路径的裁决必须在前端可见。
+
+    后端 routes_paper 在任务完成时把 diagnostics.pdf_fast_path 一起下发，
+    但「写进 diagnostics」不等于「用户看得见」——历史上前端零命中 fallback_level/ai_ok。
+    这里钉住最小契约：读得到、有门槛（没尝试就保持安静）、只在 PDF 分支说话、
+    并且绝不把原始 JSON 甩给老师。
+    """
+
+    import_source = _read(STATIC_JS_DIR / "import.js")
+
+    assert "const fast = task.diagnostics.pdf_fast_path || {};" in import_source, \
+        "前端必须真的读取 diagnostics.pdf_fast_path，否则验收口径里的拒绝率/回退率仍然不可见"
+    assert "if (!isWordTask && task.diagnostics) {" in import_source, \
+        "PDF 分支必须显式排除 docx，避免和 Word 提取报告互相抢话"
+    assert "if (fast && fast.attempted) {" in import_source, \
+        "没进过快路径分支时（pdf_fast_path 是空 dict）必须完全安静"
+
+    helper = _extract_import_js_function(import_source, "formatPdfFastPathDiagnostics")
+    assert "if (!fast || !fast.attempted) return entries;" in helper, \
+        "格式化函数自己也要兜住缺 attempted 的输入，不依赖调用方守卫"
+    assert "JSON.stringify" not in helper and "JSON.stringify" not in import_source[
+        import_source.index("if (!isWordTask && task.diagnostics)"):
+        import_source.index("if (isWordTask && task.diagnostics)")
+    ], "诊断日志只能输出中文句子，不得把原始 JSON 抖给用户"
+
+
+def test_pdf_fast_path_fallback_levels_each_get_plain_language():
+    """三种结局各有各的措辞，且每个键都可能缺失。
+
+    - none / L0_microsplit + ai_ok：正面播报保留题数、分类耗时、token 与保留率；
+    - L1_*：中性说明「回退整卷」是设计内路径，不暗示失败；
+    - L2_degrade：说明正文已保、分类留空待补、未重烧整卷。
+    """
+
+    import_source = _read(STATIC_JS_DIR / "import.js")
+    helper = _extract_import_js_function(import_source, "formatPdfFastPathDiagnostics")
+
+    assert "fallbackLevel === 'L2_degrade'" in helper
+    assert "fallbackLevel.indexOf('L1_') === 0" in helper
+    assert "fallbackLevel === 'none' || fallbackLevel === 'L0_microsplit'" in helper
+    assert "fast.ai_ok === true" in helper, "成功文案必须把 ai_ok 当证据，不能只看 fallback_level"
+
+    assert "极速路径生效" in helper and "'success'" in helper
+    assert "本地保留 " in helper and "可疑块 " in helper
+    assert "已回退整卷拆解" in helper and "题目结果不受影响" in helper, \
+        "回退是合法路径，措辞不得让用户以为导入失败"
+    assert "裁判判定本卷结构不适合本地切块" in helper, \
+        "trustworthy 为 false 时要给出人话解释，不展开技术细节"
+    assert "待refine" in helper and "未重烧整卷" in helper
+
+    duration = _extract_import_js_function(import_source, "formatPdfFastPathDuration")
+    assert "value >= 1000" in duration and "' 秒'" in duration and "' 毫秒'" in duration, \
+        "ai_ms 必须换算成易读时长，不能直接把毫秒数糊在句子里"
+
+    clip = _extract_import_js_function(import_source, "pdfFastPathClip")
+    assert "? maxChars : 80" in clip and "'…'" in clip, \
+        "degrade_reason / exception_fallback 是 200 字符技术文本，展示前必须截到 80 字符"
+
+    reasons = _extract_import_js_function(import_source, "formatPdfFastPathReasons")
+    for key in ("gate_hits", "monotonic_break_at", "coverage_gap_group",
+                "total_out_of_range", "answer_key_restart"):
+        assert key in reasons, f"fallback_reasons.{key} 必须被翻译，否则原因栏永远是空的"
+    assert "/^[A-Za-z]+\\d*_/" in reasons, "闸门代号前缀（G6_ 这类）对老师没有意义，展示前要剥掉"
+
+
+def test_pdf_fast_path_degrade_pops_a_warning_toast():
+    """降级保正文是唯一必须弹窗提醒的情形：分类留空了，老师得知道去补。"""
+
+    import_source = _read(STATIC_JS_DIR / "import.js")
+    helper = _extract_import_js_function(import_source, "formatPdfFastPathDiagnostics")
+
+    degrade_branch = helper[helper.index("fallbackLevel === 'L2_degrade'"):
+                            helper.index("fallbackLevel.indexOf('L1_')")]
+    assert "'warning', true" in degrade_branch, "L2 分支必须把条目标记为需要弹窗"
+    assert helper.count(", true)") == 1, "只有降级保正文需要弹窗，回退整卷不许打扰用户"
+
+    caller = import_source[import_source.index("if (!isWordTask && task.diagnostics)"):
+                           import_source.index("if (isWordTask && task.diagnostics)")]
+    assert re.search(r"entry\.toast[\s\S]{0,160}showToast\(", caller), \
+        "条目里的 toast 标记必须在调用侧接上 showToast，否则降级只在日志里躺着没人看见"
+
+
+def test_word_diagnostics_report_survives_the_pdf_fast_path_change():
+    """本次改动只许新增 PDF 分支，Word 那段既有提取报告一个字都不能少。"""
+
+    import_source = _read(STATIC_JS_DIR / "import.js")
+    assert "if (isWordTask && task.diagnostics) {" in import_source
+    word_start = import_source.index("if (isWordTask && task.diagnostics)")
+    word_block = import_source[word_start:import_source.index(
+        "renderParsedQuestionsList(parsedQuestionsData)", word_start)]
+    for marker in ("Word 提取报告：", "MathType 明细：", "Word 排版语义：",
+                   "公式保真校验：", "${reviewCount} 处公式"):
+        assert marker in word_block, f"Word 诊断输出被误伤：缺少 {marker}"
+    assert import_source.index("if (!isWordTask && task.diagnostics)") < import_source.index(
+        "if (isWordTask && task.diagnostics)"), "两段诊断必须互斥并列，PDF 段不得嵌进 Word 段里"
+
+
+def test_pdf_fast_path_helpers_stay_module_scoped_and_unique():
+    """新增助手留在 import.js 模块作用域内：不挂 window、不重复定义。
+
+    级联加载下后加载者会覆盖同名函数，曾造成 showToast 无限递归那类事故；
+    通用 UI 助手要么进 api.js，要么就像这里一样只留一份私有实现。
+    """
+
+    import_source = _read(STATIC_JS_DIR / "import.js")
+    for name in ("pdfFastPathNumber", "pdfFastPathClip", "formatPdfFastPathDuration",
+                 "formatPdfFastPathReasons", "formatPdfFastPathDiagnostics"):
+        assert import_source.count("function " + name + "(") == 1, f"{name} 必须只定义一次"
+        assert ("window." + name) not in import_source, f"{name} 不该挂到 window 上"
+
+
+def test_pdf_fast_path_reason_never_ends_with_a_double_period():
+    """降级/异常原因嵌进「原因：…。」模板，必须先剥掉原文句末标点。
+
+    degrade_reason 由后端格式化成 ``类名: 消息``，而消息几乎总以句号收尾；
+    模板又补一个句号，直接拼就是「…120 秒。。」这种给老师看的错别字。
+    """
+
+    import_source = _read(STATIC_JS_DIR / "import.js")
+    helper = _extract_import_js_function(import_source, "formatPdfFastPathDiagnostics")
+    strip = _extract_import_js_function(import_source, "pdfFastPathStripTail")
+
+    assert "pdfFastPathStripTail" in helper, "原因必须走剥尾标点的助手，不能再裸拼 pdfFastPathClip"
+    assert "pdfFastPathClip(fast.degrade_reason" not in helper, \
+        "裸用 pdfFastPathClip 会让原文句号与模板句号叠加成「。。」"
+    assert "[。．.！!？?；;]+$" in strip, "剥尾只吃句末标点，不能误删正文里的标点"
+    assert "=== '…'" in strip, "截断已带省略号时不得再剥，否则会吃掉被截断的半句"
