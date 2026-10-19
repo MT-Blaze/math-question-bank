@@ -306,51 +306,127 @@
             backupEditorState(null, null);
         }
 
-        // Load all questions to populate the related question dropdown list
+        // 十万题红线：「关联题目」下拉绝不整库拉取（旧实现每次进页面都裸 GET
+        // /api/questions，十万题时一次页面加载就要拖回 139MB 并生成十万个 <option>）。
+        // · 基础选项只取最新 200 题的 lean 摘要（id/seq_num/question_type/preview）；
+        // · selectedId 不在最新 200 里时，走 /api/paper/questions?ids= 只水合那一道；
+        // · 手动输题号用 resolveRelatedQuestionBySeq 的 lean 单页反查（q=#题号）补选项。
+        const RELATED_DROPDOWN_LEAN_SIZE = 200;
+
+        function readLeanListPayload(payload) {
+            if (Array.isArray(payload)) {
+                return payload;
+            }
+            if (payload && Array.isArray(payload.items)) {
+                return payload.items;
+            }
+            if (payload && Array.isArray(payload.data)) {
+                return payload.data;
+            }
+            return [];
+        }
+
+        function makeRelatedOption(q) {
+            // lean 行只有 140 字 preview；定向水合回来的整题退回 content 口径。
+            const rawText = q.preview || q.content || '';
+            const textSnippet = rawText.replace(/[\$\#\*\_]/g, '').substring(0, 40);
+            const option = document.createElement('option');
+            option.value = q.id;
+            option.setAttribute('data-seq-num', q.seq_num);
+            option.textContent = `#${q.seq_num} [${getTypeText(q.question_type)}] - ${textSnippet}${rawText.length > 40 ? '...' : ''}`;
+            return option;
+        }
+
         function refreshRelatedDropdown(selectedId = "") {
-            fetch('/api/questions')
+            const dropdown = document.getElementById('editRelatedQuestion');
+            if (!dropdown) {
+                return Promise.resolve();
+            }
+            const url = `/api/questions?page=1&page_size=${RELATED_DROPDOWN_LEAN_SIZE}&sort=desc&mode=lean`;
+            return fetch(url)
                 .then(r => r.json())
-                .then(questions => {
-                    const dropdown = document.getElementById('editRelatedQuestion');
-                    const numInput = document.getElementById('editRelatedQuestionNum');
-                    if (!dropdown) return;
-                    
+                .then(payload => {
+                    const questions = readLeanListPayload(payload);
                     dropdown.innerHTML = '<option value="">-- 选择要关联的题目 (可选) --</option>';
-                    
                     let foundSelectedSeq = '';
-                    
                     questions.forEach(q => {
                         // Exclude the current editing question
                         if (EditorState.questionId && q.id === EditorState.questionId) {
                             return;
                         }
-                        
-                        // Extract a snippet of the question stem
-                        let textSnippet = q.content || '';
-                        // Remove HTML/Markdown tags and LaTeX brackets to make it readable
-                        textSnippet = textSnippet.replace(/[\$\#\*\_]/g, '').substring(0, 40);
-                        if ((q.content || '').length > 40) textSnippet += '...';
-                        
-                        const optionText = `#${q.seq_num} [${getTypeText(q.question_type)}] - ${textSnippet}`;
-                        const option = document.createElement('option');
-                        option.value = q.id;
-                        option.setAttribute('data-seq-num', q.seq_num);
-                        option.textContent = optionText;
-                        
+                        const option = makeRelatedOption(q);
                         if (String(q.id) === String(selectedId)) {
                             option.selected = true;
                             foundSelectedSeq = q.seq_num;
                         }
                         dropdown.appendChild(option);
                     });
-                    
+                    const numInput = document.getElementById('editRelatedQuestionNum');
                     if (numInput) {
                         numInput.value = foundSelectedSeq;
                     }
+                    if (String(selectedId || '') !== '' && foundSelectedSeq === '') {
+                        // 选中题不在最新 200 里：定向水合这一道，仍然不整库拉取。
+                        return fetch(`/api/paper/questions?ids=${encodeURIComponent(selectedId)}`)
+                            .then(r => r.json())
+                            .then(rows => {
+                                readLeanListPayload(rows).forEach(q => {
+                                    if (EditorState.questionId && q.id === EditorState.questionId) {
+                                        return;
+                                    }
+                                    const option = makeRelatedOption(q);
+                                    option.selected = true;
+                                    dropdown.appendChild(option);
+                                    const numAgain = document.getElementById('editRelatedQuestionNum');
+                                    if (numAgain) {
+                                        numAgain.value = q.seq_num;
+                                    }
+                                });
+                            });
+                    }
+                    return null;
                 })
                 .catch(err => {
                     console.error('Failed to load related questions list:', err);
                 });
+        }
+
+        // 题号输入防抖反查：lean 单页命中后把该题补进下拉；回写前校验输入没变，
+        // 防止连点打字时旧响应把新选择盖掉。
+        var relatedSeqResolveTimer = null;
+        function resolveRelatedQuestionBySeq(seqVal) {
+            clearTimeout(relatedSeqResolveTimer);
+            relatedSeqResolveTimer = setTimeout(() => {
+                fetch(`/api/questions?page=1&page_size=20&mode=lean&q=${encodeURIComponent('#' + seqVal)}`)
+                    .then(r => r.json())
+                    .then(payload => {
+                        const hit = readLeanListPayload(payload).find(q =>
+                            String(q.seq_num) === String(seqVal)
+                            && !(EditorState.questionId && q.id === EditorState.questionId));
+                        const dropdown = document.getElementById('editRelatedQuestion');
+                        const numInput = document.getElementById('editRelatedQuestionNum');
+                        if (!dropdown || !numInput || String(numInput.value.trim()) !== String(seqVal)) {
+                            return;
+                        }
+                        if (!hit) {
+                            dropdown.value = '';
+                            return;
+                        }
+                        let option = null;
+                        for (let i = 0; i < dropdown.options.length; i += 1) {
+                            if (String(dropdown.options[i].value) === String(hit.id)) {
+                                option = dropdown.options[i];
+                                break;
+                            }
+                        }
+                        if (!option) {
+                            option = makeRelatedOption(hit);
+                            dropdown.appendChild(option);
+                        }
+                        dropdown.value = String(hit.id);
+                    })
+                    .catch(() => {});
+            }, 300);
         }
 
         // Associate selected target question with current loaded question (bidirectional, backend + UI)
@@ -9884,8 +9960,20 @@ function saveParsedQuestion(index) {
             
             // Load saved questions list
             
-            // Load and populate related questions dropdown
-            refreshRelatedDropdown();
+            // 十万题红线：进页面不再整库预取「关联题目」下拉；
+            // 只有用户真正要点开它时，才拉最新 200 题的 lean 摘要。
+            const relatedSelectLazy = document.getElementById('editRelatedQuestion');
+            if (relatedSelectLazy) {
+                const primeRelatedDropdownOnce = () => {
+                    relatedSelectLazy.removeEventListener('focus', primeRelatedDropdownOnce);
+                    relatedSelectLazy.removeEventListener('pointerdown', primeRelatedDropdownOnce);
+                    if (relatedSelectLazy.options.length <= 1) {
+                        refreshRelatedDropdown(relatedSelectLazy.value || "");
+                    }
+                };
+                relatedSelectLazy.addEventListener('focus', primeRelatedDropdownOnce);
+                relatedSelectLazy.addEventListener('pointerdown', primeRelatedDropdownOnce);
+            }
 
             // Set up related question display number input two-way synchronization
             const relatedNumInput = document.getElementById('editRelatedQuestionNum');
@@ -9906,7 +9994,13 @@ function saveParsedQuestion(index) {
                             }
                         }
                         if (!found) {
-                            relatedSelect.value = '';
+                            // 万题红线：题号不在已加载的最新 200 项里时，走 lean 单条反查补选项，
+                            // 绝不为了解析一个题号去整库拉取。
+                            if (/^\d+$/.test(val)) {
+                                resolveRelatedQuestionBySeq(val);
+                            } else {
+                                relatedSelect.value = '';
+                            }
                         }
                     }
                 });

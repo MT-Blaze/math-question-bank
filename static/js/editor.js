@@ -1936,6 +1936,24 @@ function deleteDraft(id) {
         // scrollWidth/clientWidth，对占 94% 的多列 grid 纯属白付（组卷页实测
         // 196 格里只有 12 格降到 1 列）。缩放值不会因此残留：measureChoicesGridColumns
         // 每一轮进来都先清 --choices-scale，容器变宽后自然回到 1:1。
+        // 超宽公式横向滚动（移植自上游 V2.7.0）：1 列 + 缩字号到 FLOOR 仍装不下时，
+        // 给那一条公式加 .choices-math-scroll，由 CSS 给它自己的横向滚动条。
+        // 每次先清空再重标，保证容器变宽 / 撤掉缩放后能自动摘掉滚动态。
+        function markUnshrinkableChoiceMath(grid) {
+            if (!grid || !grid.isConnected) return;
+            grid.querySelectorAll('.choices-math-scroll').forEach(function (math) {
+                math.classList.remove('choices-math-scroll');
+            });
+            grid.querySelectorAll('.choices-content .katex').forEach(function (math) {
+                if (math.closest('.katex-display')) return;
+                const content = math.closest('.choices-content');
+                if (!content) return;
+                if (math.getBoundingClientRect().width > content.clientWidth + 1) {
+                    math.classList.add('choices-math-scroll');
+                }
+            });
+        }
+
         function applyChoicesGridColumns(grid, selected) {
             grid.style.setProperty('--choices-columns', String(selected));
             grid.dataset.choiceColumns = String(selected);
@@ -1943,6 +1961,8 @@ function deleteDraft(id) {
                 // 降到 1 列仍装不下时，KaTeX 物理折不了行、只剩横向滚动条 ——
                 // 交给 fitOversizedChoicesContent 整行等比缩小（1:1 重测，幂等）。
                 fitOversizedChoicesContent(grid);
+                // 缩到下限之后还剩多少溢出，只有最终布局下量得准，故紧跟其后。
+                markUnshrinkableChoiceMath(grid);
             }
         }
 
@@ -2052,12 +2072,7 @@ function deleteDraft(id) {
             }
         }
 
-        function adaptChoicesGridLayout(root) {
-            if (!root) return;
-            const grids = [];
-            if (root.matches && root.matches('.choices-grid')) grids.push(root);
-            if (root.querySelectorAll) grids.push(...root.querySelectorAll('.choices-grid'));
-
+        function adaptChoicesGrids(grids) {
             if (!grids.length) return;
             ensureChoicesGridResizeObserver();
             pruneDetachedChoicesGridTargets();   // 先放掉上一代脱离的目标，再登记这一代
@@ -2070,7 +2085,33 @@ function deleteDraft(id) {
                 }
             }
         }
+
+        function collectChoicesGrids(node, sink) {
+            if (!node) return;
+            if (node.matches && node.matches('.choices-grid')) sink.push(node);
+            if (!node.querySelectorAll) return;
+            const found = node.querySelectorAll('.choices-grid');
+            for (let i = 0; i < found.length; i += 1) sink.push(found[i]);
+        }
+
+        function adaptChoicesGridLayout(root) {
+            if (!root) return;
+            const grids = [];
+            collectChoicesGrids(root, grids);
+            adaptChoicesGrids(grids);
+        }
         window.adaptChoicesGridLayout = adaptChoicesGridLayout;
+
+        // 虚拟滚动逐帧只会新增几张卡，但它们共用同一趟批处理：每格单独 adapt 的话，
+        // prune + 强制重排要按格数重复做（万题压测里这是 p95 帧时长的主要来源之一）。
+        // 调用方把这一帧新排版出来的节点交过来即可。
+        function adaptChoicesGridNodes(nodes) {
+            if (!nodes || !nodes.length) return;
+            const grids = [];
+            for (let i = 0; i < nodes.length; i += 1) collectChoicesGrids(nodes[i], grids);
+            adaptChoicesGrids(grids);
+        }
+        window.adaptChoicesGridNodes = adaptChoicesGridNodes;
 
         // 自动高度：随内容伸缩 textarea，改善编辑体验
 
@@ -3656,6 +3697,66 @@ document.addEventListener('DOMContentLoaded', () => {
     // 试卷分类 → 考试阶段联动
     const filterPaperCategory = document.getElementById('filterPaperCategory');
     const filterExamStage = document.getElementById('filterExamStage');
+    /**
+     * 「规范分式」：把编辑框里的正文级分式统一成 \dfrac，上标/分式内部降回 \frac。
+     *
+     * 后端只做纯文本变换、不碰数据库，所以这里坚持「先预览、后写回」：拿到结果先让老师
+     * 看清要改几行，确认之后才替换 textarea 的内容，真正入库仍然是点「保存」那一次。
+     * 替换走 insertText，保留浏览器撤销栈——误按一次按钮不该把半小时的手打公式丢掉。
+     */
+    window.applyFractionStyle = async function (fieldId) {
+        const box = document.getElementById(fieldId);
+        if (!box) return;
+        const source = String(box.value || '');
+        if (!source.trim()) {
+            if (window.showToast) window.showToast('内容为空，无需规范分式', 'info');
+            return;
+        }
+        if (box.dataset.fractionBusy === '1') return;
+        box.dataset.fractionBusy = '1';
+        try {
+            const form = new FormData();
+            form.append('text', source);
+            const res = await fetch('/api/format/fractions', { method: 'POST', body: form });
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            const data = await res.json();
+            if (typeof data.text !== 'string') throw new Error('规范分式响应缺少 text');
+            if (!data.changed || data.text === source) {
+                if (window.showToast) window.showToast('分式排版已是规范形态，无需修改', 'info');
+                return;
+            }
+            const before = source.split('\n');
+            const after = data.text.split('\n');
+            let touched = 0;
+            for (let i = 0; i < Math.max(before.length, after.length); i += 1) {
+                if (before[i] !== after[i]) touched += 1;
+            }
+            if (!window.confirm('规范分式：将改写 ' + touched + ' 行公式的分式排版（\dfrac / \frac 归一）。'
+                + '\n\n确定应用到编辑框吗？应用后仍需点「保存」才会写入题库。')) return;
+            const caretStart = box.selectionStart;
+            const caretEnd = box.selectionEnd;
+            box.focus();
+            box.setSelectionRange(0, source.length);
+            let undoable = false;
+            try {
+                undoable = document.execCommand('insertText', false, data.text);
+            } catch (e) {
+                undoable = false;
+            }
+            if (!undoable) box.value = data.text;
+            const limit = data.text.length;
+            box.setSelectionRange(Math.min(caretStart, limit), Math.min(caretEnd, limit));
+            // 走 input 事件，实时预览与草稿缓存才会跟着刷新
+            box.dispatchEvent(new Event('input', { bubbles: true }));
+            if (window.showToast) window.showToast('已规范分式排版（尚未保存，可 Ctrl+Z 撤销）', 'success');
+        } catch (e) {
+            console.error('Normalize fraction style failed:', e);
+            if (window.showToast) window.showToast('规范分式失败：' + (e.message || '请稍后重试'), 'error');
+        } finally {
+            box.dataset.fractionBusy = '';
+        }
+    };
+
     function syncFilterExamStageAvailability() {
         if (!filterPaperCategory || !filterExamStage) return;
         const enabled = filterPaperCategory.value === 'xiaokao';

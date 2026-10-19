@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import shutil
@@ -14,7 +15,16 @@ INDEX_PATH = STATIC_DIR / "index.html"
 CSS_PATH = STATIC_DIR / "css" / "app.css"
 JS_FILES = tuple(
     STATIC_JS_DIR / name
-    for name in ("api.js", "editor.js", "ocr.js", "import.js", "entry_options.js", "paper.js")
+    for name in (
+        "tailwind_gate.js",
+        "api.js",
+        "editor.js",
+        "ocr.js",
+        "import.js",
+        "entry_options.js",
+        "paper.js",
+        "virtual_list.js",
+    )
 )
 
 
@@ -96,10 +106,12 @@ def _index_elements() -> dict[str, dict[str, str | None]]:
 def test_mobile_viewport_and_five_level_script_order_are_preserved():
     index_source = _read(INDEX_PATH)
     expected_order = (
+        "/static/js/tailwind_gate.js",
         "/static/js/api.js",
         "/static/js/editor.js",
         "/static/js/ocr.js",
         "/static/js/import.js",
+        "/static/js/virtual_list.js",
         "/static/js/paper.js",
     )
 
@@ -517,16 +529,21 @@ if (!result.choicesRaw.startsWith(String.raw`\begin{choices}`) || !result.choice
 
 def test_paper_preview_preserves_images_at_authored_complex_content_positions():
     paper_source = _read(STATIC_JS_DIR / "paper.js")
-    helper_start = paper_source.index(
-        "function shouldPreserveInlinePaperImages(raw)"
-    )
+    # 预览渲染器现在依赖「题末图簇判定 + 逐图尺寸」两段纯函数，抽取范围要一起带上，
+    # 否则 node 里跑的是半截脚本，报出来的错和用户看到的完全是两回事。
+    helper_start = paper_source.index("function formatQuestionContentHtml(")
     helper_end = paper_source.index("// Init on DOMContentLoaded", helper_start)
-    helper_source = paper_source[helper_start:helper_end]
+    helper_source = (
+        _paper_figure_size_source()
+        + _paper_image_anchor_source()
+        + paper_source[helper_start:helper_end]
+    )
 
     node = shutil.which("node")
     assert node, "Node.js is required for the frontend executable regression"
     script = helper_source + r'''
 global.window = {
+  PaperStore: { questionsMap: {} },
   parseMarkdownWithMath: value => value,
   MathBankSafe: {
     safeImageUrl: value => value,
@@ -3060,7 +3077,16 @@ def test_api_js_helpers_do_not_use_regex_lookbehind():
             line for line in source.splitlines() if not line.lstrip().startswith("//")
         )
 
-    for name in ("api.js", "editor.js", "ocr.js", "import.js", "paper.js", "lesson.js"):
+    for name in (
+        "tailwind_gate.js",
+        "api.js",
+        "editor.js",
+        "ocr.js",
+        "import.js",
+        "paper.js",
+        "virtual_list.js",
+        "lesson.js",
+    ):
         code = strip_comments(_read(STATIC_JS_DIR / name))
         assert "(?<!" not in code, f"{name} 使用了后行断言"
         assert "(?<=" not in code, f"{name} 使用了先行断言"
@@ -4529,3 +4555,858 @@ console.log('OK');
 """)
     assert result.returncode == 0, (result.stdout or "") + (result.stderr or "")
     assert "OK" in (result.stdout or "")
+
+
+# --------------------------------------------------------------------------
+# #35 组卷页性能架构：变高虚拟滚动 / lean 分页 / 购物车按需水合
+# --------------------------------------------------------------------------
+
+def _virtual_list_helper_source() -> str:
+    """抠出 virtual_list.js 里不碰 DOM 的两个纯函数（窗口定位全靠它们）。"""
+
+    source = _read(STATIC_JS_DIR / "virtual_list.js")
+    start = source.index("function clamp(value, low, high) {")
+    end = source.index("function VirtualList(options) {")
+    helpers = source[start:end]
+    assert "function findRowIndex(" in helpers, "二分定位必须和 clamp 待在同一段可执行区域里"
+    return helpers
+
+
+def test_virtual_list_row_lookup_matches_a_linear_scan():
+    """变高虚拟滚动每帧都在问「这个 scrollTop 落在第几行」，错一格就是白屏或跳动。
+
+    前缀和 + 二分的边界（正好压在行边界、目标为负、目标超出总高）是最容易写错的地方，
+    所以拿一条线性扫描当参照随机 fuzz，再单独跑一遍 10 万行等高数据。
+    """
+
+    script = _virtual_list_helper_source() + r"""
+function buildOffsets(heights) {
+    const offsets = [0];
+    for (let i = 0; i < heights.length; i += 1) offsets.push(offsets[i] + heights[i]);
+    return offsets;
+}
+function reference(offsets, target, count) {
+    for (let i = 0; i < count; i += 1) {
+        if (target < offsets[i + 1]) return i;
+    }
+    return count - 1;
+}
+const problems = [];
+let seed = 20261019;
+function rand() {
+    seed = (seed * 1103515245 + 12345) % 2147483648;
+    return seed / 2147483648;
+}
+for (let trial = 0; trial < 200; trial += 1) {
+    const count = 1 + Math.floor(rand() * 300);
+    const heights = [];
+    for (let i = 0; i < count; i += 1) heights.push(1 + Math.floor(rand() * 900));
+    const offsets = buildOffsets(heights);
+    const total = offsets[count];
+    for (let step = 0; step < 60; step += 1) {
+        const target = Math.floor(rand() * (total + 120)) - 40;
+        const got = findRowIndex(offsets, target, count);
+        if (got !== reference(offsets, target, count)) problems.push({ trial, count, target, got });
+        if (got < 0 || got > count - 1) problems.push({ trial, target, got, outOfRange: true });
+    }
+}
+const flat = new Array(100000).fill(160);
+const flatOffsets = buildOffsets(flat);
+let flatMismatches = 0;
+for (let target = 0; target < flatOffsets[100000]; target += 997) {
+    if (findRowIndex(flatOffsets, target, 100000) !== Math.floor(target / 160)) flatMismatches += 1;
+}
+// 行边界必须归属「下一行」：target 正好等于某行下沿时，那一行已经滚出视口顶部了。
+let edgeMismatches = 0;
+for (let i = 1; i < 5000; i += 1) {
+    if (findRowIndex(flatOffsets, i * 160, 100000) !== i) edgeMismatches += 1;
+}
+const clampBad = [];
+if (clamp(5, 0, 3) !== 3) clampBad.push('high');
+if (clamp(-1, 0, 3) !== 0) clampBad.push('low');
+if (clamp(2, 0, 3) !== 2) clampBad.push('mid');
+if (problems.length) console.log('FIRST_PROBLEMS ' + JSON.stringify(problems.slice(0, 5)));
+console.log('###COUNTS###' + problems.length + ',' + flatMismatches + ',' + edgeMismatches + ',' + clampBad.length);
+"""
+    result = _run_node_script(script)
+    assert result.returncode == 0, (result.stdout or "") + (result.stderr or "")
+    match = re.search(r"###COUNTS###(\d+),(\d+),(\d+),(\d+)", result.stdout)
+    assert match, "node 侧没有产出计数"
+    problems, flat_mismatches, edge_mismatches, clamp_bad = (
+        int(value) for value in match.groups()
+    )
+
+    assert problems == 0, (result.stdout or "").strip()
+    assert flat_mismatches == 0, "10 万行等高数据定位错位：每帧窗口算错，滚动必白屏"
+    assert edge_mismatches == 0, "行边界归属判错，滚动时会反复抖一行"
+    assert clamp_bad == 0, "clamp 失效：窗口起止会被夹出合法区间"
+
+
+def test_paper_question_stream_renders_only_the_visible_window():
+    """题库流必须走虚拟滚动：万题时 DOM 只能有视口内那几十张卡。"""
+
+    virtual_source = _read(STATIC_JS_DIR / "virtual_list.js")
+    paper_source = _read(STATIC_JS_DIR / "paper.js")
+    index_source = _read(INDEX_PATH)
+    css_source = _read(CSS_PATH)
+    main_source = _read(PROJECT_ROOT / "main.py")
+
+    # 加载顺序：虚拟滚动器必须在 paper.js 之前可用，且要吃缓存击穿参数
+    assert 'src="/static/js/virtual_list.js' in index_source
+    assert index_source.index("/static/js/virtual_list.js") < index_source.index(
+        "/static/js/paper.js"
+    ), "virtual_list.js 晚于 paper.js 加载时，首次渲染拿不到构造器"
+    assert '"virtual_list.js"' in main_source, "漏登记就没有缓存击穿，用户浏览器会一直跑旧脚本"
+
+    assert "window.MathBankVirtualList = VirtualList" in virtual_source
+    assert "ResizeObserver" in virtual_source, "变高列表靠 ResizeObserver 量回真实高度"
+    assert "_heightByKey" in virtual_source, "高度要按题目 key 持久化，翻页/换筛选才不会来回抖"
+    assert "scrollTop +=" in virtual_source, "量高之后必须补偿锚点位移，否则往上滚会整屏跳动"
+    assert "VirtualList.prototype.setDragLock" in virtual_source
+    assert "VirtualList.prototype.invalidateKeys" in virtual_source
+    assert "this.disabled" in virtual_source, "压测 A/B 需要一个不裁剪窗口的整表渲染模式"
+
+    assert "new window.MathBankVirtualList(" in paper_source
+    for marker in (
+        "buildPaperStreamScaffold",
+        "renderPaperStreamRow",
+        "estimatePaperStreamRowHeight",
+        "onPaperStreamRangeChange",
+        "paperStreamVirtualList.invalidateKeys(",
+        'paperStreamVirtualList.setDragLock(true)',
+        'paperStreamVirtualList.setDragLock(false)',
+    ):
+        assert marker in paper_source, f"组卷流缺少虚拟滚动接线：{marker}"
+
+    # 拖拽排序与虚拟窗口的冲突：源节点被回收就等于拖拽作废
+    drag_start = paper_source[paper_source.index("window.onPaperCanvasDragStart =") :]
+    drag_end = paper_source[paper_source.index("window.onPaperCanvasDragEnd =") :]
+    assert "setDragLock(true)" in drag_start[: drag_start.index("\n    };")], (
+        "拖拽开始必须锁窗口"
+    )
+    assert "setDragLock(false)" in drag_end[: drag_end.index("\n    };")], (
+        "拖拽结束必须解锁，否则窗口再也不增删行"
+    )
+
+    assert "position: relative" in css_source[css_source.index("#paperQuestionStream") :]
+    assert "will-change: transform" in css_source[css_source.index(".paper-stream-row") :]
+
+
+def test_paper_stream_list_requests_are_paginated_and_lean():
+    """列表请求必须把分页、排序、过滤和 lean 序列化全部下推到 SQL。"""
+
+    paper_source = _read(STATIC_JS_DIR / "paper.js")
+    fetch_body = paper_source[
+        paper_source.index("async function fetchBankQuestions") : paper_source.index(
+            "window.retryPaperStreamPage"
+        )
+    ]
+
+    for marker in (
+        "params.set('page', String(targetPage))",
+        "params.set('page_size', String(PAPER_STREAM_PAGE_SIZE))",
+        "params.set('mode', 'lean')",
+        "params.set('sort', 'desc')",
+    ):
+        assert marker in fetch_body, f"分页请求缺少 {marker}"
+
+    assert "new AbortController()" in fetch_body and "bankQuestionsRequestSeq" in fetch_body, (
+        "连点筛选条件时后发先至会让旧页盖掉新页，序号 + abort 是这里唯一的防线"
+    )
+    assert "append" in fetch_body, "无限滚动要在旧数据后面追加，而不是整页替换"
+    assert "pagination.error" in paper_source and "retryPaperStreamPage" in paper_source, (
+        "翻页失败要给得出重试入口，不能留一片空白列表"
+    )
+
+
+def test_api_status_probe_no_longer_downloads_the_whole_bank():
+    """右上角那个小绿点，原先每开一次页面都要拖回整库 JSON。"""
+
+    api_source = _read(STATIC_JS_DIR / "api.js")
+    probe_start = api_source.index("const indicator = document.getElementById('apiStatusIndicator')")
+    probe_body = api_source[probe_start : probe_start + 900]
+    # 只扫代码行：紧邻的注释正好在解释「这里以前 fetch 的是 /api/questions」，逐字扫会永远误报
+    probe_code = "\n".join(
+        line for line in probe_body.splitlines() if not line.strip().startswith("//")
+    )
+
+    assert "fetch('/healthz')" in probe_code, "就绪探针必须走 /healthz"
+    assert "fetch('/api/questions')" not in probe_code, (
+        "探针不许回到 /api/questions：不带 page 时它命中的是整库数组分支，十万题就是几十 MB"
+    )
+
+
+def test_paper_cart_hydration_separates_deleted_from_unreachable():
+    """购物车三态水合（移植自上游）：读不到 ≠ 不存在，绝不能静默丢题。"""
+
+    paper_source = _read(STATIC_JS_DIR / "paper.js")
+
+    for marker in (
+        "missingIds: [],",
+        "confirmedMissingIds: [],",
+        "failedIds: []",
+        "function getMissingCartQuestionIds()",
+        "async function ensureCartQuestionsLoaded(",
+        "window.removeMissingPaperCartQuestions",
+        "window.revalidatePaperCartQuestions",
+        "function renderCartQuestionLoadBanner()",
+        "function buildCartQuestionLoadError(",
+    ):
+        assert marker in paper_source, f"购物车水合缺少 {marker}"
+
+    load_body = paper_source[
+        paper_source.index("async function ensureCartQuestionsLoaded(") : paper_source.index(
+            "window.revalidatePaperCartQuestions"
+        )
+    ]
+    assert "/api/paper/questions?" in load_body, "水合必须走批量端点，一题一个请求会把浏览器打爆"
+    assert "transportFailed" in load_body, (
+        "整批请求失败时只能记进 failedIds，不能按「服务端说它不存在」处理"
+    )
+    assert "暂时读取失败" in paper_source and "已不存在" in paper_source, (
+        "两类失败必须说给用户的两句话，重试按钮的语义完全不同"
+    )
+
+    # localStorage 里的老购物车：进页面就要补齐，补齐失败也不能丢
+    workspace_start = paper_source.index("window.renderPaperWorkspace = async function")
+    workspace_body = paper_source[workspace_start : workspace_start + 4000]
+    assert "ensureCartQuestionsLoaded()" in workspace_body, (
+        "刷新后购物车靠 /api/paper/questions 水合，分页改动绝不能让它丢题"
+    )
+    assert "Promise.all(" in workspace_body, "题库第一页与购物车水合并行，别让页面等两段串行网络"
+
+
+def test_paper_export_and_save_are_gated_on_a_fully_loaded_cart():
+    """导出前硬闸：卷面还有未水合的题就禁止出卷（A4 预览会静默跳过空 content 的题）。"""
+
+    paper_source = _read(STATIC_JS_DIR / "paper.js")
+
+    payload_body = paper_source[
+        paper_source.index("function buildCartQuestionsPayload() {") : paper_source.index(
+            "function buildCartQuestionsPayload() {"
+        )
+        + 400
+    ]
+    assert "assertPaperCartFullyLoaded();" in payload_body, (
+        "PDF / Word / bundle 三条导出路径都从 buildCartQuestionsPayload 出发，闸口设在这里最省"
+    )
+    assert payload_body.index("assertPaperCartFullyLoaded();") < payload_body.index("return cart.map("), (
+        "硬闸必须在拼 payload 之前：题面缺失时不能一边导出一边静默跳题"
+    )
+
+    gate_body = paper_source[
+        paper_source.index("function assertPaperCartFullyLoaded()") : paper_source.index(
+            "function buildCartQuestionsPayload()"
+        )
+    ]
+    assert "!isPaperQuestionHydrated(qid)" in gate_body
+    assert "throw new Error" in gate_body, "只 toast 不抛错的话，调用方会带着半空卷面继续导出"
+
+    save_index = paper_source.index("window.savePaperToDb = async function")
+    save_body = paper_source[save_index : save_index + 1600]
+    assert "assertPaperCartFullyLoaded();" in save_body, (
+        "保存走的是裸 cart，不经过 buildCartQuestionsPayload，必须单独补一次闸"
+    )
+
+
+def test_paper_detail_hydration_is_on_demand_and_bounded():
+    """完整题面只在进入视口 / 加入试卷时才取，并且缓存要有上限，不能无限膨胀。"""
+
+    paper_source = _read(STATIC_JS_DIR / "paper.js")
+
+    for marker in (
+        "new IntersectionObserver(",
+        "function hydratePaperStreamDetails(",
+        "function isPaperQuestionHydrated(",
+        "function paperStreamTrackHydrated(",
+    ):
+        assert marker in paper_source, f"按需水合缺少 {marker}"
+
+    assert "addToCart = async function" in paper_source, (
+        "加题时必须先把这一题水合到位，否则 A4 卷面会把它当空题跳过"
+    )
+    hydrate_body = paper_source[
+        paper_source.index("function hydratePaperStreamDetails(") : paper_source.index(
+            "function hydratePaperStreamDetails("
+        )
+        + 3000
+    ]
+    assert "slice(" in hydrate_body and "ids" in hydrate_body, "水合要分批下发，一屏几十题不能一个请求全要"
+    track_body = paper_source[
+        paper_source.index("function paperStreamTrackHydrated(") : paper_source.index(
+            "function paperStreamTrackHydrated("
+        )
+        + 1200
+    ]
+    assert "isInCart" in track_body, "购物车里的题永不淘汰：它随时要参与导出硬闸"
+    assert "delete " in track_body, "水合缓存必须有上限，否则长会话滚十万题会把内存吃穿"
+
+def _tailwind_gate_stub_source() -> str:
+    """闸门脚本只依赖 window / document / MutationObserver，全部用桩替代。"""
+
+    return r"""
+const observeLog = [];
+const disconnectLog = [];
+const classLog = [];
+
+function StubObserver(callback) {
+    this.callback = callback;
+}
+StubObserver.prototype.observe = function (target, options) {
+    observeLog.push((options.attributeFilter || []).join('+'));
+};
+StubObserver.prototype.disconnect = function () {
+    disconnectLog.push(1);
+};
+
+const documentElement = {
+    name: 'html',
+    classList: {
+        add: function (name) { classLog.push('+' + name); },
+        remove: function (name) { classLog.push('-' + name); }
+    }
+};
+const window = { MutationObserver: StubObserver };
+const document = { documentElement: documentElement };
+const problems = [];
+function expect(cond, msg) { if (!cond) problems.push(msg); }
+const TW_OPTIONS = { attributes: true, attributeFilter: ['class'], childList: true, subtree: true };
+const A11Y_OPTIONS = { attributes: true, attributeFilter: ['disabled'], childList: true, subtree: true };
+"""
+
+
+def test_tailwind_gate_pauses_and_rehooks_only_the_cdn_scanner():
+    """样式闸门的两个致命坑必须用可执行回归钉死（都真踩过）。
+
+    ① 误关业务观察器：api.js 里同步按钮无障碍态的那个盯的是 disabled，它没有「开闸补扫」
+       这一步，被关掉就是真的永久漏同步；
+    ② pause 走包装版 disconnect：包装版会把登记项一起删掉，resume 再无对象可重挂，
+       表现是 CDN 全量重扫被永久关停、样式静默缺失，而压测数字好看得离谱。
+    """
+
+    script = (
+        _tailwind_gate_stub_source()
+        + _read(STATIC_JS_DIR / "tailwind_gate.js")
+        + r"""
+const gate = window.MathBankTailwindGate;
+expect(typeof gate === 'object' && gate, '闸门没导出 MathBankTailwindGate，paper.js 拿不到它');
+
+const cdn = new window.MutationObserver(function () {});
+cdn.observe(documentElement, TW_OPTIONS);
+expect(gate.watcherCount() === 1, 'Tailwind 的全站 class 观察器没被登记，pause() 无从下手');
+
+const a11y = new window.MutationObserver(function () {});
+observeLog.length = 0;
+a11y.observe(documentElement, A11Y_OPTIONS);
+expect(gate.watcherCount() === 1, '非 class 签名的观察器被误登记，会被闸门静默关掉');
+expect(observeLog.indexOf('disabled') !== -1, '没被登记的观察器必须照常启动');
+
+observeLog.length = 0;
+disconnectLog.length = 0;
+expect(gate.pause() === true, '首次 pause 应返回 true');
+expect(disconnectLog.length === 1, '关闸只断掉那一个全站观察器');
+expect(gate.watcherCount() === 1,
+    'pause 之后 watcherCount 掉到 0 = 用的是包装版 disconnect，resume 挂不回来');
+
+const late = new window.MutationObserver(function () {});
+observeLog.length = 0;
+late.observe(documentElement, TW_OPTIONS);
+expect(observeLog.length === 0, '暂停期间新挂的全站观察器启动了，闸门被悄悄绕过');
+expect(gate.watcherCount() === 2, '暂停期间新建的观察器也要登记，开闸时补挂');
+
+observeLog.length = 0;
+classLog.length = 0;
+expect(gate.resume() === true, '首次 resume 应返回 true');
+expect(observeLog.length === 2, '开闸要把暂停期间攒下的全站观察器全部重挂');
+expect(gate.watcherCount() === 2, '重挂之后登记数不能掉');
+expect(classLog.indexOf('+tw-gate-flush') !== -1 && classLog.indexOf('-tw-gate-flush') !== -1,
+    '开闸必须补一次 class 增删，让 CDN 把暂停期漏掉的样式重扫回来');
+expect(gate.resume() === false, '重复 resume 不该再补扫一遍');
+expect(gate.isPaused() === false, 'resume 之后状态要落回未暂停');
+
+gate.pause();
+late.disconnect();
+expect(gate.watcherCount() === 1, '主动 disconnect 的观察器必须从登记表摘除，否则越积越多');
+gate.resume();
+expect(gate.watcherCount() === 1, '摘除之后只剩 CDN 那一个登记项');
+disconnectLog.length = 0;
+observeLog.length = 0;
+gate.pause();
+expect(disconnectLog.length === 1,
+    '再次关闸只能断掉仍在登记表里的那一个，摘掉的不能被重断：' + disconnectLog.length);
+gate.resume();
+expect(observeLog.length === 1, '再次开闸只重挂仍在登记表里的那一个：' + observeLog.length);
+
+console.log(problems.length ? 'PROBLEMS: ' + problems.join(' | ') : 'OK');
+process.exit(problems.length ? 1 : 0);
+"""
+    )
+
+    result = _run_node_script(script)
+    assert result.returncode == 0, (result.stdout or "") + (result.stderr or "")
+    assert "OK" in (result.stdout or ""), (result.stdout or "")
+
+
+def test_tailwind_gate_loads_before_the_play_cdn_and_is_registered():
+    """加载位置与缓存击穿：晚一步、或吃旧缓存，闸门都会静默失效。"""
+
+    gate_source = _read(STATIC_JS_DIR / "tailwind_gate.js")
+    index_source = _read(INDEX_PATH)
+    main_source = _read(PROJECT_ROOT / "main.py")
+
+    assert index_source.index("/static/js/tailwind_gate.js") < index_source.index(
+        "/static/lib/tailwind/tailwind.min.js"
+    ), "闸门晚于 Play CDN 加载时抢不到 MutationObserver，watcherCount 永远是 0"
+    assert '"tailwind_gate.js"' in main_source, "漏登记就没有缓存击穿，用户浏览器会一直跑旧闸门"
+    assert 'src="/static/js/tailwind_gate.js' in index_source
+
+    for marker in (
+        "window.MathBankTailwindGate",
+        "window.MutationObserver = GatedObserver",
+        "watched[index].stop()",
+        "stop: originalDisconnect",
+        "tw-gate-flush",
+        "filter.indexOf('class')",
+    ):
+        assert marker in gate_source, f"闸门实现缺少 {marker}"
+
+def _extract_paper_stream_function(source: str, signature: str) -> str:
+    """按 paper.js 的统一缩进（函数顶格 4 空格、闭合也是 `    }`）抠出一个完整函数。
+
+    宁可抽取失败报错，也不要静默拿到半截函数——那会让断言永远为真。
+    """
+
+    start = source.index(signature)
+    end = source.index("\n    }", start) + len("\n    }")
+    block = source[start:end]
+    assert block.endswith("\n    }"), f"{signature} 的闭合形状变了，抽取逻辑要跟着改"
+    return block
+
+
+_PAPER_STREAM_NODE_STUB = r"""
+const observeLog = [];
+const problems = [];
+function expect(cond, msg) { if (!cond) problems.push(msg); }
+function report() {
+    console.log(problems.length ? 'PROBLEMS: ' + problems.join(' | ') : 'OK');
+    process.exit(problems.length ? 1 : 0);
+}
+"""
+
+
+def test_paper_stream_choice_grids_are_deferred_while_scrolling():
+    """选项网格试列数要读宽度（强制重排），卡片飞掠过视口时算它纯属白付。"""
+
+    paper_source = _read(STATIC_JS_DIR / "paper.js")
+    start = paper_source.index("function paperStreamIsScrolling() {")
+    end = paper_source.index("function paperStreamGateOpen() {")
+    block = paper_source[start:end]
+    for required in (
+        "function paperStreamMeasureChoices(",
+        "function paperStreamFlushDeferredGrids(",
+    ):
+        assert required in block, f"顺延逻辑被挪走了，测试要跟着改：{required}"
+
+    script = _PAPER_STREAM_NODE_STUB + r"""
+const NOW = { value: 1000 };
+const gridBatches = [];
+const window = {
+    adaptChoicesGridNodes: function (nodes) { gridBatches.push(nodes.slice()); }
+};
+const performance = { now: function () { return NOW.value; } };
+const PAPER_STREAM_SCROLLING_MS = 180;
+const PAPER_STREAM_DEFERRED_GRID_LIMIT = 240;
+let paperStreamLastScrollTs = 0;
+let paperStreamDeferredGrids = [];
+""" + block + r"""
+function makeNode(id, connected) { return { id: id, isConnected: connected }; }
+
+expect(paperStreamIsScrolling() === false, '没有滚动记录时不该判定为滚动中');
+paperStreamLastScrollTs = NOW.value;
+expect(paperStreamIsScrolling() === true, '刚滚动过必须判定为滚动中');
+
+paperStreamMeasureChoices([makeNode('a', true), makeNode('b', true)]);
+expect(gridBatches.length === 0, '滚动中绝不能读宽度：强制重排正是实测长任务的大头');
+expect(paperStreamDeferredGrids.length === 2, '滚动中的网格要攒进顺延表');
+
+paperStreamLastScrollTs = NOW.value - 200;
+paperStreamFlushDeferredGrids();
+expect(gridBatches.length === 1, '补算要合并成整批一次，不能一格一次');
+expect(gridBatches[0].length === 2, '顺延下来的两个节点都要补算');
+expect(paperStreamDeferredGrids.length === 0, '补完必须清空顺延表');
+
+paperStreamDeferredGrids = [makeNode('live', true), makeNode('gone', false)];
+gridBatches.length = 0;
+paperStreamFlushDeferredGrids();
+expect(gridBatches.length === 1 && gridBatches[0].length === 1,
+    '已被窗口回收的节点不该再出现在补算批次里');
+
+gridBatches.length = 0;
+paperStreamLastScrollTs = NOW.value;
+const flood = [];
+for (let i = 0; i <= PAPER_STREAM_DEFERRED_GRID_LIMIT; i += 1) flood.push(makeNode('f' + i, true));
+paperStreamMeasureChoices(flood);
+expect(gridBatches.length >= 1, '顺延表超上限必须立刻落盘，狂滚不能把内存吃穿');
+expect(paperStreamDeferredGrids.length <= PAPER_STREAM_DEFERRED_GRID_LIMIT,
+    '顺延表长度受硬上限约束');
+
+paperStreamLastScrollTs = NOW.value - 200;
+paperStreamDeferredGrids = [];
+gridBatches.length = 0;
+paperStreamMeasureChoices([makeNode('c', true)]);
+expect(gridBatches.length === 1 && paperStreamDeferredGrids.length === 0,
+    '不在滚动中就当场算完，别把已经停下的批次顺延下去');
+
+gridBatches.length = 0;
+paperStreamFlushDeferredGrids();
+expect(gridBatches.length === 0, '没有待补算节点时不该产生空调用');
+report();
+"""
+
+    result = _run_node_script(script)
+    assert result.returncode == 0, (result.stdout or "") + (result.stderr or "")
+    assert "OK" in (result.stdout or ""), (result.stdout or "")
+
+
+def test_paper_stream_typeset_budget_spreads_across_frames():
+    """一批发回几十题时，排版必须逐帧摊开，而不是一次阻塞主线程上百毫秒。"""
+
+    paper_source = _read(STATIC_JS_DIR / "paper.js")
+    script = _PAPER_STREAM_NODE_STUB + r"""
+const rafQueue = [];
+const window = {
+    requestAnimationFrame: function (fn) {
+        rafQueue.push(fn);
+        return rafQueue.length;
+    }
+};
+const PAPER_STREAM_TYPESET_BUDGET = 6;
+let paperStreamTypesetQueue = [];
+let paperStreamTypesetFrame = 0;
+const typesetCalls = [];
+const gridBatches = [];
+const typesetCache = {};
+function typesetPaperMath(node) { typesetCalls.push(node.key); }
+function paperStreamRememberTypeset(key, html) { typesetCache[key] = html; }
+function paperStreamMeasureChoices(nodes) { gridBatches.push(nodes.length); }
+""" + _extract_paper_stream_function(paper_source, "function pumpPaperStreamTypeset() {") + r"""
+function makeNode(key, connected) {
+    return {
+        key: key,
+        isConnected: connected,
+        innerHTML: 'H' + key,
+        dataset: { typesetKey: key },
+        removeAttribute: function () {}
+    };
+}
+function runFrames(limit) {
+    for (let i = 0; i < limit && rafQueue.length; i += 1) {
+        const fn = rafQueue.shift();
+        fn();
+    }
+}
+
+for (let i = 0; i < 20; i += 1) paperStreamTypesetQueue.push(makeNode('n' + i, true));
+paperStreamTypesetQueue.push(makeNode('stale', false));
+pumpPaperStreamTypeset();
+pumpPaperStreamTypeset();
+expect(rafQueue.length === 1, '同一帧里重复泵不能排两次，否则每帧排版量翻倍');
+runFrames(100);
+expect(rafQueue.length === 0, '队列跑空之后不该继续排帧');
+expect(paperStreamTypesetQueue.length === 0, '逐帧队列必须能被跑空');
+expect(typesetCalls.length === 20,
+    '被窗口回收的行不该再付排版钱，实际排版 ' + typesetCalls.length + ' 个');
+let maxBatch = 0;
+for (let i = 0; i < gridBatches.length; i += 1) maxBatch = Math.max(maxBatch, gridBatches[i]);
+expect(maxBatch <= PAPER_STREAM_TYPESET_BUDGET,
+    '每帧排版批次不得超过预算，实际最大 ' + maxBatch);
+expect(gridBatches.length >= 4, '超出预算的部分要顺延到后续帧，不能一帧吞完');
+expect(Object.keys(typesetCache).length === 20,
+    '排版结果按 key 缓存，行回收再挂回来时零重排版');
+report();
+"""
+
+    result = _run_node_script(script)
+    assert result.returncode == 0, (result.stdout or "") + (result.stderr or "")
+    assert "OK" in (result.stdout or ""), (result.stdout or "")
+
+def test_paper_stream_row_rebuild_is_deferred_while_scrolling():
+    """狂滚期间绝不重建行：140 字预览本来就是设计，停手后由 settle 落点统一补齐。"""
+
+    paper_source = _read(STATIC_JS_DIR / "paper.js")
+    script = _PAPER_STREAM_NODE_STUB + r"""
+const rafQueue = [];
+const window = {
+    requestAnimationFrame: function (fn) {
+        rafQueue.push(fn);
+        return rafQueue.length;
+    }
+};
+const NOW = { value: 1000 };
+const performance = { now: function () { return NOW.value; } };
+const PAPER_STREAM_SCROLLING_MS = 180;
+const PAPER_STREAM_INVALIDATE_BUDGET = 3;
+let paperStreamLastScrollTs = 0;
+let paperStreamInvalidateQueue = [];
+let paperStreamInvalidateFrame = 0;
+let paperStreamVirtualList = null;
+const invalidated = [];
+const gateHolds = [];
+function paperStreamHoldGate() { gateHolds.push(1); }
+function runFrames(limit) {
+    for (let i = 0; i < limit && rafQueue.length; i += 1) {
+        const fn = rafQueue.shift();
+        fn();
+    }
+}
+""" + _extract_paper_stream_function(paper_source, "function paperStreamIsScrolling() {") + "\n" + _extract_paper_stream_function(paper_source, "function pumpPaperStreamInvalidations() {") + r"""
+expect(pumpPaperStreamInvalidations.length === 0, '抽取结果不该带残留');
+paperStreamVirtualList = {
+    invalidateKeys: function (keys) { invalidated.push(keys.slice()); }
+};
+
+for (let i = 0; i < 9; i += 1) paperStreamInvalidateQueue.push('k' + i);
+paperStreamLastScrollTs = NOW.value;
+pumpPaperStreamInvalidations();
+pumpPaperStreamInvalidations();
+expect(rafQueue.length === 0, '滚动中绝不能重建行：拆行 + 重挂 + KaTeX 挤在一帧就是实测长任务');
+expect(paperStreamInvalidateQueue.length === 9, '滚动中被顺延的重建要原封不动攒着，一题都不能漏');
+
+paperStreamLastScrollTs = NOW.value - 200;
+pumpPaperStreamInvalidations();
+pumpPaperStreamInvalidations();
+expect(rafQueue.length === 1, '停手之后要补重建，且同一帧只排一次');
+runFrames(100);
+expect(paperStreamInvalidateQueue.length === 0, '重建队列必须被逐帧跑空');
+let maxBatch = 0;
+for (let i = 0; i < invalidated.length; i += 1) maxBatch = Math.max(maxBatch, invalidated[i].length);
+expect(maxBatch <= PAPER_STREAM_INVALIDATE_BUDGET,
+    '每帧重建行数受预算约束，实际最大 ' + maxBatch);
+expect(gateHolds.length === invalidated.length, '每批重建都要先关样式闸门再动 DOM');
+
+paperStreamInvalidateQueue = ['orphan'];
+paperStreamVirtualList = null;
+rafQueue.length = 0;
+pumpPaperStreamInvalidations();
+expect(rafQueue.length === 0 && paperStreamInvalidateQueue.length === 0,
+    '列表已经拆掉时直接丢队列，别让悬挂请求把下一次渲染拖住');
+report();
+"""
+
+    result = _run_node_script(script)
+    assert result.returncode == 0, (result.stdout or "") + (result.stderr or "")
+    assert "OK" in (result.stdout or ""), (result.stdout or "")
+
+
+def test_paper_stream_scroll_path_avoids_forced_reflows():
+    """滚动路径上「读布局」的地方必须收进缓存或预算，这三处都实测过、会被改回去。"""
+
+    virtual_source = _read(STATIC_JS_DIR / "virtual_list.js")
+    paper_source = _read(STATIC_JS_DIR / "paper.js")
+    editor_source = _read(STATIC_JS_DIR / "editor.js")
+
+    # 每帧只读一次 scrollTop：多读一次就是一次强制同步布局（实测占滚动期 17%）
+    assert "VirtualList.prototype._measureChrome" in virtual_source, "offsetTop/clientHeight 要缓存"
+    assert "this._scrollTop = this.scroller.scrollTop;" in virtual_source
+    assert virtual_source.count("this.scroller.scrollTop;") == 1, (
+        "窗口计算里又直接读了一次 scrollTop：每帧多一次强制重排，滚动会退回卡顿"
+    )
+
+    assert "window.adaptChoicesGridNodes = adaptChoicesGridNodes;" in editor_source, (
+        "逐帧只喂新节点的批量入口没了，选项列数会退回「每格强制重排一次」"
+    )
+    assert "function adaptChoicesGrids(grids)" in editor_source, (
+        "整表与批量必须共用同一套列数算法，否则两条路径会给出不同结果"
+    )
+
+    for marker in (
+        "PAPER_STREAM_TYPESET_BUDGET",
+        "PAPER_STREAM_INVALIDATE_BUDGET",
+        "PAPER_STREAM_SCROLLING_MS",
+        "PAPER_STREAM_DEFERRED_GRID_LIMIT",
+        "if (paperStreamIsScrolling()) return;",
+        "window.adaptChoicesGridNodes(settled)",
+        "paperStreamHoldGate()",
+        "paperStreamBumpScroll",
+    ):
+        assert marker in paper_source, f"性能分层调度缺少 {marker}"
+
+    # 闸门必须真的被用上：关闸拿 watcherCount 兜底，开闸走 settle 与硬上限两个落点
+    gate_calls = paper_source[paper_source.index("function paperStreamHoldGate() {") : paper_source.index(
+        "function paperStreamBumpScroll()"
+    )]
+    assert "gate.watcherCount()" in gate_calls, "闸门不可用（加载顺序被改过）时也要武装停手定时器"
+    assert "PAPER_STREAM_GATE_MAX_PAUSE_MS" in gate_calls, "狂滚时样式不能一直欠着，必须有硬上限"
+
+def _paper_figure_size_source() -> str:
+    """抠出 paper.js 里插图尺寸的纯函数段（只读 PaperStore，不碰 DOM）。"""
+
+    source = _read(STATIC_JS_DIR / "paper.js")
+    start = source.index("const PAPER_FIGURE_SIZE_CM =")
+    end = source.index("function hasCachedPaperAnswer(")
+    block = source[start:end]
+    assert "function getQuestionFigSize(q)" in block, "尺寸枚举与取值必须在同一段里"
+    return block
+
+
+def _paper_image_anchor_source() -> str:
+    """抠出 paper.js 里「题末可分离图簇」那一小段（纯正则，不碰 DOM）。"""
+
+    source = _read(STATIC_JS_DIR / "paper.js")
+    start = source.index("const PAPER_IMAGE_ANCHOR_RE =")
+    end = source.index("function formatQuestionContentHtml(")
+    block = source[start:end]
+    for required in (
+        "function splitPaperImageAnchors(",
+        "function shouldPreserveInlinePaperImages(",
+    ):
+        assert required in block, f"题末图簇判定被挪走了，测试要跟着改：{required}"
+    return block
+
+
+def test_paper_preview_image_cluster_rule_matches_the_backend():
+    """网页预览必须和 LaTeX 导出用同一套判定，否则「选项拼图重复」只在一侧消失。
+
+    直接把上游移植过来的 Python 实现当参照逐案对比：摘出来的正文、摘下来的图簇、
+    「这张题的图该不该留在原位」三个结果都必须逐字一致。
+    """
+
+    from mathbank.image_layout import split_image_anchors
+    from mathbank.paper_helper import _should_preserve_inline_image_positions
+
+    cases = [
+        "",
+        "纯文字题目，没有插图",
+        "题干 ![](uploads/a.png) ![](/static/uploads/b.png)",
+        "题干 ![](a.png) 请据此求第二问",
+        "已知图形如图\n![](/static/uploads/a.png)",
+        "下列说法正确的是\n\\begin{choices}\n\\item ![](uploads/a.png)\n"
+        "\\item ![](uploads/b.png)\n\\end{choices}\n",
+        "题干 \\begin{tabular}{|c|}\\hline ![](uploads/t.png) \\\\ \\hline \\end{tabular}",
+        "题干 \\begin{choices}\n\\item A\n\\end{choices} ![](uploads/fig.png)",
+        "题干 ![](/static/uploads/a.png) 小问二 ![b](uploads/b.png) ![](c.png)",
+        "\\begin{choices}\n\\item ![](x1.png)\n\\item ![](x2.png)\n\\end{choices}",
+    ]
+    payload = json.dumps(cases, ensure_ascii=False)
+    script = (
+        _PAPER_STREAM_NODE_STUB.rstrip("\n")
+        + "\n"
+        + _paper_image_anchor_source()
+        + "\nconst cases = "
+        + payload
+        + ";\nconst out = cases.map(raw => {\n"
+        + "    const parts = splitPaperImageAnchors(raw);\n"
+        + "    return { raw: raw, anchored: parts.anchored, detached: parts.detached,\n"
+        + "        preserve: shouldPreserveInlinePaperImages(raw) };\n"
+        + "});\n"
+        + "console.log(JSON.stringify(out));\n"
+    )
+
+    result = _run_node_script(script)
+    assert result.returncode == 0, (result.stdout or "") + (result.stderr or "")
+    rows = json.loads(result.stdout)
+    assert len(rows) == len(cases)
+
+    for case, row in zip(cases, rows):
+        assert row["raw"] == case, "node 收到的用例文本被转码改动了，对比不可信"
+        anchored, detached = split_image_anchors(case)
+        assert row["anchored"] == anchored, (
+            f"预览与导出的「留在原锚点正文」不一致：{case!r}"
+        )
+        assert row["detached"] == detached, (
+            f"预览与导出的「题末可分离图簇」不一致：{case!r}"
+        )
+        assert row["preserve"] is _should_preserve_inline_image_positions(case), (
+            f"预览与导出的「图片是否留在原位」不一致：{case!r}"
+        )
+
+
+def test_paper_figure_size_ui_persists_all_three_columns():
+    """插图尺寸 UI：三列一起落库，且端点「没传就不动」的契约要在前端配合到位。"""
+
+    paper_source = _read(STATIC_JS_DIR / "paper.js")
+
+    for marker in (
+        "PAPER_FIGURE_SIZE_CM",
+        "window.setFigureSize = function",
+        "paperFigureSizeCm",
+        "applyPaperImageLayoutSizes",
+        "题末插图尺寸",
+    ):
+        assert marker in paper_source, f"插图尺寸前端接线缺少 {marker}"
+
+    align_body = paper_source[
+        paper_source.index("window.setFigureAlign = function") : paper_source.index(
+            "window.setFigureSize = function"
+        )
+    ]
+    # 端点整体覆盖三列，所以没改动的字段必须原样带上，否则「只调位置」会清掉尺寸
+    assert "formData.append('figure_size', getQuestionFigSize(persisted));" in align_body, (
+        "只调插图位置时漏传 figure_size，会把老师设过的插图尺寸静默清回 auto"
+    )
+    assert "image_layouts" in align_body, "只调插图位置时逐图布局也必须原样回传"
+
+    size_body = paper_source[
+        paper_source.index("window.setFigureSize = function") : paper_source.index(
+            "window.showFigureAlignPopover = function"
+        )
+    ]
+    assert "figure_align" in size_body, "只调尺寸时也必须把当前位置一起落库"
+    assert "/api/questions/${qid}/figure_align" in size_body
+
+def test_fraction_style_button_previews_before_touching_the_editor():
+    """「规范分式」必须预览后确认才写回编辑框，并且要走 input 事件带动实时预览。"""
+
+    index_source = _read(INDEX_PATH)
+    editor_source = _read(STATIC_JS_DIR / "editor.js")
+
+    for btn_id, field in (
+        ("normalizeContentFractionsBtn", "editContent"),
+        ("normalizeAnswerFractionsBtn", "editAnswerMarkdown"),
+    ):
+        assert f'id="{btn_id}"' in index_source, f"录入页缺少按钮 {btn_id}"
+        assert """onclick="applyFractionStyle('""" + field + """')""" in index_source
+        start = index_source.index(f'id="{btn_id}"')
+        tag = index_source[start - 60: start + 260]
+        assert 'type="button"' in tag, "录入表单里的按钮必须显式声明 type，否则会把整页提交掉"
+
+    body = editor_source[
+        editor_source.index("window.applyFractionStyle = async function") : editor_source.index(
+            "function syncFilterExamStageAvailability()"
+        )
+    ]
+    assert "fetch('/api/format/fractions'" in body, "规范分式必须走后端纯函数，前端不许自己写正则改公式"
+    assert "window.confirm(" in body, "改动公式之前必须让老师确认，预览后应用是这条功能的契约"
+    assert body.index("window.confirm(") < body.index("box.value = data.text"), (
+        "确认必须在写回编辑框之前：先写再问等于没有预览"
+    )
+    assert "dispatchEvent(new Event('input'" in body, "不派发 input 事件的话，实时预览与草稿缓存都不会跟着刷新"
+    assert "fractionBusy" in body, "重复点击不能把两次结果叠加写回同一个编辑框"
+    assert "insertText" in body, "整段替换要走 insertText，才能保留浏览器撤销栈"
+    assert "尚未保存" in body, "必须说清这只改了编辑框，落库仍然是点保存那一次"
+
+
+def test_related_question_dropdown_never_fetches_the_whole_bank():
+    """十万题红线：录入页「关联题目」下拉不许再整库拉取。
+
+    万题压测里曾观测到每次页面加载都发两次不带分页的 GET /api/questions
+    （初始化直接调 refreshRelatedDropdown()），十万题时一次加载就要拖回
+    139MB JSON 并生成十万个 <option>。这里钉住改造后的契约：
+    1) 初始化不再直接调用，改成点开下拉时懒加载一次；
+    2) 基础选项一律走 mode=lean + page_size 的分页摘要；
+    3) 选中项不在最新一页里时只定向水合那一道，题号反查也只取 lean 单页。
+    """
+    import_source = _read(STATIC_JS_DIR / "import.js")
+    assert "fetch('/api/questions')\n" not in import_source, "仍存在不带分页的整库裸 GET"
+    assert "// Load and populate related questions dropdown\n            refreshRelatedDropdown();" not in import_source, \
+        "初始化不许再无条件预取关联下拉"
+    assert "primeRelatedDropdownOnce" in import_source, "关联下拉必须改成 focus/pointerdown 懒加载"
+
+    start = import_source.index("function refreshRelatedDropdown")
+    body = import_source[start:import_source.index("function associateRelatedQuestion", start)]
+    assert "mode=lean" in body and "page_size=${RELATED_DROPDOWN_LEAN_SIZE}" in body, \
+        "关联下拉基础选项必须走 lean 分页"
+    assert "/api/paper/questions?ids=" in body, "选中题不在最新一页时必须走定向水合而不是整库回退"
+
+    assert "mode=lean&q=${encodeURIComponent('#' + seqVal)}" in import_source, \
+        "题号反查必须走 q=#题号 的 lean 单页"

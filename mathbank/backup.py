@@ -27,7 +27,7 @@ from mathbank.paths import (
     DATABASE_FILE,
     FULL_BACKUP_DIR,
     PRE_RESTORE_BACKUP_DIR,
-    SYSTEM_GENERATED_DIR,
+    RUNTIME_LOCK_FILE,
     UPLOADS_DIR,
 )
 
@@ -106,7 +106,9 @@ def acquire_runtime_lock(
 ) -> RuntimeLock:
     """Acquire the lock shared by the server and destructive restore CLI."""
 
-    target = Path(lock_path or (SYSTEM_GENERATED_DIR / "runtime.lock"))
+    # 默认锁文件按所守护的数据库命名（见 paths.RUNTIME_LOCK_FILE），这样指向另一个
+    # 数据库的实例（压测/运维）不会和正式服务抢同一把锁。
+    target = Path(lock_path or RUNTIME_LOCK_FILE)
     target.parent.mkdir(parents=True, exist_ok=True)
     handle = target.open("a+b")
     harden_private_path(target)

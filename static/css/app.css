@@ -828,6 +828,50 @@ header, main {
     overflow-x: hidden;
 }
 
+/* 超宽公式横向滚动（移植自上游 V2.7.0 的 .choices-math-scroll，与我们的
+ * --choices-scale 缩字号策略**并存**）：fitOversizedChoicesContent 缩到 FLOOR=0.5
+ * 仍装不下时，宁可给这一条式子一个自己的横向滚动条，也不再继续压字号——
+ * 「式子能滑动看完」永远好过「式子糊成一团」。
+ *
+ * display 必须是 inline-block：overflow 对非替换内联元素无效，KaTeX 的 .katex
+ * 默认是 inline，只写 overflow-x 不会生效。 */
+.choices-grid .choices-content .katex.choices-math-scroll {
+    display: inline-block;
+    max-width: 100%;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: thin;
+}
+
+/* 组卷题库流的虚拟滚动骨架（由 paper.js 的 buildPaperStreamScaffold 生成）：
+ * 滚动容器必须 position:relative——虚拟窗口用 root.offsetTop 换算视口区间，
+ * offsetParent 不是滚动容器时算出来的窗口区间会整体错位。 */
+#paperQuestionStream {
+    position: relative;
+}
+
+#paperStreamHeaderBar {
+    z-index: 20;
+}
+
+/* 虚拟行是绝对定位的，transform 每帧更新，提前声明合成层避免每次滚动都重新分层。 */
+.paper-stream-row {
+    will-change: transform;
+}
+
+#paperStreamVirtualRoot {
+    min-height: 1px;
+}
+
+/* line-clamp-3 兜底：vendor 的 tailwind.min.js 未提供该 utility 时，纯 CSS 同样截三行。 */
+.line-clamp-3 {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3;
+    line-clamp: 3;
+    overflow: hidden;
+}
+
 .paper-choice-stem-row,
 .paper-choice-options-row {
     width: 100%;

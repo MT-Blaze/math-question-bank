@@ -30,6 +30,7 @@ from mathbank.asset_security import (
     trash_upload_asset,
 )
 from mathbank.database import (
+    FIGURE_ALIGN_VALUES,
     Paper,
     PaperQuestion,
     Question,
@@ -37,6 +38,7 @@ from mathbank.database import (
     QuestionTopic,
     QuestionFingerprint as StoredQuestionFingerprint,
     get_db,
+    normalize_figure_size,
     sync_question_tags,
     sync_question_knowledge,
 )
@@ -88,6 +90,7 @@ from mathbank.question_metadata import (
     record_import_batch_question,
     record_tikz_versions,
 )
+from mathbank.fraction_style import normalize_fraction_style
 from mathbank.latex_normalize import (
     _split_merged_choice_items,
     normalize_choice_paren_macro,
@@ -232,6 +235,7 @@ def list_questions(
     page: Optional[int] = None,
     page_size: int = 20,
     sort: str = "desc",
+    mode: str = "full",
     tikz_pending: bool = False,
     exclude_quality: str = None,
     db: Session = Depends(get_db)
@@ -241,6 +245,12 @@ def list_questions(
     chap_val = chapter or category_chapter
     know_val = knowledge or category_knowledge
     type_val = qtype or question_type
+
+    lean_mode = str(mode).lower() == "lean"
+    if lean_mode and page is None:
+        # lean 是为「海量列表」准备的序列化，绝不允许不带分页整库下发：客户端漏传
+        # page 时补上默认页码，而不是退回下面那条全表 legacy 分支。
+        page = 1
 
     query = db.query(Question)
     
@@ -308,9 +318,11 @@ def list_questions(
     if extra_topics:
         topic_filters = parse_extra_topics(extra_topics)
         if topic_filters:
-            mode = "or" if str(topic_mode).lower() == "or" else "and"
+            # 局部变量必须换个名字：`mode` 现在是列表序列化形态参数（full/lean），
+            # 在这里重新赋值会遮蔽形参，lean 判定虽然提前算完了，但后人读到就是坑。
+            topic_join = "or" if str(topic_mode).lower() == "or" else "and"
             curriculum = get_metadata_cache().get("curriculum", {})
-            if mode == "or":
+            if topic_join == "or":
                 or_clauses = []
                 for f in topic_filters:
                     slot_clauses = [
@@ -383,7 +395,7 @@ def list_questions(
             else (Question.created_at.desc(), Question.id.desc())
         )
     if page is not None:
-        safe_page_size = max(1, min(int(page_size), 100))
+        safe_page_size = max(1, min(int(page_size), 200))
         total = query.count()
         total_pages = max(1, (total + safe_page_size - 1) // safe_page_size)
         safe_page = max(1, min(int(page), total_pages))
@@ -394,11 +406,23 @@ def list_questions(
             .all()
         )
         seq_map = get_seq_mapping(db, [item.id for item in questions])
-        topics_map = load_questions_topics_map(
-            db, [item.id for item in questions], get_active_version_code()
-        )
-        return {
-            "items": [
+        if lean_mode:
+            # lean：列表只回摘要与 140 字预览，完整题面/选项/答案一律按需另取。
+            # 也不附带 topics 槽位数组——组卷流不读它，十万题时它是纯浪费的字节。
+            items = [
+                {
+                    **_decorate_topic_field(item.to_lean_dict()),
+                    "seq_num": seq_map.get(item.id),
+                    "school_source_label": resolve_school_label(item.source_school_id) or None,
+                    "quality": _quality_level_of(item),
+                }
+                for item in questions
+            ]
+        else:
+            topics_map = load_questions_topics_map(
+                db, [item.id for item in questions], get_active_version_code()
+            )
+            items = [
                 {
                     **_decorate_topic_field(item.to_summary_dict()),
                     "seq_num": seq_map.get(item.id),
@@ -407,7 +431,9 @@ def list_questions(
                     "quality": _quality_level_of(item),
                 }
                 for item in questions
-            ],
+            ]
+        return {
+            "items": items,
             "total": total,
             "page": safe_page,
             "page_size": safe_page_size,
@@ -1838,21 +1864,60 @@ def update_question(
     return response
 
 
+@router.post("/api/format/fractions")
+def format_fraction_style(text: str = Form("", max_length=200000)):
+    r"""「规范分式」预览：正文级分式统一成 ``\dfrac``，上标/分式内部降回 ``\frac``。
+
+    刻意做成无状态纯文本端点：不读题也不写题。前端拿返回值先给老师确认，确认之后才写回
+    编辑框，真正落库仍然是点「保存」那一次。这样即使整段公式被判为「需要完整 TeX 解释器」
+    而原样返回，对存量数据也没有任何副作用。
+    """
+
+    normalized = normalize_fraction_style(text)
+    return {"status": "success", "text": normalized, "changed": normalized != text}
+
+
 @router.post("/api/questions/{question_id}/figure_align")
 def update_question_figure_align(
     question_id: int,
     figure_align: str = Form("right"),
+    figure_size: str | None = Form(None),
+    image_layouts: str | None = Form(None),
     db: Session = Depends(get_db)
 ):
+    """持久化题末插图的位置与尺寸（A4 预览气泡菜单的落库入口）。
+
+    这个端点只在用户真的点过气泡菜单时调用，所以 figure_align_custom 直接置真：
+    此后导出的默认排版不能再悄悄盖掉老师手选的「题干右侧」。
+    image_layouts 走枚举校验后落库，值最终要拼进 adjustbox，不收野值。
+    """
+
     db_question = db.query(Question).filter(Question.id == question_id).first()
     if not db_question:
         raise HTTPException(status_code=404, detail="未找到对应的题目")
-    if figure_align not in ["right", "center", "bottom_right"]:
+    if figure_align not in FIGURE_ALIGN_VALUES:
         figure_align = "right"
+    # 三列都是「没传就不动」：调用方只调位置时，绝不该把老师设过的插图尺寸/逐图布局
+    # 一起清回默认（表单字段缺省值是 None，而不是会覆盖旧值的 "auto" / "{}"）。
+    if image_layouts is not None:
+        try:
+            db_question.image_layouts = image_layouts
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+    if figure_size is not None:
+        db_question.figure_size = normalize_figure_size(figure_size)
     db_question.figure_align = figure_align
+    db_question.figure_align_custom = True
     db.commit()
     db.refresh(db_question)
-    return {"status": "success", "question_id": question_id, "figure_align": figure_align}
+    return {
+        "status": "success",
+        "question_id": question_id,
+        "figure_align": db_question.figure_align,
+        "figure_align_custom": True,
+        "figure_size": db_question.figure_size,
+        "image_layouts": db_question.image_layouts,
+    }
 
 
 @router.get("/api/questions/{question_id}/associated")

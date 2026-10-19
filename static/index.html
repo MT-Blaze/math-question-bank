@@ -12,6 +12,9 @@
     <link rel="mask-icon" href="/favicon.svg" color="#F59E0B">
     
     <!-- Tailwind CSS -->
+    <!-- 必须在 CDN 之前：它要在 Tailwind 构造全站 DOM 观察器之前把 MutationObserver 包起来，
+         这样虚拟滚动挂行时可以把那道「每变更一次就重扫整棵文档」的开销临时关掉。 -->
+    <script src="/static/js/tailwind_gate.js?v=1.0.0"></script>
     <script src="/static/lib/tailwind/tailwind.min.js"></script>
     <script>
         // Prevent theme and workspace flash
@@ -1323,6 +1326,10 @@
                             <span>题干</span>
                         </h3>
                         <div class="flex items-center gap-2">
+                            <button type="button" id="normalizeContentFractionsBtn" onclick="applyFractionStyle('editContent')" class="inline-flex min-h-[44px] cursor-pointer items-center justify-center gap-1.5 rounded-xl border border-internal-divider bg-white/60 px-3 text-xs font-medium text-slate-600 transition-colors hover:border-brand-500 hover:text-brand-600 dark:bg-slate-800/60 dark:text-slate-300" title="把正文级分式统一成 \dfrac（上标内部降回 \frac）；应用前会先给你确认，确认后才写回编辑框">
+                                <i class="fa-solid fa-sort-numeric-up" aria-hidden="true"></i>
+                                <span>规范分式</span>
+                            </button>
                             <button type="button" id="openContentTikzWorkbenchBtn" onclick="openContentTikzWorkbench()" class="answer-tikz-entry inline-flex min-h-[44px] cursor-pointer items-center justify-center gap-1.5 rounded-xl border border-indigo-200 bg-indigo-50 px-3 py-2 text-xs font-bold text-indigo-700 shadow-sm transition-colors duration-200 hover:border-indigo-300 hover:bg-indigo-100 focus:outline-none focus:ring-2 focus:ring-indigo-500/30" data-tooltip="新增一幅题干 TikZ 绘图，不会覆盖已有绘图">
                                 <i class="fa-solid fa-compass-drafting" aria-hidden="true"></i>
                                 <span>新增绘图</span>
@@ -1421,6 +1428,10 @@
                             <span>解析</span>
                         </h3>
                         <div class="flex items-center gap-2">
+                            <button type="button" id="normalizeAnswerFractionsBtn" onclick="applyFractionStyle('editAnswerMarkdown')" class="inline-flex min-h-[44px] cursor-pointer items-center justify-center gap-1.5 rounded-xl border border-internal-divider bg-white/60 px-3 text-xs font-medium text-slate-600 transition-colors hover:border-brand-500 hover:text-brand-600 dark:bg-slate-800/60 dark:text-slate-300" title="把正文级分式统一成 \dfrac（上标内部降回 \frac）；应用前会先给你确认，确认后才写回编辑框">
+                                <i class="fa-solid fa-sort-numeric-up" aria-hidden="true"></i>
+                                <span>规范分式</span>
+                            </button>
                             <button type="button" id="openAnswerTikzWorkbenchBtn" onclick="openAnswerTikzWorkbench()" class="answer-tikz-entry inline-flex min-h-[44px] items-center justify-center gap-1.5 rounded-xl border border-indigo-200 bg-indigo-50 px-3 py-2 text-xs font-bold text-indigo-700 shadow-sm transition-colors duration-200 hover:border-indigo-300 hover:bg-indigo-100 focus:outline-none focus:ring-2 focus:ring-indigo-500/30 cursor-pointer" data-tooltip="新增一幅解答 TikZ 绘图，不会覆盖已有绘图">
                                 <i class="fa-solid fa-compass-drafting" aria-hidden="true"></i>
                                 <span>新增绘图</span>
@@ -2879,6 +2890,7 @@
     <script src="/static/js/import.js?v=1.0.3"></script>
     <script src="/static/js/import_batch.js?v=1.0.0"></script>
     <script src="/static/js/entry_options.js?v=1.0.0"></script>
+    <script src="/static/js/virtual_list.js?v=1.0.0"></script>
     <script src="/static/js/paper.js?v=1.0.1"></script>
     <script src="/static/js/lesson.js?v=1.0.2"></script>
     <script src="/static/js/lecture.js?v=1.0.0"></script>

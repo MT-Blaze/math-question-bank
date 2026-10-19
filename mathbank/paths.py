@@ -31,9 +31,30 @@ PRE_RESTORE_BACKUP_DIR = DATA_BACKUP_DIR / "pre_restore"
 SCHEMA_SNAPSHOT_DIR = DATA_BACKUP_DIR / "schema_snapshots"
 SYSTEM_GENERATED_DIR = PROJECT_ROOT / ".system_generated"
 
-DATABASE_FILE = PROJECT_ROOT / "math_question_bank.db"
+# 压测与运维脚本需要把数据库指向独立文件（例如注入 10,000 道合成题的压测库），
+# 绝不能污染教师真实题库。未设置该环境变量时，落点与历史行为逐字一致。
+_ENV_DATABASE_FILE = os.environ.get("MATHBANK_DATABASE_FILE", "").strip()
+if _ENV_DATABASE_FILE:
+    _database_override = Path(_ENV_DATABASE_FILE)
+    DATABASE_FILE = (
+        _database_override
+        if _database_override.is_absolute()
+        else PROJECT_ROOT / _database_override
+    )
+else:
+    DATABASE_FILE = PROJECT_ROOT / "math_question_bank.db"
 DATABASE_PATH = DATABASE_FILE
 ENV_FILE = PROJECT_ROOT / ".env"
+
+# 运行时互斥锁守护的是「那一个数据库」，所以锁文件名必须跟着数据库走。
+# 默认题库沿用历史路径 runtime.lock（正式服务、恢复 CLI、旧脚本三方对得上，逐字不变）；
+# 只有显式改用 MATHBANK_DATABASE_FILE 另起实例时，才换到独立锁文件——否则压测实例
+# 会和教师正在跑的正式服务抢同一把锁，第二个实例直接起不来。
+RUNTIME_LOCK_FILE = (
+    SYSTEM_GENERATED_DIR / "runtime.lock"
+    if not _ENV_DATABASE_FILE
+    else SYSTEM_GENERATED_DIR / f"runtime-{DATABASE_FILE.stem}.lock"
+)
 
 # Stable per-process server identity. Computed once at import so both the app
 # entry point and the split route routers observe the same value.

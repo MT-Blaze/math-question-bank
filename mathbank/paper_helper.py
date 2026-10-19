@@ -12,6 +12,13 @@ from mathbank.paths import TEMPLATES_DIR
 from mathbank.latex_diagnostics import build_local_latex_diagnostic
 from mathbank.asset_security import AssetSecurityError, resolve_upload_asset
 from mathbank.tex_helper import balanced_group
+# 逐图排版与「题末可分离图簇」的唯一判定口径（与数据库列校验共用同一套枚举）
+from mathbank.image_layout import (
+    SIZE_CM,
+    image_key,
+    normalize_image_layouts,
+    split_image_anchors,
+)
 from mathbank.latex_preflight import repair_latex_before_compile
 
 # In-memory LRU cache for compiled PDF bytes
@@ -239,20 +246,50 @@ _TIKZ_ENVIRONMENT_RE = re.compile(
 )
 
 
-def _should_preserve_inline_image_positions(content: str) -> bool:
-    """Keep images anchored when authored content continues after the first one.
+def _normalize_figure_size(value) -> str:
+    """把整题的插图尺寸收敛到枚举（与 database.normalize_figure_size 同一套取值）。
 
-    A trailing image or trailing cluster remains eligible for the historical
-    ``figure_align`` layout.  Images inside tables, between sub-questions, or
-    before later explanatory text must stay where the author inserted them.
+    在导出侧就地判定，省掉 ``paper_helper -> database`` 的反向依赖：这里只认
+    ``image_layout.SIZE_CM`` 的三档，其它一律当「没设过」。
+    """
+
+    normalized = str(value or "").strip()
+    return normalized if normalized in SIZE_CM else "auto"
+
+
+def _figure_size_limit_cm(layout) -> tuple[float, float] | None:
+    """把逐图尺寸枚举换算成厘米上限；auto 或未设置返回 None，沿用各分支既有默认。"""
+
+    if not isinstance(layout, dict):
+        return None
+    return SIZE_CM.get(str(layout.get("size") or "auto"))
+
+
+def _detachable_figure_cluster(content: str) -> tuple[str, str]:
+    """把题干切成 (留在原锚点的正文, 可以摘到题末的插图簇)。
+
+    判定必须带环境栈：落在 ``tabular`` / ``choices`` 里的图片（典型就是「选项拼图」）
+    一旦被当成题末图簇搬走，卷面上会出现两份同一个图，选项还会变成空壳。
+    """
+
+    return split_image_anchors(str(content or ""))
+
+
+def _should_preserve_inline_image_positions(content: str) -> bool:
+    """只有「题末可分离图簇」才允许走 figure_align，其余图片一律留在原锚点。
+
+    改成上游 V2.7 的环境栈扫描之前，这里只看第一张图之后还剩没剩正文，环境内的图
+    很容易被误判成可分离图簇（见 _detachable_figure_cluster 的说明）。
     """
 
     text = str(content or "")
-    matches = list(_MARKDOWN_IMAGE_RE.finditer(text))
-    if not matches:
+    if not _MARKDOWN_IMAGE_RE.search(text):
         return False
-    trailing = _MARKDOWN_IMAGE_RE.sub("", text[matches[0].start():]).strip()
-    return bool(trailing)
+    anchored, detached = split_image_anchors(text)
+    if not detached:
+        return True
+    # 摘掉题末图簇之后正文里还有图：说明图片与周围正文绑在一起，整题都别动
+    return bool(_MARKDOWN_IMAGE_RE.search(anchored))
 
 
 def _image_is_inside_table_environment(content: str, position: int) -> bool:
@@ -502,6 +539,7 @@ def clean_content_for_latex(
     preserve_image_positions: bool = False,
     answer_letter: str = "",
     option_columns: int = 0,
+    image_layouts: dict | None = None,
 ) -> str:
     r"""
     Clean markdown/LaTeX question content for exam-zh LaTeX document export based on 试卷类模板.tex.
@@ -509,6 +547,9 @@ def clean_content_for_latex(
 
     option_columns: 0=自适应（exam-zh 自动列数，默认）；1/2/4=强制该列数。
     仅作用于 ``\begin{choices}`` 环境，见 ``_apply_option_columns``。
+
+    image_layouts: 逐图排版设置（``{图路径: {align, size}}``，值必须是枚举）。只有
+    老师显式设过尺寸的那几张图会改宽度，没设过的保持下面的既有默认，老卷面零变化。
     """
     if not content:
         return ""
@@ -549,10 +590,16 @@ def clean_content_for_latex(
     def replace_img(match):
         img_path = match.group(1)
         base_name = os.path.basename(img_path)
+        size_limit = _figure_size_limit_cm((image_layouts or {}).get(image_key(img_path)))
         if _image_is_inside_table_environment(text, match.start()):
+            # 单元格里的图再设多大都不能把行撑破，高度继续夹在 4.0cm
+            if size_limit:
+                table_size = rf"max width={size_limit[0]}cm,max height={min(size_limit[1], 4.0)}cm"
+            else:
+                table_size = r"max width=\linewidth,max height=4.0cm"
             return (
                 r"\adjustbox{valign=m,margin=0pt 3pt}{"
-                rf"\includegraphics[max width=\linewidth,max height=4.0cm,keepaspectratio]{{{base_name}}}"
+                rf"\includegraphics[{table_size},keepaspectratio]{{{base_name}}}"
                 r"}"
             )
         # 选项图（行首是 A-D 标号的行上的图）必须**内联**进 \item，交给 exam-zh
@@ -563,13 +610,19 @@ def clean_content_for_latex(
         if line_end == -1:
             line_end = len(text)
         if re.match(r"^\s*[-*]?\s*[A-D][\.、．]", text[line_start:line_end]):
-            return (
-                rf"\includegraphics[max width=0.42\linewidth,max height=3.2cm,keepaspectratio]{{{base_name}}}"
-            )
+            if size_limit:
+                option_size = rf"max width={size_limit[0]}cm,max height={size_limit[1]}cm"
+            else:
+                option_size = r"max width=0.42\linewidth,max height=3.2cm"
+            return rf"\includegraphics[{option_size},keepaspectratio]{{{base_name}}}"
         if preserve_image_positions:
+            if size_limit:
+                anchor_size = rf"max width={size_limit[0]}cm,max height={size_limit[1]}cm"
+            else:
+                anchor_size = r"max width=9.0cm,max height=6.0cm"
             return (
                 "\n\\begin{center}\n"
-                rf"\includegraphics[max width=9.0cm,max height=6.0cm,keepaspectratio]{{{base_name}}}"
+                rf"\includegraphics[{anchor_size},keepaspectratio]{{{base_name}}}"
                 "\n\\end{center}\n"
             )
         return f"\n\\begin{{center}}\n\\includegraphics[max width=0.85\\linewidth]{{{base_name}}}\n\\end{{center}}\n"
@@ -825,6 +878,14 @@ def build_latex_document(
             preserve_inline_images = _should_preserve_inline_image_positions(
                 raw_content
             )
+            # 只有这一段题末图簇允许被搬进 figure_align 栏；正文/表格/选项里的图留在原锚点
+            _, detached_figures = _detachable_figure_cluster(raw_content)
+            try:
+                figure_layouts = normalize_image_layouts(
+                    q.get("image_layouts") or {}, raw_content
+                )
+            except ValueError:
+                figure_layouts = {}
             content_tikz_assets = q.get("content_tikz_assets", [])
             if not isinstance(content_tikz_assets, list):
                 content_tikz_assets = []
@@ -860,7 +921,7 @@ def build_latex_document(
                         tikz_code = f"\\begin{{tikzpicture}}\n{tikz_code}\n\\end{{tikzpicture}}"
                     fig_elements.append(f"\\resizebox{{4.5cm}}{{!}}{{{tikz_code}}}")
 
-                img_matches = _MARKDOWN_IMAGE_RE.findall(raw_content)
+                img_matches = _MARKDOWN_IMAGE_RE.findall(detached_figures)
                 if img_matches:
                     for img_path in img_matches:
                         img_filename = os.path.basename(img_path)
@@ -869,7 +930,15 @@ def build_latex_document(
                             continue
                         if not content_tikz_assets and tikz_codes and img_filename.startswith("tikz_"):
                             continue
-                        img_w = "3.8cm" if len(img_matches) > 1 or tikz_codes else "5.0cm"
+                        # 逐图设置优先；没逐图设过就用整题的 figure_size
+                        img_limit = _figure_size_limit_cm(
+                            figure_layouts.get(image_key(img_path))
+                        ) or SIZE_CM.get(_normalize_figure_size(q.get("figure_size")))
+                        img_w = (
+                            f"{img_limit[0]}cm"
+                            if img_limit
+                            else ("3.8cm" if len(img_matches) > 1 or tikz_codes else "5.0cm")
+                        )
                         fig_elements.append(f"\\includegraphics[width={img_w}]{{{img_filename}}}")
                     cleaned_raw = re.sub(r'!\[.*?\]\([^)]+\)', '', cleaned_raw).strip()
 
@@ -889,13 +958,23 @@ def build_latex_document(
                 preserve_image_positions=preserve_inline_images,
                 answer_letter=choice_answer_letter,
                 option_columns=int(q.get("option_columns") or 0),
+                image_layouts=figure_layouts,
             )
             env_name = "problem" if q_type == "detailed_answer" else "question"
             points_arg = f"[points = {q_score}]" if q_type == "detailed_answer" else ""
 
             default_fig_align = "bottom_right" if paper_type == "quiz" else "right"
             fig_align = q.get("figure_align")
-            if not fig_align or (paper_type == "quiz" and fig_align == "right" and not q.get("custom_figure_align")):
+            # 老师手选过位置的标记有两个来源：卷面快照里的 custom_figure_align 与
+            # 题库持久化的 figure_align_custom，任一为真都不能再套用随卷型变化的默认排版
+            if (
+                not fig_align
+                or (
+                    paper_type == "quiz"
+                    and fig_align == "right"
+                    and not (q.get("custom_figure_align") or q.get("figure_align_custom"))
+                )
+            ):
                 fig_align = default_fig_align
             # 多张插图且原设定为右侧时，默认自动优化为下方居中 (center)
             if len(fig_elements) > 1 and fig_align == "right":

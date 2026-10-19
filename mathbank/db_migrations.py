@@ -18,7 +18,7 @@ from mathbank.paths import SCHEMA_SNAPSHOT_DIR
 from mathbank.runtime_components import _sha256
 
 
-LATEST_SCHEMA_VERSION = 25
+LATEST_SCHEMA_VERSION = 26
 LEGACY_REQUIRED_TABLES = {
     "questions",
     "question_curriculums",
@@ -1582,6 +1582,70 @@ def _ensure_school_id_columns(connection) -> dict[str, int]:
     return stats
 
 
+def _ensure_figure_layout_columns(connection) -> dict[str, int]:
+    """自愈 v26 的题末插图三列（幂等，不动任何已有排版设置）。
+
+    三列都是「可选装饰」：老库补上默认值即可，已有的 figure_align 一律保留。
+    只顺手把非法枚举洗回默认——导出侧会把这些值拼进 adjustbox，绝不能放野值进去。
+    """
+
+    stats: dict[str, int] = {}
+    if not connection.exec_driver_sql(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='questions'"
+    ).first():
+        return stats
+    columns = {
+        row[1] for row in connection.exec_driver_sql("PRAGMA table_info(questions)").all()
+    }
+    if "figure_align_custom" not in columns:
+        connection.exec_driver_sql(
+            "ALTER TABLE questions ADD COLUMN figure_align_custom INTEGER NOT NULL DEFAULT 0"
+        )
+        stats["added_questions_figure_align_custom"] = 1
+    if "figure_size" not in columns:
+        connection.exec_driver_sql(
+            "ALTER TABLE questions ADD COLUMN figure_size VARCHAR(20) NOT NULL DEFAULT 'auto'"
+        )
+        stats["added_questions_figure_size"] = 1
+    if "image_layouts" not in columns:
+        connection.exec_driver_sql(
+            "ALTER TABLE questions ADD COLUMN image_layouts TEXT NOT NULL DEFAULT '{}'"
+        )
+        stats["added_questions_image_layouts"] = 1
+    washed_sizes = connection.exec_driver_sql(
+        "UPDATE questions SET figure_size = 'auto' "
+        "WHERE figure_size IS NULL OR figure_size NOT IN ('auto', 'small', 'medium', 'large')"
+    ).rowcount
+    if washed_sizes:
+        stats["normalized_questions_figure_size"] = int(washed_sizes)
+    washed_custom = connection.exec_driver_sql(
+        "UPDATE questions SET figure_align_custom = 0 "
+        "WHERE figure_align_custom IS NULL OR figure_align_custom NOT IN (0, 1)"
+    ).rowcount
+    if washed_custom:
+        stats["normalized_questions_figure_align_custom"] = int(washed_custom)
+    if connection.exec_driver_sql(
+        "SELECT COUNT(*) FROM questions WHERE figure_size NOT IN "
+        "('auto', 'small', 'medium', 'large')"
+    ).scalar():
+        raise RuntimeError("questions.figure_size 包含无效值")
+    if connection.exec_driver_sql(
+        "SELECT COUNT(*) FROM questions WHERE figure_align_custom NOT IN (0, 1)"
+    ).scalar():
+        raise RuntimeError("questions.figure_align_custom 包含无效值")
+    return stats
+
+
+def _upgrade_v25_figure_layouts(engine: Engine) -> dict[str, int]:
+    """v25 -> v26: 题末插图逐图尺寸/位置（见 _ensure_figure_layout_columns）。"""
+
+    stats: dict[str, int] = {}
+    with engine.begin() as connection:
+        stats.update(_ensure_figure_layout_columns(connection))
+        connection.exec_driver_sql(f"PRAGMA user_version={LATEST_SCHEMA_VERSION}")
+    return stats
+
+
 def _upgrade_v24_school_ids(engine: Engine) -> dict[str, int]:
     """v24 -> v25: 学校 ID 化两列（见 _ensure_school_id_columns）。"""
     stats: dict[str, int] = {}
@@ -1905,6 +1969,45 @@ def ensure_late_tables(connection) -> dict[str, int]:
     stats.update(_ensure_question_sources_table(connection))
     stats.update(_ensure_school_id_columns(connection))
     stats.update(_ensure_paper_snapshot_column(connection))
+    # 先补 v26 的列，再建索引：列不在的时候索引不该抢先失败
+    stats.update(_ensure_figure_layout_columns(connection))
+    stats.update(_ensure_perf_indexes(connection))
+    return stats
+
+
+def _ensure_perf_indexes(connection) -> dict[str, int]:
+    """自愈分页列表依赖的排序索引（幂等、不动任何数据）。
+
+    列表接口按「created_at + id」翻页。缺这条复合索引时，SQLite 的执行计划是
+    `SCAN questions` + `USE TEMP B-TREE FOR ORDER BY`——十万题规模下每翻一页都要
+    把整表重排一遍。
+
+    为什么挂在 ensure_late_tables 而不是新加一个 schema 版本：建索引不改数据语义、
+    不影响旧版程序读写，而「已定版但仍需自愈」的启动路径恰好只有这里会执行；
+    真按版本号走反而会让已经是最新版的老库永远补不上这条索引。
+    """
+
+    stats: dict[str, int] = {}
+    if not connection.exec_driver_sql(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='questions'"
+    ).first():
+        return stats
+    # 老库形状守卫：v0/v1 形态的 questions 表可能**根本没有 created_at 列**
+    # （迁移测试里就有这种库），此时建索引会直接把整条迁移打断，必须跳过。
+    question_columns = {
+        row[1]
+        for row in connection.exec_driver_sql("PRAGMA table_info(questions)").all()
+    }
+    if "created_at" not in question_columns or "id" not in question_columns:
+        return stats
+    existing = {
+        row[1] for row in connection.exec_driver_sql("PRAGMA index_list(questions)").all()
+    }
+    if "ix_questions_created_at_id" not in existing:
+        connection.exec_driver_sql(
+            "CREATE INDEX ix_questions_created_at_id ON questions(created_at, id)"
+        )
+        stats["added_questions_created_at_id_index"] = 1
     return stats
 
 
@@ -2103,6 +2206,8 @@ def migrate_database(
         stats = _upgrade_v23_option_columns(engine)
     elif current == 24:
         stats = _upgrade_v24_school_ids(engine)
+    elif current == 25:
+        stats = _upgrade_v25_figure_layouts(engine)
     else:
         stats = _upgrade_derived_schema(engine)
     # Every upgrade path must end with the tables/columns added in later

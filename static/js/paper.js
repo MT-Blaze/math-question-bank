@@ -37,6 +37,20 @@
         isFilterCollapsed: false,
         bankQuestions: [], // Loaded questions from DB based on filters
         questionsMap: {}, // qid -> Question Object
+        // 题库流分页游标。all 走服务端 LIMIT/OFFSET；已选试题是本地 cart，
+        // 靠 ensureCartQuestionsLoaded 补水合，不再依赖「一次全量拉取」顺带填满。
+        streamPagination: {
+            all: { page: 1, totalPages: 1, total: 0, loading: false, error: '', retryPage: 0 }
+        },
+        // 购物车三态：missing（待取）/ confirmedMissing（确认已删）/ failed（读取失败可重试）。
+        cartQuestionLoad: {
+            loading: false,
+            error: '',
+            promise: null,
+            missingIds: [],
+            confirmedMissingIds: [],
+            failedIds: []
+        },
         answerCache: Object.create(null), // qid -> full answer_markdown, loaded on demand
         expandedAnswerIds: new Set(),
         answerLoadingIds: new Set(),
@@ -90,6 +104,52 @@
         if (q.custom_figure_align) return q.custom_figure_align;
         if (q.figure_align && q.figure_align !== 'right') return q.figure_align;
         return defaultAlign;
+    }
+
+    // 与后端 mathbank/image_layout.SIZE_CM 同一套物理尺寸（厘米）
+    const PAPER_FIGURE_SIZE_CM = { small: [5.0, 4.2], medium: [8.0, 6.0], large: [10.5, 7.5] };
+    const PAPER_FIGURE_SIZE_LABELS = { small: '小图', medium: '中图', large: '大图' };
+
+    function getQuestionFigSize(q) {
+        const name = String((q && q.figure_size) || 'auto').trim().toLowerCase();
+        return PAPER_FIGURE_SIZE_CM[name] ? name : 'auto';
+    }
+
+    function paperImageLayoutKey(path) {
+        return String(path || '').trim().replace(/^\/?(?:static\/)?uploads\//, '');
+    }
+
+    function paperFigureQuestion(qid) {
+        if (qid === null || qid === undefined || qid === '') return null;
+        // 虚拟滚动传进来的是数字，气泡菜单里可能是字符串，两种 key 都要能命中
+        return window.PaperStore.questionsMap[qid]
+            || window.PaperStore.questionsMap[parseInt(qid, 10)]
+            || null;
+    }
+
+    // 逐图设置（image_layouts）只作用于锚定在正文/表格/选项里的图
+    function paperImageLayoutCm(qid, src) {
+        const q = paperFigureQuestion(qid);
+        const layouts = (q && q.image_layouts) || null;
+        if (!layouts) return null;
+        const entry = layouts[paperImageLayoutKey(src)];
+        if (!entry) return null;
+        return PAPER_FIGURE_SIZE_CM[String(entry.size || 'auto')] || null;
+    }
+
+    // 题末可分离图簇的尺寸：逐图优先，其次整题的 figure_size
+    function paperFigureSizeCm(qid, src) {
+        const perImage = paperImageLayoutCm(qid, src);
+        if (perImage) return perImage;
+        const q = paperFigureQuestion(qid);
+        if (!q) return null;
+        return PAPER_FIGURE_SIZE_CM[getQuestionFigSize(q)] || null;
+    }
+
+    function paperFigureSizeLabelFor(qid) {
+        const name = getQuestionFigSize(paperFigureQuestion(qid) || {});
+        if (name === 'auto') return '';
+        return ` · ${PAPER_FIGURE_SIZE_LABELS[name] || name}`;
     }
 
     function hasCachedPaperAnswer(qid) {
@@ -170,9 +230,18 @@
         return window.PaperStore.cart.some(item => item.id === qid);
     };
 
-    window.addToCart = function (qid, score = null) {
+    window.addToCart = async function (qid, score = null) {
         qid = parseInt(qid, 10);
         if (!window.isInCart(qid)) {
+            // 分页之后「列表里的这一行」只是摘要，A4 卷面要的是完整题面。
+            // 加题时先确保这一道题水合到位，否则卷面会把它当空题跳过（用户点了没反应）。
+            if (!isPaperQuestionHydrated(qid)) {
+                const loaded = await hydratePaperStreamDetails([qid]);
+                if (!loaded || !isPaperQuestionHydrated(qid)) {
+                    if (window.showToast) window.showToast('题目数据加载失败，请稍后重试', 'error');
+                    return;
+                }
+            }
             const q = window.PaperStore.questionsMap[qid];
             if (!score && q) {
                 score = q.question_type === 'detailed_answer' ? 12 : 5;
@@ -342,8 +411,14 @@
         }
     };
 
-    // Fetch Questions from DB for Question Bank Stream
-    async function fetchBankQuestions() {
+    // =========================================================================
+    // 题库流分页请求（lean 摘要 + 无限滚动 + 竞态守卫）
+    // =========================================================================
+
+    async function fetchBankQuestions(targetPage = 1, options = {}) {
+        const append = Boolean(options && options.append);
+        const legacy = paperStreamPerfLegacy();
+        const pagination = window.PaperStore.streamPagination.all;
         const f = window.PaperStore.filters;
         const params = new URLSearchParams();
         if (f.compulsory) {
@@ -375,24 +450,334 @@
             params.append('q', f.keyword);
             params.append('search', f.keyword);
         }
+        if (!legacy) {
+            // 分页与 lean 序列化全部下推到 SQL：LIMIT/OFFSET/WHERE 在库里跑，
+            // 前端拿到的每页只是摘要 + 140 字预览。
+            params.set('page', String(targetPage));
+            params.set('page_size', String(PAPER_STREAM_PAGE_SIZE));
+            params.set('sort', 'desc');
+            params.set('mode', 'lean');
+        }
+
+        // 连点筛选条件时，后发先至会让旧页数据盖掉新页。序号 + AbortController
+        // 是这里唯一的防线（同一套写法也用在题库工作台侧边栏）。
+        const requestSeq = ++bankQuestionsRequestSeq;
+        if (bankQuestionsAbortController) bankQuestionsAbortController.abort();
+        const controller = new AbortController();
+        bankQuestionsAbortController = controller;
+        pagination.loading = true;
+        pagination.error = '';
+        pagination.retryPage = targetPage;
+        if ((window.PaperStore.filters.tab || 'all') === 'all') renderPaperStreamFooter();
 
         try {
-            const res = await fetch(`/api/questions?${params.toString()}`);
-            const questions = await res.json();
-            if (Array.isArray(questions)) {
-                window.PaperStore.bankQuestions = questions;
-                questions.forEach(q => {
-                    window.PaperStore.questionsMap[q.id] = q;
-                });
+            const res = await fetch(`/api/questions?${params.toString()}`, { signal: controller.signal });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const payload = await res.json();
+            if (requestSeq !== bankQuestionsRequestSeq) return false;
+
+            let items = [];
+            if (Array.isArray(payload)) {
+                // 老架构（?perfLegacyStream=1）：整库数组，条目自带 content。
+                items = payload;
+                items.forEach(q => { window.PaperStore.questionsMap[q.id] = q; });
+                pagination.total = items.length;
+                pagination.page = 1;
+                pagination.totalPages = 1;
+            } else if (payload && Array.isArray(payload.items)) {
+                items = payload.items;
+                pagination.total = Number(payload.total) || 0;
+                pagination.page = Number(payload.page) || targetPage;
+                pagination.totalPages = Number(payload.total_pages) || 1;
+            } else {
+                throw new Error('Invalid question list response');
             }
+
+            if (append) {
+                const seen = new Set(window.PaperStore.bankQuestions.map(q => q.id));
+                window.PaperStore.bankQuestions = window.PaperStore.bankQuestions.concat(
+                    items.filter(q => q && !seen.has(q.id))
+                );
+            } else {
+                window.PaperStore.bankQuestions = items;
+            }
+            pagination.loading = false;
+            pagination.error = '';
+            if ((window.PaperStore.filters.tab || 'all') === 'all') renderPart3QuestionStream();
+            return true;
         } catch (e) {
+            if (e && e.name === 'AbortError') return false;
+            if (requestSeq !== bankQuestionsRequestSeq) return false;
             console.error('Fetch bank questions error:', e);
+            pagination.loading = false;
+            pagination.error = '题库加载失败，请检查服务状态后重试。';
+            renderPaperStreamFooter();
+            return false;
+        } finally {
+            if (requestSeq === bankQuestionsRequestSeq) bankQuestionsAbortController = null;
         }
+    }
+
+    // =========================================================================
+    // 购物车三态水合（移植自上游 V2.6.0「组卷重载」）
+    // =========================================================================
+    //
+    // 题库流改成分页之后，`questionsMap` 不再被「一次全量拉取」顺手填满：刷新页面时
+    // localStorage 里只有 [{id, score}]，A4 卷面和「已选试题」要的完整题面必须显式取回。
+    // 三种状态必须分开，混起来就是丢题：
+    //   · missingIds            —— 还没取到，正在取/待取
+    //   · confirmedMissingIds   —— 服务端确认这道题**已不存在**（被删了），可以移除
+    //   · failedIds             —— 网络/服务异常导致未知，绝不能当成已删除静默丢题
+    // 上游那套「自动移除失效题目，保留其余题目顺序、分值和留白」正是靠这三态才敢动手。
+
+    const CART_QUESTION_BATCH_SIZE = 50;
+
+    function uniquePaperCartQuestionIds() {
+        const seen = new Set();
+        const ids = [];
+        window.PaperStore.cart.forEach(item => {
+            const qid = parseInt(item && item.id, 10);
+            if (qid > 0 && !seen.has(qid)) {
+                seen.add(qid);
+                ids.push(qid);
+            }
+        });
+        return ids;
+    }
+
+    function getMissingCartQuestionIds() {
+        return uniquePaperCartQuestionIds().filter(qid => !isPaperQuestionHydrated(qid));
+    }
+
+    function buildCartQuestionLoadError(confirmedMissingIds, failedIds) {
+        const parts = [];
+        if (confirmedMissingIds && confirmedMissingIds.length) {
+            parts.push(`${confirmedMissingIds.length} 道已选题目在题库中已不存在`);
+        }
+        if (failedIds && failedIds.length) {
+            parts.push(`${failedIds.length} 道已选题目暂时读取失败（未丢失，可重试）`);
+        }
+        return parts.join('；');
+    }
+
+    async function ensureCartQuestionsLoaded(options = {}) {
+        const revalidateAll = Boolean(options && options.revalidateAll);
+        if (window.PaperStore.cartQuestionLoad.promise) {
+            await window.PaperStore.cartQuestionLoad.promise;
+        }
+        const loadState = window.PaperStore.cartQuestionLoad;
+        const cartIds = uniquePaperCartQuestionIds();
+        const cartIdSet = new Set(cartIds);
+        const missingIds = getMissingCartQuestionIds();
+        const idsToLoad = revalidateAll ? cartIds : missingIds;
+        const keepWithinCart = list => (list || []).map(qid => parseInt(qid, 10)).filter(qid => cartIdSet.has(qid));
+        const previousConfirmedMissingIds = keepWithinCart(loadState.confirmedMissingIds);
+        const previousFailedIds = keepWithinCart(loadState.failedIds);
+
+        if (cartIds.length === 0) {
+            loadState.loading = false;
+            loadState.error = '';
+            loadState.missingIds = [];
+            loadState.confirmedMissingIds = [];
+            loadState.failedIds = [];
+            loadState.promise = null;
+            return true;
+        }
+
+        if (idsToLoad.length === 0) {
+            loadState.loading = false;
+            loadState.missingIds = [];
+            loadState.confirmedMissingIds = previousConfirmedMissingIds;
+            loadState.failedIds = previousFailedIds;
+            loadState.error = buildCartQuestionLoadError(previousConfirmedMissingIds, previousFailedIds);
+            loadState.promise = null;
+            return previousConfirmedMissingIds.length === 0 && previousFailedIds.length === 0;
+        }
+
+        const activeLoadPromise = (async () => {
+            const confirmedMissingIds = new Set(revalidateAll ? [] : previousConfirmedMissingIds);
+            const failedIds = new Set(revalidateAll ? [] : previousFailedIds);
+            const freshConfirmedMissingIds = new Set();
+            let transportFailed = false;
+            for (let start = 0; start < idsToLoad.length; start += CART_QUESTION_BATCH_SIZE) {
+                const batchIds = idsToLoad.slice(start, start + CART_QUESTION_BATCH_SIZE);
+                try {
+                    const params = new URLSearchParams({ ids: batchIds.join(',') });
+                    const response = await fetch(`/api/paper/questions?${params.toString()}`);
+                    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                    const payload = await response.json();
+                    if (!payload || payload.status !== 'success' || !Array.isArray(payload.data)) {
+                        throw new Error('Invalid paper question response');
+                    }
+                    const returned = new Set();
+                    payload.data.forEach(q => {
+                        if (!q || !q.id) return;
+                        returned.add(q.id);
+                        window.PaperStore.questionsMap[q.id] = q;
+                        seedPaperAnswerCache(q);
+                        paperStreamTrackHydrated(q.id);
+                    });
+                    batchIds.forEach(qid => {
+                        // 只有「请求成功且服务端明确没这条」才算真删了；请求本身失败一律归到可重试。
+                        if (!returned.has(qid)) freshConfirmedMissingIds.add(qid);
+                    });
+                } catch (e) {
+                    transportFailed = true;
+                    batchIds.forEach(qid => failedIds.add(qid));
+                    console.error('Load cart questions error:', e);
+                }
+            }
+            freshConfirmedMissingIds.forEach(qid => { if (!transportFailed) failedIds.delete(qid); });
+
+            loadState.loading = false;
+            loadState.missingIds = [];
+            loadState.confirmedMissingIds = Array.from(freshConfirmedMissingIds);
+            loadState.failedIds = revalidateAll
+                ? Array.from(failedIds)
+                : previousFailedIds.concat(Array.from(failedIds).filter(qid => !previousFailedIds.includes(qid)));
+            loadState.error = buildCartQuestionLoadError(loadState.confirmedMissingIds, loadState.failedIds);
+            loadState.promise = null;
+            return loadState.confirmedMissingIds.length === 0 && loadState.failedIds.length === 0;
+        })();
+
+        loadState.loading = true;
+        loadState.error = '';
+        loadState.missingIds = missingIds;
+        loadState.promise = activeLoadPromise;
+        const result = await activeLoadPromise;
+        if (window.PaperStore.activeWorkspace === 'paper') {
+            renderPart3QuestionStream();
+            window.renderPaperCanvas();
+        }
+        return result;
+    }
+
+    window.revalidatePaperCartQuestions = function () {
+        return ensureCartQuestionsLoaded({ revalidateAll: true });
+    };
+
+    window.removeMissingPaperCartQuestions = function (skipConfirmation) {
+        const loadState = window.PaperStore.cartQuestionLoad;
+        const removableIds = new Set([].concat(
+            loadState.confirmedMissingIds || [],
+            loadState.failedIds || []
+        ).map(qid => parseInt(qid, 10)).filter(qid => qid > 0));
+        if (removableIds.size === 0) {
+            renderPart3QuestionStream();
+            window.renderPaperCanvas();
+            return;
+        }
+        // 默认必须问一句：failedIds 里的题只是没读到，不是没了。
+        if (!skipConfirmation
+                && !confirm(`确定从卷面移除这 ${removableIds.size} 道已失效题目吗？其他已选题目会保留。`)) return;
+
+        const previousLength = window.PaperStore.cart.length;
+        // 只过滤失效 id：cart 是 [{id, score, solution_space}]，顺序、分值、留白全部原样保留。
+        window.PaperStore.cart = window.PaperStore.cart.filter(item => !removableIds.has(parseInt(item.id, 10)));
+        const removedCount = previousLength - window.PaperStore.cart.length;
+        removableIds.forEach(qid => {
+            window.PaperStore.expandedAnswerIds.delete(qid);
+            delete window.PaperStore.answerErrors[qid];
+            delete window.PaperStore.answerCache[qid];
+        });
+        loadState.loading = false;
+        loadState.confirmedMissingIds = (loadState.confirmedMissingIds || []).filter(qid => !removableIds.has(qid));
+        loadState.failedIds = (loadState.failedIds || []).filter(qid => !removableIds.has(qid));
+        loadState.missingIds = getMissingCartQuestionIds();
+        loadState.error = buildCartQuestionLoadError(loadState.confirmedMissingIds, loadState.failedIds);
+        saveCartToStorage();
+        renderPart3QuestionStream();
+        window.renderPaperCanvas();
+        if (removedCount > 0 && window.showToast) {
+            window.showToast(`已移除 ${removedCount} 道失效题目，其他已选题目已保留。`, 'success');
+        }
+    };
+
+    function renderCartQuestionLoadBanner() {
+        const loadState = window.PaperStore.cartQuestionLoad;
+        const removedGuard = (loadState.confirmedMissingIds || []).length + (loadState.failedIds || []).length;
+        if (!loadState.error || removedGuard === 0) return '';
+        return `
+            <div class="mb-3 rounded-2xl border border-amber-300/70 bg-amber-50/80 px-3.5 py-2.5 text-xs text-amber-800 dark:border-amber-700/60 dark:bg-amber-900/25 dark:text-amber-200" role="alert">
+                <div class="flex flex-wrap items-center justify-between gap-2">
+                    <span><i class="fa-solid fa-triangle-exclamation mr-1"></i>${escapeHtml(loadState.error)}</span>
+                    <span class="flex items-center gap-2">
+                        <button type="button" onclick="window.revalidatePaperCartQuestions()" class="rounded-lg border border-amber-300 bg-white px-2.5 py-1 font-semibold text-amber-700 hover:bg-amber-50 dark:border-amber-700 dark:bg-slate-800 dark:text-amber-200">重新核对</button>
+                        <button type="button" onclick="window.removeMissingPaperCartQuestions()" class="rounded-lg border border-rose-300 bg-white px-2.5 py-1 font-semibold text-rose-600 hover:bg-rose-50 dark:border-rose-800 dark:bg-slate-800 dark:text-rose-300">只移除确认失效题</button>
+                    </span>
+                </div>
+            </div>
+        `;
+    }
+
+    // =========================================================================
+    // Part 3 渲染入口：头部栏 + 虚拟窗口 + 翻页状态条
+    // =========================================================================
+
+    function renderPart3QuestionStream() {
+        const container = document.getElementById('paperQuestionStream');
+        if (!container) return;
+
+        const cart = window.PaperStore.cart;
+        const currentTab = window.PaperStore.filters.tab || 'all';
+        const header = buildPaperStreamScaffold(container);
+        const root = document.getElementById('paperStreamVirtualRoot');
+
+        // Prepare list based on tab
+        let displayList = [];
+        if (currentTab === 'selected') {
+            displayList = cart.map(item => {
+                const full = window.PaperStore.questionsMap[item.id];
+                if (full && !full.lean) return full;
+                const inBank = window.PaperStore.bankQuestions.find(q => q.id === item.id);
+                if (inBank) return inBank;
+                return { id: item.id, lean: true, question_type: '', preview: '题目正在核对中…' };
+            });
+        } else {
+            displayList = window.PaperStore.bankQuestions.slice();
+        }
+        paperStreamRows = displayList;
+
+        renderPaperStreamHeader(
+            displayList,
+            currentTab,
+            window.PaperStore.streamPagination.all.total || displayList.length
+        );
+
+        if (displayList.length === 0) {
+            paperStreamVirtualList.reset(0, () => 'empty');
+            root.dataset.emptyState = '1';
+            root.innerHTML = `
+                <div class="flex flex-col items-center justify-center py-20 bg-white/50 backdrop-blur-md rounded-2xl border border-dashed border-slate-300 dark:bg-slate-800/40 dark:border-slate-700">
+                    <div class="w-12 h-12 rounded-2xl bg-brand-50 text-brand-500 flex items-center justify-center text-xl mb-3 dark:bg-slate-800">
+                        <i class="fa-solid fa-folder-open"></i>
+                    </div>
+                    <h4 class="font-semibold text-slate-700 dark:text-slate-200 mb-1">未找到符合条件的题目</h4>
+                    <p class="text-xs text-slate-500 max-w-xs text-center">请在上方调节学段、章节、题型、难度或搜索条件。</p>
+                </div>
+            `;
+            renderPaperStreamFooter();
+            return;
+        }
+        if (root.dataset.emptyState === '1') {
+            root.innerHTML = '';
+            delete root.dataset.emptyState;
+        }
+        paperStreamVirtualList.reset(
+            displayList.length,
+            index => paperStreamRowKeyForRow(paperStreamRows[index])
+        );
+        renderPaperStreamFooter();
     }
 
     // Render Full Paper Workspace (Part 2, Part 3, Part 4)
     window.renderPaperWorkspace = async function () {
-        await fetchBankQuestions();
+        // 购物车水合必须与题库首页并行完成，然后才能渲染：A4 卷面与「已选试题」
+        // 读的都是 questionsMap 里的完整题面，顺序错了用户就会看见卷面少题。
+        await Promise.all([
+            fetchBankQuestions(1),
+            ensureCartQuestionsLoaded()
+        ]);
         renderPart2FilterSection();
         renderPart3QuestionStream();
         window.renderPaperCanvas();
@@ -764,127 +1149,493 @@
     // Switch Part 3 Tab ('all' or 'selected')
     window.switchPaperStreamTab = function (tabName) {
         window.PaperStore.filters.tab = tabName;
+        // 切到「已选试题」时，购物车里可能有还没补全的题（比如刚刷新完就点这个 tab）。
+        if (tabName === 'selected') ensureCartQuestionsLoaded();
         renderPart3QuestionStream();
     };
 
-    // Render Part 3: Full-Width Question Stream
-    function renderPart3QuestionStream() {
-        const container = document.getElementById('paperQuestionStream');
-        if (!container) return;
+// Render Part 3: Full-Width Question Stream（虚拟滚动版见本段末）
+    // =========================================================================
+    // Part 3 题库流：服务端分页 + 虚拟滚动 + 按需水合
+    // =========================================================================
+    //
+    // 老写法是「把 displayList 拼成一个大字符串，一次 innerHTML」：411 题就是 10.8 万
+    // 个 DOM 节点（本文件里留着实测注释），线性外推十万题约 260 万节点，浏览器直接失能。
+    // 改造后滚动容器里只存在「可视窗口 + overscan」的二十来张卡片。
+    //
+    // 三条硬约束：
+    //   · 列表接口只回 lean 摘要（140 字预览，不含 content/options/answer/tikz），卡片
+    //     真正进入视口才由 IntersectionObserver 触发 /api/paper/questions?ids= 批量补全；
+    //   · 「已选试题」与 A4 卷面依赖完整题面，购物车里的题必须启动时显式水合，绝不因为
+    //     改成分页而丢题（见 ensureCartQuestionsLoaded）；
+    //   · KaTeX 排版结果按 key 缓存，行被回收再挂回来时零重排版。
 
-        const cart = window.PaperStore.cart;
-        const bankQuestions = window.PaperStore.bankQuestions;
-        const currentTab = window.PaperStore.filters.tab || 'all';
+    const PAPER_STREAM_PAGE_SIZE = 50;
+    const PAPER_STREAM_DETAIL_BATCH = 50;
+    const PAPER_STREAM_HYDRATED_CACHE_LIMIT = 400;
+    const PAPER_STREAM_TYPESET_CACHE_LIMIT = 600;
+    const PAPER_STREAM_NEAR_BOTTOM_PX = 900;
+    // 每帧的预算。虚拟滚动时「挂行 + KaTeX 排版 + 选项网格试列数」全挤在同一帧里，
+    // 一批发回 50 题的水合数据能把主线程一次阻塞 180ms（万题实测 p95）。
+    // 超预算的部分顺延到下一帧，人眼看到的是「逐帧铺开」，不是「卡住再跳」。
+    const PAPER_STREAM_TYPESET_BUDGET = 6;
+    const PAPER_STREAM_INVALIDATE_BUDGET = 3;
+    // Tailwind Play CDN 闸门：滚动停止这么久之后恢复全站样式重扫。
+    const PAPER_STREAM_GATE_SETTLE_MS = 220;
+    const PAPER_STREAM_GATE_MAX_PAUSE_MS = 900;
+    // 滚动中顺延「选项网格试列数」的判定（每格要读 clientWidth，会强制重排）。
+    // 超过这个时间没滚动就算停下；顺延表长度也有上限，防止一路狂滚把内存吃掉。
+    const PAPER_STREAM_SCROLLING_MS = 180;
+    const PAPER_STREAM_DEFERRED_GRID_LIMIT = 240;
 
-        // Prepare list based on tab
-        let displayList = [];
-        if (currentTab === 'selected') {
-            displayList = cart.map(item => window.PaperStore.questionsMap[item.id]).filter(Boolean);
-        } else {
-            displayList = bankQuestions;
-        }
-        const hasVisibleExpandedAnswers = displayList.some(
-            q => q && window.PaperStore.expandedAnswerIds.has(q.id)
-        );
+    const PAPER_KATEX_DELIMITERS = [
+        { left: '$$', right: '$$', display: true },
+        { left: '$', right: '$', display: false },
+        { left: '\\(', right: '\\)', display: false },
+        { left: '\\[', right: '\\]', display: true }
+    ];
 
-        let html = `
-            <!-- Part 3 Stream Header Bar -->
-            <div class="flex flex-wrap items-center justify-between gap-2 pb-3 mb-4 border-b border-slate-200/60 dark:border-slate-700/60">
-                <div class="flex items-center space-x-1.5 bg-slate-200/60 p-1 rounded-xl dark:bg-slate-800">
-                    <button onclick="switchPaperStreamTab('all')" 
-                        class="px-3 py-1 rounded-lg text-xs font-bold transition-all ${currentTab === 'all' ? 'bg-white text-brand-600 shadow-sm dark:bg-slate-700 dark:text-brand-200' : 'text-slate-500 hover:text-slate-800 dark:text-slate-400'}">
-                        全库试题 (${bankQuestions.length})
-                    </button>
-                    <button onclick="switchPaperStreamTab('selected')" 
-                        class="px-3 py-1 rounded-lg text-xs font-bold transition-all ${currentTab === 'selected' ? 'bg-white text-brand-600 shadow-sm dark:bg-slate-700 dark:text-brand-200' : 'text-slate-500 hover:text-slate-800 dark:text-slate-400'}">
-                        已选试题 (${cart.length})
-                    </button>
-                </div>
+    let paperStreamRows = [];
+    let paperStreamVirtualList = null;
+    let paperStreamDetailObserver = null;
+    let paperStreamTypesetCache = Object.create(null);
+    let paperStreamTypesetOrder = [];
+    let paperStreamHydratedOrder = [];
+    let paperStreamPendingDetails = new Set();
+    let paperStreamDetailTimer = 0;
+    let paperStreamTypesetQueue = [];
+    let paperStreamTypesetFrame = 0;
+    let paperStreamInvalidateQueue = [];
+    let paperStreamInvalidateFrame = 0;
+    let paperStreamGateSettleTimer = 0;
+    let paperStreamGateHardTimer = 0;
+    let paperStreamLastScrollTs = 0;
+    let paperStreamDeferredGrids = [];
+    let bankQuestionsRequestSeq = 0;
+    let bankQuestionsAbortController = null;
 
-                <div class="flex flex-wrap items-center justify-end gap-3">
-                    ${hasVisibleExpandedAnswers ? `
-                        <button type="button" onclick="window.collapseAllPaperAnswers()"
-                            class="text-xs font-medium text-slate-500 hover:text-brand-600 transition-colors flex items-center space-x-1">
-                            <i class="fa-solid fa-eye-slash text-[10px]"></i>
-                            <span>收起全部答案</span>
-                        </button>
-                    ` : ''}
-                    ${cart.length > 0 ? `
-                        <button type="button" onclick="window.clearCart()" class="text-xs font-medium text-slate-400 hover:text-rose-500 transition-colors flex items-center space-x-1">
-                            <i class="fa-solid fa-trash-can text-[10px]"></i>
-                            <span>清空卷面 (${cart.length})</span>
-                        </button>
-                    ` : ''}
-                </div>
-            </div>
-        `;
+    // ------------------------------------------------------------------
+    // Tailwind Play CDN 有界闸门（实现见 static/js/tailwind_gate.js）
+    //
+    // CDN 在 documentElement 上挂着「class/childList 一变就重扫整棵文档生成 CSS」的观察器。
+    // 我们的基础 DOM 有 1.8 万个节点，虚拟滚动每挂一张卡都要触发一次全量重扫，实测占滚动期
+    // 主线程 self-time 的 23%。这里在滚动/批量重建期间关闸，停手后立刻开闸并补一次重扫；
+    // 同时有 900ms 硬上限——用户一路狂滚也不会让样式一直欠着。
+    // ------------------------------------------------------------------
 
-        if (displayList.length === 0) {
-            html += `
-                <div class="flex flex-col items-center justify-center py-20 bg-white/50 backdrop-blur-md rounded-2xl border border-dashed border-slate-300 dark:bg-slate-800/40 dark:border-slate-700">
-                    <div class="w-12 h-12 rounded-2xl bg-brand-50 text-brand-500 flex items-center justify-center text-xl mb-3 dark:bg-slate-800">
-                        <i class="fa-solid fa-folder-open"></i>
-                    </div>
-                    <h4 class="font-semibold text-slate-700 dark:text-slate-200 mb-1">未找到符合条件的题目</h4>
-                    <p class="text-xs text-slate-500 max-w-xs text-center">请在上方调节学段、章节、题型、难度或搜索条件。</p>
-                </div>
-            `;
-            container.innerHTML = html;
+    function paperStreamIsScrolling() {
+        return performance.now() - paperStreamLastScrollTs < PAPER_STREAM_SCROLLING_MS;
+    }
+
+    /**
+     * 选项网格的列数/缩字号自适应：读宽度会强制重排，卡片飞掠过视口时算它纯属白付。
+     * 滚动中先攒着，停手（或闸门 900ms 硬上限开闸）时一次算完——列数只取决于容器宽度，
+     * 滚动过程里它根本不会变，所以延后算的结果和立刻算完全一致。
+     */
+    function paperStreamMeasureChoices(nodes) {
+        if (typeof window.adaptChoicesGridNodes !== "function") return;
+        if (!paperStreamIsScrolling()) {
+            paperStreamDeferredGrids = [];
+            try { window.adaptChoicesGridNodes(nodes); } catch (e) { }
             return;
         }
+        for (let i = 0; i < nodes.length; i += 1) paperStreamDeferredGrids.push(nodes[i]);
+        if (paperStreamDeferredGrids.length > PAPER_STREAM_DEFERRED_GRID_LIMIT) {
+            paperStreamFlushDeferredGrids();
+        }
+    }
 
-        html += `<div class="space-y-4">`;
+    function paperStreamFlushDeferredGrids() {
+        const pending = paperStreamDeferredGrids;
+        paperStreamDeferredGrids = [];
+        if (!pending.length) return;
+        if (typeof window.adaptChoicesGridNodes !== "function") return;
+        const settled = [];
+        for (let i = 0; i < pending.length; i += 1) {
+            if (pending[i].isConnected) settled.push(pending[i]);
+        }
+        if (!settled.length) return;
+        try { window.adaptChoicesGridNodes(settled); } catch (e) { }
+    }
 
-        displayList.forEach((q, index) => {
-            const inCart = window.isInCart(q.id);
-            const cartItem = cart.find(it => it.id === q.id);
-            const currentScore = cartItem ? cartItem.score : (q.question_type === 'detailed_answer' ? 12 : 5);
-            const qTypeLabel = getQuestionTypeCn(q.question_type);
-            const diffTag = getDifficultyBadge(q.difficulty, { size: 'regular' });
-            const usageCount = q.usage_count || 0;
-            seedPaperAnswerCache(q);
-            const answerExpanded = window.PaperStore.expandedAnswerIds.has(q.id);
-            const answerLoading = window.PaperStore.answerLoadingIds.has(q.id);
-            const answerError = window.PaperStore.answerErrors[q.id] || '';
-            const answerCached = hasCachedPaperAnswer(q.id);
-            const answerText = answerCached ? window.PaperStore.answerCache[q.id] : '';
-            const answerAvailabilityKnown = typeof q.has_answer === 'boolean' || answerCached;
-            const hasAnswer = Boolean((answerText || '').trim()) || q.has_answer === true || !answerAvailabilityKnown;
+    function paperStreamGateOpen() {
+        if (paperStreamGateSettleTimer) { window.clearTimeout(paperStreamGateSettleTimer); paperStreamGateSettleTimer = 0; }
+        if (paperStreamGateHardTimer) { window.clearTimeout(paperStreamGateHardTimer); paperStreamGateHardTimer = 0; }
+        paperStreamFlushDeferredGrids();
+        // 停手落点：把滚动期间攒下的行重建一起补上（顺序很重要——先补样式与网格，
+        // 再重建行；重建行会自己把新节点排进逐帧队列）。
+        pumpPaperStreamInvalidations();
+        const gate = window.MathBankTailwindGate;
+        if (gate) gate.resume();
+    }
 
-            let answerBodyHtml = '';
-            if (answerExpanded) {
-                if (answerLoading) {
-                    answerBodyHtml = `
-                        <div class="flex items-center justify-center gap-2 py-5 text-xs text-slate-500 dark:text-slate-400" aria-live="polite">
-                            <i class="fa-solid fa-spinner fa-spin text-brand-500"></i>
-                            <span>正在加载答案与解析...</span>
-                        </div>
-                    `;
-                } else if (answerError) {
-                    answerBodyHtml = `
-                        <div class="flex flex-wrap items-center justify-between gap-2 py-3 text-xs text-rose-600 dark:text-rose-300" role="alert">
-                            <span><i class="fa-solid fa-circle-exclamation mr-1"></i>${escapeHtml(answerError)}</span>
-                            <button type="button" onclick="window.retryPaperQuestionAnswer(${q.id})"
-                                class="px-3 py-1.5 rounded-lg border border-rose-200 bg-white hover:bg-rose-50 font-semibold transition-colors dark:bg-slate-800 dark:border-rose-900/60 dark:hover:bg-slate-700">
-                                重试
-                            </button>
-                        </div>
-                    `;
-                } else if ((answerText || '').trim()) {
-                    answerBodyHtml = typeof window.parseMarkdownWithMath === 'function'
-                        ? window.parseMarkdownWithMath(answerText)
-                        : window.MathBankSafe.sanitizeRichHtml(answerText);
-                } else {
-                    answerBodyHtml = '<p class="py-3 text-xs text-slate-400 italic">本题暂无答案与解析。</p>';
-                }
+    /**
+     * 关闸并武装「停手」定时器；不记录滚动时间戳——批量水合也算 burst。
+     *
+     * 停手判定必须**总是**被武装：不能因为闸门不可用（watcherCount 为 0，通常是加载
+     * 顺序被人改过）就连同被顺延的选项网格补算一起失效，否则卡片会一直停在默认列数。
+     * 样式补扫与网格补算共用这一个落点，两个都不能少。
+     */
+    function paperStreamHoldGate() {
+        if (paperStreamGateSettleTimer) window.clearTimeout(paperStreamGateSettleTimer);
+        paperStreamGateSettleTimer = window.setTimeout(function () {
+            paperStreamGateSettleTimer = 0;
+            paperStreamGateOpen();
+        }, PAPER_STREAM_GATE_SETTLE_MS);
+        if (!paperStreamGateHardTimer) {
+            // 硬上限：用户一路狂滚也要每隔 900ms 补一次样式与网格，账不能一直欠着。
+            // 这里不递归续期，下一次滚动事件会重新武装。
+            paperStreamGateHardTimer = window.setTimeout(paperStreamGateOpen, PAPER_STREAM_GATE_MAX_PAUSE_MS);
+        }
+        const gate = window.MathBankTailwindGate;
+        if (gate && gate.watcherCount()) gate.pause();
+    }
+
+    function paperStreamBumpScroll() {
+        paperStreamLastScrollTs = performance.now();
+        paperStreamHoldGate();
+    }
+
+    function typesetPaperMath(element) {
+        if (!element || typeof renderMathInElement !== 'function') return;
+        try {
+            renderMathInElement(element, {
+                delimiters: PAPER_KATEX_DELIMITERS,
+                throwOnError: false
+            });
+        } catch (e) { }
+    }
+
+    function paperStreamPerfLegacy() {
+        // 压测 A/B 专用：?perfLegacyStream=1 时窗口不裁剪（整表渲染），用来量化虚拟滚动的收益。
+        try {
+            return new URLSearchParams(window.location.search).get('perfLegacyStream') === '1';
+        } catch (e) {
+            return false;
+        }
+    }
+
+    function isPaperQuestionHydrated(qid) {
+        const cached = window.PaperStore.questionsMap[qid];
+        return Boolean(cached && !cached.lean && typeof cached.content === 'string');
+    }
+
+    /** 行内容的主键：同一道题在「收起/展开答案」两种形态下高度完全不同，必须分开缓存。 */
+    function paperStreamRowKeyForRow(row) {
+        const expanded = window.PaperStore.expandedAnswerIds.has(row.id);
+        return row.id + '|' + (expanded ? 'e' : 'c');
+    }
+
+    function paperStreamRowModel(index) {
+        const row = paperStreamRows[index];
+        if (!row) return null;
+        const full = window.PaperStore.questionsMap[row.id];
+        // 列表行永远是 lean 摘要；完整题面从 questionsMap 叠加，二者不互相覆盖。
+        return Object.assign({}, row, (full && !full.lean) ? full : {});
+    }
+
+    function paperStreamTakeTypeset(key, builder) {
+        const cachedValue = paperStreamTypesetCache[key];
+        if (typeof cachedValue === 'string') return { html: cachedValue, fresh: false };
+        return { html: builder(), fresh: true };
+    }
+
+    function paperStreamRememberTypeset(key, html) {
+        if (Object.prototype.hasOwnProperty.call(paperStreamTypesetCache, key)) return;
+        paperStreamTypesetCache[key] = html;
+        paperStreamTypesetOrder.push(key);
+        while (paperStreamTypesetOrder.length > PAPER_STREAM_TYPESET_CACHE_LIMIT) {
+            delete paperStreamTypesetCache[paperStreamTypesetOrder.shift()];
+        }
+    }
+
+    /**
+     * 已水合的完整题面按 LRU 限流：十万题时用户可能一路滚到底，
+     * questionsMap 不能无上限吞内存。购物车里的题永不淘汰（A4 卷面要用）。
+     */
+    function paperStreamTrackHydrated(qid) {
+        const index = paperStreamHydratedOrder.indexOf(qid);
+        if (index >= 0) paperStreamHydratedOrder.splice(index, 1);
+        paperStreamHydratedOrder.push(qid);
+        while (paperStreamHydratedOrder.length > PAPER_STREAM_HYDRATED_CACHE_LIMIT) {
+            let candidate = -1;
+            for (let walk = 0; walk < paperStreamHydratedOrder.length; walk += 1) {
+                if (!window.isInCart(paperStreamHydratedOrder[walk])) { candidate = walk; break; }
             }
+            if (candidate < 0) { paperStreamHydratedOrder.shift(); continue; }
+            const evicted = paperStreamHydratedOrder.splice(candidate, 1)[0];
+            const record = window.PaperStore.questionsMap[evicted];
+            if (record && !record.lean) delete window.PaperStore.questionsMap[evicted];
+            Object.keys(paperStreamTypesetCache).forEach(key => {
+                if (key.indexOf('|' + evicted + '|') === 0 || key.indexOf(evicted + '|') === 0) {
+                    delete paperStreamTypesetCache[key];
+                }
+            });
+        }
+    }
 
-            const cardBorderClass = inCart 
-                ? 'border-brand-500 ring-2 ring-brand-500/20 bg-brand-50/10 dark:border-brand-500/60 dark:bg-brand-900/20'
-                : 'border-slate-200/80 hover:border-brand-200/80 bg-white/80 dark:bg-slate-800/80 dark:border-slate-700/70';
+    function buildPaperStreamScaffold(container) {
+        // 滚动容器里只留三块：粘顶头部栏、虚拟窗口根节点、翻页状态条。
+        // 头部每次渲染只重写它自己（几百字节），不再跟着几千张卡片一起重建。
+        let header = document.getElementById('paperStreamHeaderBar');
+        let root = document.getElementById('paperStreamVirtualRoot');
+        let footer = document.getElementById('paperStreamFooterBar');
+        if (!header || !root || !footer) {
+            container.innerHTML = '';
+            header = document.createElement('div');
+            header.id = 'paperStreamHeaderBar';
+            header.className = 'sticky top-0 z-20 bg-slate-50/90 dark:bg-slate-950/85 backdrop-blur-md';
+            root = document.createElement('div');
+            root.id = 'paperStreamVirtualRoot';
+            footer = document.createElement('div');
+            footer.id = 'paperStreamFooterBar';
+            container.appendChild(header);
+            container.appendChild(root);
+            container.appendChild(footer);
+            // 滚动是这个容器自己报出来的事件：闸门跟着它开关（CDN 的重扫只在
+            // 「有变更」时发生），同时记下时间戳，供「滚动中就别测网格」判定使用。
+            container.addEventListener('scroll', paperStreamBumpScroll, { passive: true });
+            paperStreamVirtualList = null;
+            paperStreamDetailObserver = null;
+            root.innerHTML = '';
+        }
+        if (!paperStreamVirtualList) {
+            paperStreamVirtualList = new window.MathBankVirtualList({
+                scroller: container,
+                root: root,
+                overscan: 5,
+                disabled: paperStreamPerfLegacy(),
+                renderRow: renderPaperStreamRow,
+                estimateHeight: estimatePaperStreamRowHeight,
+                onRangeChange: onPaperStreamRangeChange
+            });
+        }
+        if (!paperStreamDetailObserver && typeof IntersectionObserver === 'function') {
+            paperStreamDetailObserver = new IntersectionObserver(entries => {
+                let dirty = false;
+                entries.forEach(entry => {
+                    if (!entry.isIntersecting) return;
+                    const qid = parseInt(entry.target.dataset.qid || '', 10);
+                    if (!qid || isPaperQuestionHydrated(qid)) return;
+                    paperStreamPendingDetails.add(qid);
+                    dirty = true;
+                });
+                if (dirty) schedulePaperStreamHydration();
+            }, { root: container, rootMargin: '240px 0px 240px 0px' });
+        }
+        return header;
+    }
 
-            html += `
-                <div class="p-5 rounded-2xl border ${cardBorderClass} shadow-sm hover:shadow-md transition-all">
+    function estimatePaperStreamRowHeight(index) {
+        const row = paperStreamRows[index];
+        if (!row) return 160;
+        const expanded = window.PaperStore.expandedAnswerIds.has(row.id);
+        if (expanded) return 520;
+        return isPaperQuestionHydrated(row.id) ? 260 : 150;
+    }
+
+    function onPaperStreamRangeChange(range, info) {
+        // 1) 只排「本帧新挂出来的」节点：renderPaperStreamRow 把它们登记进队列，
+        //    这里不再扫整个 root（root 里常驻十几张卡，每帧扫一遍是白付的）。
+        pumpPaperStreamTypeset();
+        // 2) 接近底部就预取下一页，用户滚到头时数据已经在路上（无限滚动）。
+        const pagination = window.PaperStore.streamPagination.all;
+        if (!pagination.loading
+                && pagination.page < pagination.totalPages
+                && info.distanceToBottom < PAPER_STREAM_NEAR_BOTTOM_PX
+                && (window.PaperStore.filters.tab || 'all') === 'all') {
+            fetchBankQuestions(pagination.page + 1, { append: true });
+        }
+    }
+
+    /**
+     * 逐帧排版队列：每帧最多处理 PAPER_STREAM_TYPESET_BUDGET 个节点，剩下的排进下一帧。
+     * 选项网格的试列数（会强制重排）合并成整批一次，不按格重复。
+     */
+    function pumpPaperStreamTypeset() {
+        if (paperStreamTypesetFrame || paperStreamTypesetQueue.length === 0) return;
+        paperStreamTypesetFrame = window.requestAnimationFrame(function () {
+            paperStreamTypesetFrame = 0;
+            const batch = paperStreamTypesetQueue.splice(0, PAPER_STREAM_TYPESET_BUDGET);
+            const settled = [];
+            for (let i = 0; i < batch.length; i += 1) {
+                const node = batch[i];
+                if (!node.isConnected) continue;      // 行已被窗口回收，别再为它付排版钱
+                typesetPaperMath(node);
+                node.removeAttribute('data-typeset');
+                const cacheKey = node.dataset.typesetKey;
+                // 题干与答案都回写缓存（与改造前逐字一致）：答案正文最长，行被窗口
+                // 回收再挂回来时不重排版，靠的就是这一句。
+                if (cacheKey) paperStreamRememberTypeset(cacheKey, node.innerHTML);
+                settled.push(node);
+            }
+            if (settled.length) paperStreamMeasureChoices(settled);
+            if (paperStreamTypesetQueue.length) pumpPaperStreamTypeset();
+        });
+    }
+
+    function schedulePaperStreamHydration() {
+        if (paperStreamDetailTimer) return;
+        paperStreamDetailTimer = window.setTimeout(function () {
+            paperStreamDetailTimer = 0;
+            const ids = Array.from(paperStreamPendingDetails);
+            paperStreamPendingDetails.clear();
+            hydratePaperStreamDetails(ids);
+        }, 90);
+    }
+
+    async function hydratePaperStreamDetails(ids) {
+        const wanted = (ids || []).filter(qid => qid && !isPaperQuestionHydrated(qid));
+        if (wanted.length === 0) return false;
+        try {
+            for (let start = 0; start < wanted.length; start += PAPER_STREAM_DETAIL_BATCH) {
+                const chunk = wanted.slice(start, start + PAPER_STREAM_DETAIL_BATCH);
+                const params = new URLSearchParams({ ids: chunk.join(',') });
+                const response = await fetch(`/api/paper/questions?${params.toString()}`);
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                const payload = await response.json();
+                if (!payload || payload.status !== 'success' || !Array.isArray(payload.data)) {
+                    throw new Error('Invalid paper question response');
+                }
+                payload.data.forEach(q => {
+                    if (!q || !q.id) return;
+                    window.PaperStore.questionsMap[q.id] = q;
+                    seedPaperAnswerCache(q);
+                    paperStreamTrackHydrated(q.id);
+                });
+            }
+            invalidatePaperStreamRows(wanted);
+            return true;
+        } catch (e) {
+            console.error('Hydrate paper stream details error:', e);
+            return false;
+        }
+    }
+
+    function invalidatePaperStreamRows(ids) {
+        if (!paperStreamVirtualList) return;
+        const keys = [];
+        (ids || []).forEach(qid => {
+            keys.push(qid + '|c');
+            keys.push(qid + '|e');
+        });
+        // 整批水合回来时不能一次重建所有已挂载的行：每张卡的重挂都要重走一遍
+        // 「建 DOM + KaTeX + 选项试列数」，一帧里做十几张就是实测到的 180ms 长任务。
+        // 进队按帧摊销；invalidateKeys 只命中当前挂载的行，队列里的过期 key 无害。
+        for (let i = 0; i < keys.length; i += 1) {
+            if (paperStreamInvalidateQueue.indexOf(keys[i]) === -1) paperStreamInvalidateQueue.push(keys[i]);
+        }
+        pumpPaperStreamInvalidations();
+    }
+
+    function pumpPaperStreamInvalidations() {
+        if (paperStreamInvalidateFrame || paperStreamInvalidateQueue.length === 0) return;
+        if (!paperStreamVirtualList) { paperStreamInvalidateQueue = []; return; }
+        // 狂滚期间**先不重建行**：140 字预览本来就是设计的一部分，卡片飞掠过视口时
+        // 没人读得清题干；水合好的数据照旧进 questionsMap（那是纯赋值，很便宜），
+        // 只把「拆行 + 重挂 + KaTeX」这一串延后到停手。停手后由 settle 定时器再泵一次。
+        if (paperStreamIsScrolling()) return;
+        paperStreamInvalidateFrame = window.requestAnimationFrame(function () {
+            paperStreamInvalidateFrame = 0;
+            if (!paperStreamVirtualList) { paperStreamInvalidateQueue = []; return; }
+            const batch = paperStreamInvalidateQueue.splice(0, PAPER_STREAM_INVALIDATE_BUDGET);
+            paperStreamHoldGate();
+            paperStreamVirtualList.invalidateKeys(batch);
+            if (paperStreamInvalidateQueue.length) pumpPaperStreamInvalidations();
+        });
+    }
+
+    function renderPaperStreamRow(index) {
+        const row = paperStreamRows[index];
+        const wrapper = document.createElement('div');
+        wrapper.className = 'paper-stream-row px-1 pb-4';
+        if (!row) {
+            wrapper.dataset.qid = '0';
+            wrapper.innerHTML = '<div class="p-5 rounded-2xl border border-slate-200/70 bg-white/60 text-xs text-slate-400">题目占位</div>';
+            return { element: wrapper };
+        }
+        const q = paperStreamRowModel(index);
+        const hydrated = isPaperQuestionHydrated(row.id);
+        const cart = window.PaperStore.cart;
+        const currentTab = window.PaperStore.filters.tab || 'all';
+        const inCart = window.isInCart(q.id);
+        const cartItem = cart.find(it => it.id === q.id);
+        const currentScore = cartItem ? cartItem.score : (q.question_type === 'detailed_answer' ? 12 : 5);
+        const qTypeLabel = getQuestionTypeCn(q.question_type);
+        const diffTag = getDifficultyBadge(q.difficulty, { size: 'regular' });
+        const usageCount = q.usage_count || 0;
+        const answerExpanded = window.PaperStore.expandedAnswerIds.has(q.id);
+        const answerLoading = window.PaperStore.answerLoadingIds.has(q.id);
+        const answerError = window.PaperStore.answerErrors[q.id] || '';
+        const answerCached = hasCachedPaperAnswer(q.id);
+        const answerText = answerCached ? window.PaperStore.answerCache[q.id] : '';
+        const answerAvailabilityKnown = typeof q.has_answer === 'boolean' || answerCached;
+        const hasAnswer = Boolean((answerText || '').trim()) || q.has_answer === true || !answerAvailabilityKnown;
+        const rowKey = paperStreamRowKeyForRow(row);
+
+        let answerBodyHtml = '';
+        if (answerExpanded) {
+            if (answerLoading) {
+                answerBodyHtml = `
+                    <div class="flex items-center justify-center gap-2 py-5 text-xs text-slate-500 dark:text-slate-400" aria-live="polite">
+                        <i class="fa-solid fa-spinner fa-spin text-brand-500"></i>
+                        <span>正在加载答案与解析...</span>
+                    </div>
+                `;
+            } else if (answerError) {
+                answerBodyHtml = `
+                    <div class="flex flex-wrap items-center justify-between gap-2 py-3 text-xs text-rose-600 dark:text-rose-300" role="alert">
+                        <span><i class="fa-solid fa-circle-exclamation mr-1"></i>${escapeHtml(answerError)}</span>
+                        <button type="button" onclick="window.retryPaperQuestionAnswer(${q.id})"
+                            data-focus-return="true"
+                            class="px-3 py-1.5 rounded-lg border border-rose-200 bg-white hover:bg-rose-50 font-semibold transition-colors dark:bg-slate-800 dark:border-rose-900/60 dark:hover:bg-slate-700">
+                            重试
+                        </button>
+                    </div>
+                `;
+            } else if ((answerText || '').trim()) {
+                const answerKey = 'answer|' + q.id + '|' + answerText.length;
+                answerBodyHtml = paperStreamTakeTypeset(answerKey, () => (
+                    typeof window.parseMarkdownWithMath === 'function'
+                        ? window.parseMarkdownWithMath(answerText)
+                        : window.MathBankSafe.sanitizeRichHtml(answerText)
+                )).html;
+            } else {
+                answerBodyHtml = '<p class="py-3 text-xs text-slate-400 italic">本题暂无答案与解析。</p>';
+            }
+        }
+
+        const cardBorderClass = inCart
+            ? 'border-brand-500 ring-2 ring-brand-500/20 bg-brand-50/10 dark:border-brand-500/60 dark:bg-brand-900/20'
+            : 'border-slate-200/80 hover:border-brand-200/80 bg-white/80 dark:bg-slate-800/80 dark:border-slate-700/70';
+
+        // 题面：未水合时只显示后端算好的 140 字预览；水合后走完整排版。
+        // 预览不是「降级体验」——它撑的就是最终卡片的位置，真实高度由 ResizeObserver 回填。
+        let stemBlock;
+        if (hydrated) {
+            const figAlign = getQuestionFigAlign(q);
+            const stemKey = 'stem|' + q.id + '|' + figAlign + '|' + (q.content || '').length;
+            const cachedStem = paperStreamTakeTypeset(stemKey, () => ({ raw: true }));
+            stemBlock = `
+                    <div class="question-full-render-box text-sm leading-relaxed text-slate-800 dark:text-slate-100 overflow-x-auto select-text" id="paper-q-render-${q.id}"
+                        ${cachedStem.fresh ? `data-typeset="pending" data-typeset-key="${stemKey}"` : ''}>${cachedStem.fresh ? formatQuestionContentHtml(q.content, q.id, figAlign, false, false) : cachedStem.html}</div>
+            `;
+        } else {
+            stemBlock = `
+                    <div class="text-sm leading-relaxed text-slate-700 dark:text-slate-200 select-text" id="paper-q-render-${q.id}" aria-busy="true">
+                        <p class="line-clamp-3">${escapeHtml(q.preview || '题目加载中...')}</p>
+                        <p class="mt-2 flex items-center gap-1.5 text-[11px] text-slate-400">
+                            <i class="fa-solid fa-hourglass-half animate-pulse"></i>
+                            <span>滚动到此处自动加载完整题干${q.image_count ? ` · 含 ${q.image_count} 张插图` : ''}</span>
+                        </p>
+                    </div>
+            `;
+        }
+
+        wrapper.dataset.qid = String(q.id);
+        wrapper.dataset.rowKey = rowKey;
+        wrapper.innerHTML = `
+                <div class="p-5 rounded-2xl border ${cardBorderClass} shadow-sm hover:shadow-md transition-all" data-qtype="${escapeHtml(q.question_type || '')}">
                     <!-- Card Top Controls Bar -->
                     <div class="flex flex-col gap-3 pb-3 mb-3 border-b border-slate-100 sm:flex-row sm:items-center sm:justify-between dark:border-slate-700/60">
                         <div class="flex w-full items-center space-x-2 flex-wrap gap-y-1 sm:w-auto">
@@ -894,12 +1645,14 @@
                             ${q.category_compulsory ? `<span class="px-2 py-0.5 rounded-lg text-xs font-medium bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300">${escapeHtml(q.category_compulsory)}</span>` : ''}
                             ${q.category_chapter ? `<span class="px-2 py-0.5 rounded-lg text-xs font-medium bg-slate-100 text-slate-500 dark:bg-slate-700/50 dark:text-slate-400">${escapeHtml(q.category_chapter)}</span>` : ''}
                             <span class="px-2 py-0.5 rounded-lg text-xs font-medium bg-slate-100 text-slate-500 dark:bg-slate-700/50 dark:text-slate-400" title="引用次数">引用 ${escapeHtml(usageCount)} 次</span>
+                            ${q.has_tikz_assets ? '<span class="px-2 py-0.5 rounded-lg text-[10px] font-medium bg-emerald-50 text-emerald-600 border border-emerald-200/60 dark:bg-emerald-900/30 dark:text-emerald-300">TikZ</span>' : ''}
                         </div>
 
                         <div class="flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto">
                             <button type="button"
                                 onclick="window.togglePaperQuestionAnswer(${q.id})"
                                 aria-expanded="${answerExpanded ? 'true' : 'false'}"
+                                data-focus-return="true"
                                 ${answerExpanded ? `aria-controls="paper-q-answer-${q.id}"` : ''}
                                 ${(!hasAnswer && !answerExpanded) || answerLoading ? 'disabled' : ''}
                                 title="${hasAnswer || answerExpanded ? (answerExpanded ? '收起本题答案与解析' : '查看本题答案与解析') : '本题暂无答案'}"
@@ -916,33 +1669,32 @@
                                 <!-- Score Selector -->
                                 <div class="paper-score-pill flex items-center space-x-1 px-2.5 py-1 rounded-xl">
                                     <span class="text-xs font-medium">分值:</span>
-                                    <input type="number" min="1" max="100" value="${currentScore}" 
+                                    <input type="number" min="1" max="100" value="${currentScore}"
                                         onchange="window.updatePaperQuestionScore(${q.id}, this.value)"
                                         class="w-12 text-center text-xs font-bold rounded-lg focus:outline-none">
                                     <span class="text-xs font-medium">分</span>
                                 </div>
 
-                                <!-- Move Up / Move Down -->
                                 ${currentTab === 'selected' ? `
-                                    <button onclick="window.movePaperQuestion(${index}, 'up')" ${index === 0 ? 'disabled' : ''} 
+                                    <button onclick="window.movePaperQuestion(${index}, 'up')" ${index === 0 ? 'disabled' : ''}
+                                        data-focus-return="true"
                                         class="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-800 disabled:opacity-30 dark:hover:bg-slate-700" title="上移">
                                         <i class="fa-solid fa-arrow-up text-xs"></i>
                                     </button>
-                                    <button onclick="window.movePaperQuestion(${index}, 'down')" ${index === displayList.length - 1 ? 'disabled' : ''} 
+                                    <button onclick="window.movePaperQuestion(${index}, 'down')" ${index === paperStreamRows.length - 1 ? 'disabled' : ''}
+                                        data-focus-return="true"
                                         class="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-800 disabled:opacity-30 dark:hover:bg-slate-700" title="下移">
                                         <i class="fa-solid fa-arrow-down text-xs"></i>
                                     </button>
                                 ` : ''}
 
-                                <!-- Remove Button -->
-                                <button onclick="window.removeFromCart(${q.id})" 
+                                <button onclick="window.removeFromCart(${q.id})"
                                     class="px-3 py-1.5 rounded-xl text-xs font-semibold bg-emerald-500 text-white shadow-sm hover:bg-rose-600 active:scale-95 transition-all flex items-center space-x-1" title="点击移出试卷">
                                     <i class="fa-solid fa-check text-xs"></i>
                                     <span>已入卷</span>
                                 </button>
                             ` : `
-                                <!-- Add Button -->
-                                <button onclick="window.addToCart(${q.id})" 
+                                <button onclick="window.addToCart(${q.id})"
                                     class="px-3 py-1.5 rounded-xl text-xs font-semibold bg-brand-600 text-white shadow-sm hover:bg-brand-700 active:scale-95 transition-all flex items-center space-x-1">
                                     <i class="fa-solid fa-plus text-xs"></i>
                                     <span>加入试卷</span>
@@ -952,12 +1704,11 @@
                     </div>
 
                     <!-- Full Question Render Content -->
-                    <div class="question-full-render-box text-sm leading-relaxed text-slate-800 dark:text-slate-100 overflow-x-auto select-text" id="paper-q-render-${q.id}">
-                        ${formatQuestionContentHtml(q.content, q.id, getQuestionFigAlign(q), false, false)}
-                    </div>
+                    ${stemBlock}
 
                     ${answerExpanded ? `
                         <section id="paper-q-answer-${q.id}"
+                            data-answer-block="true"
                             role="region"
                             aria-label="题目 #${escapeHtml(q.seq_num !== undefined ? q.seq_num : q.id)} 的参考答案与解析"
                             class="mt-4 pt-4 border-t border-dashed border-brand-200/80 dark:border-brand-900/70">
@@ -966,67 +1717,90 @@
                                 <span>参考答案与解析</span>
                             </div>
                             <div class="paper-answer-render-box rounded-xl border border-brand-100 bg-brand-50/40 px-4 py-3 text-sm leading-relaxed text-slate-800 overflow-x-auto select-text dark:border-brand-900/60 dark:bg-brand-900/20 dark:text-slate-100">
-                                <div id="paper-q-answer-content-${q.id}">${answerBodyHtml}</div>
+                                <div id="paper-q-answer-content-${q.id}" ${answerBodyHtml && !answerLoading && !answerError ? `data-typeset="pending" data-typeset-key="answer|${q.id}|${answerText.length}"` : ''}>${answerBodyHtml}</div>
                             </div>
                         </section>
                     ` : ''}
                 </div>
-            `;
-        });
-
-        html += `</div>`;
-        container.innerHTML = html;
-
-        // Render math formulas for Part 3 question cards
-        //
-        // 这里的两种渲染必须拆开走（2026-09-25 性能修复，方案 2）：
-        //   · KaTeX 只能**逐卡**调 —— renderMathInElement 只处理传入子树，无法
-        //     一次覆盖 349 个彼此独立的容器。
-        //   · 选项列数自适应恰恰相反 —— adaptChoicesGridLayout(root) 本就支持传
-        //     任意 root，内部自己做 querySelectorAll('.choices-grid') 收全部。
-        //     原先放在循环里逐卡调用，等于把同一份查询重复 349 遍：在这个 10.8
-        //     万节点的文档上，实测 350 次 querySelectorAll 纯属浪费。故统一挪到
-        //     循环外，对整个 container 只算一次（见本段结尾）。
-        displayList.forEach(q => {
-            const el = document.getElementById(`paper-q-render-${q.id}`);
-            if (el && typeof renderMathInElement === 'function') {
-                try {
-                    renderMathInElement(el, {
-                        delimiters: [
-                            { left: '$$', right: '$$', display: true },
-                            { left: '$', right: '$', display: false },
-                            { left: '\\(', right: '\\)', display: false },
-                            { left: '\\[', right: '\\]', display: true }
-                        ],
-                        throwOnError: false
-                    });
-                } catch (e) { }
-            }
-
-            const answerEl = document.getElementById(`paper-q-answer-content-${q.id}`);
-            if (answerEl && !window.PaperStore.answerLoadingIds.has(q.id) && !window.PaperStore.answerErrors[q.id] && typeof renderMathInElement === 'function') {
-                try {
-                    renderMathInElement(answerEl, {
-                        delimiters: [
-                            { left: '$$', right: '$$', display: true },
-                            { left: '$', right: '$', display: false },
-                            { left: '\\(', right: '\\)', display: false },
-                            { left: '\\[', right: '\\]', display: true }
-                        ],
-                        throwOnError: false
-                    });
-                } catch (e) { }
-            }
-        });
-
-        // Part 3 选项列数自适应：整个题目流一次算完（理由见本段开头注释）。
-        // 放在全部 KaTeX 渲染之后，保证自适应读到的是最终布局。
-        if (typeof window.adaptChoicesGridLayout === 'function') {
-            try {
-                window.adaptChoicesGridLayout(container);
-            } catch (e) { }
-        }
+        `;
+        // 待排版节点在挂进文档之前就已经带上 data-typeset，所以这里只扫刚生成的
+        // 这一棵子树，代价恒定；旧写法每帧扫一遍常驻十几张卡的 root 是白付的。
+        const pendingNodes = wrapper.querySelectorAll('[data-typeset="pending"]');
+        for (let i = 0; i < pendingNodes.length; i += 1) paperStreamTypesetQueue.push(pendingNodes[i]);
+        if (paperStreamDetailObserver) paperStreamDetailObserver.observe(wrapper);
+        return { element: wrapper };
     }
+
+    function renderPaperStreamHeader(displayList, currentTab, bankCount) {
+        const header = document.getElementById('paperStreamHeaderBar');
+        if (!header) return;
+        const cart = window.PaperStore.cart;
+        const pagination = window.PaperStore.streamPagination.all;
+        const hasVisibleExpandedAnswers = displayList.some(
+            q => q && window.PaperStore.expandedAnswerIds.has(q.id)
+        );
+        header.innerHTML = `
+            <div class="flex flex-wrap items-center justify-between gap-2 pb-3 mb-4 border-b border-slate-200/60 dark:border-slate-700/60">
+                <div class="flex items-center space-x-1.5 bg-slate-200/60 p-1 rounded-xl dark:bg-slate-800">
+                    <button type="button" onclick="switchPaperStreamTab('all')"
+                        data-focus-return="true"
+                        class="px-3 py-1 rounded-lg text-xs font-bold transition-all ${currentTab === 'all' ? 'bg-white text-brand-600 shadow-sm dark:bg-slate-700 dark:text-brand-200' : 'text-slate-500 hover:text-slate-800 dark:text-slate-400'}">
+                        全库试题 (${bankCount})
+                    </button>
+                    <button type="button" onclick="switchPaperStreamTab('selected')"
+                        data-focus-return="true"
+                        class="px-3 py-1 rounded-lg text-xs font-bold transition-all ${currentTab === 'selected' ? 'bg-white text-brand-600 shadow-sm dark:bg-slate-700 dark:text-brand-200' : 'text-slate-500 hover:text-slate-800 dark:text-slate-400'}">
+                        已选试题 (${cart.length})
+                    </button>
+                </div>
+
+                <div class="flex flex-wrap items-center justify-end gap-3">
+                    ${hasVisibleExpandedAnswers ? `
+                        <button type="button" onclick="window.collapseAllPaperAnswers()"
+                            class="text-xs font-medium text-slate-500 hover:text-brand-600 transition-colors flex items-center space-x-1">
+                            <i class="fa-solid fa-eye-slash text-[10px]"></i>
+                            <span>收起全部答案</span>
+                        </button>
+                    ` : ''}
+                    ${currentTab === 'all' && pagination.totalPages > 1 ? `
+                        <span class="text-[11px] font-medium text-slate-400">已加载 ${pagination.page}/${pagination.totalPages} 页</span>
+                    ` : ''}
+                    ${cart.length > 0 ? `
+                        <button type="button" onclick="window.clearCart()" class="text-xs font-medium text-slate-400 hover:text-rose-500 transition-colors flex items-center space-x-1">
+                            <i class="fa-solid fa-trash-can text-[10px]"></i>
+                            <span>清空卷面 (${cart.length})</span>
+                        </button>
+                    ` : ''}
+                </div>
+            </div>
+            ${renderCartQuestionLoadBanner()}
+        `;
+    }
+
+    function renderPaperStreamFooter() {
+        const footer = document.getElementById('paperStreamFooterBar');
+        if (!footer) return;
+        const pagination = window.PaperStore.streamPagination.all;
+        const loadState = window.PaperStore.cartQuestionLoad;
+        let html = '';
+        if ((window.PaperStore.filters.tab || 'all') === 'all') {
+            if (pagination.loading) {
+                html = `<div class="flex items-center justify-center gap-2 py-4 text-xs text-slate-500" role="status" aria-live="polite"><i class="fa-solid fa-spinner fa-spin text-brand-500"></i><span>正在加载下一页...</span></div>`;
+            } else if (pagination.error) {
+                html = `<div class="flex flex-wrap items-center justify-between gap-2 py-3 text-xs text-rose-600" role="alert"><span>${escapeHtml(pagination.error)}</span><button type="button" onclick="window.retryPaperStreamPage()" class="px-3 py-1.5 rounded-lg border border-rose-200 bg-white font-semibold dark:bg-slate-800 dark:border-rose-900/60">重试</button></div>`;
+            }
+        } else if (loadState.loading) {
+            html = `<div class="flex items-center justify-center gap-2 py-4 text-xs text-slate-500" role="status" aria-live="polite"><i class="fa-solid fa-spinner fa-spin text-brand-500"></i><span>正在核对已选题目...</span></div>`;
+        }
+        footer.innerHTML = html;
+    }
+
+    window.retryPaperStreamPage = function () {
+        const pagination = window.PaperStore.streamPagination.all;
+        const page = pagination.retryPage || pagination.page + 1;
+        pagination.error = '';
+        fetchBankQuestions(page, { append: page > pagination.page });
+    };
 
     // Render Part 4: Right A4 Canvas & Action Bar
     window.renderPaperCanvas = function () {
@@ -2165,6 +2939,10 @@
         const card = e.currentTarget.closest('.paper-q-item');
         if (!card) return;
 
+        // 拖拽锁：题库流是虚拟滚动的，一旦被拖的行在拖拽过程中被窗口回收掉，
+        // HTML5 拖拽的源节点直接从 DOM 消失，落点计算全部作废。拖拽期间冻结增删。
+        if (paperStreamVirtualList) paperStreamVirtualList.setDragLock(true);
+
         draggedItemData = { 
             qid: parseInt(qid, 10), 
             fromSubIndex: parseInt(subIndex, 10),
@@ -2278,6 +3056,7 @@
 
         draggedItemData = null;
         dragPlaceholder = null;
+        if (paperStreamVirtualList) paperStreamVirtualList.setDragLock(false);
     };
 
     window.onPaperCanvasDrop = function (e) {
@@ -2370,8 +3149,20 @@
     };
 
     // Helper: build cart questions payload with solution_space
+    function assertPaperCartFullyLoaded() {
+        // 导出前硬闸（与上游 V2.6.0 同款思路）：卷面上只要还有一道题没拿到完整数据就禁止出卷。
+        // A4 预览会把 content 读不到的题**静默跳过**，于是「预览 18 题、导出 20 题」这种
+        // 最恶劣的不一致会在分页 + 按需水合之后变成常态化风险，必须在这里钉死。
+        const unloaded = uniquePaperCartQuestionIds().filter(qid => !isPaperQuestionHydrated(qid));
+        if (unloaded.length === 0) return true;
+        const message = `卷面还有 ${unloaded.length} 道题目数据未加载完成，请稍候或移除失效题目后再导出。`;
+        if (window.showToast) window.showToast(message, 'error');
+        throw new Error(message);
+    }
+
     function buildCartQuestionsPayload() {
         const cart = window.PaperStore.cart;
+        assertPaperCartFullyLoaded();
         const defaultSpace = (window.PaperStore.meta.solution_space_default || '7.0').toString();
         return cart.map((item, idx) => {
             const q = window.PaperStore.questionsMap[item.id] || {};
@@ -2895,14 +3686,21 @@
             if (window.showToast) window.showToast('卷面为空，无法导出 Word 试卷', 'warning');
             return;
         }
-        const payload = {
-            title: window.PaperStore.meta.title,
-            subtitle: window.PaperStore.meta.subtitle,
-            paper_type: window.PaperStore.meta.paper_type,
-            show_notice: window.PaperStore.meta.show_notice !== false,
-            show_secret: window.PaperStore.meta.show_secret !== false,
-            questions: buildCartQuestionsPayload()
-        };
+        // buildCartQuestionsPayload 里的导出前硬闸会抛异常（并已 toast 出原因），
+        // 这里必须接住：Word 导出这条路径原本不在 try 里，否则会留下未处理的 rejection。
+        let payload;
+        try {
+            payload = {
+                title: window.PaperStore.meta.title,
+                subtitle: window.PaperStore.meta.subtitle,
+                paper_type: window.PaperStore.meta.paper_type,
+                show_notice: window.PaperStore.meta.show_notice !== false,
+                show_secret: window.PaperStore.meta.show_secret !== false,
+                questions: buildCartQuestionsPayload()
+            };
+        } catch (e) {
+            return;
+        }
         if (!await ensurePandocForWordExport()) return;
         await generateAndDownloadWord(payload);
     };
@@ -2987,6 +3785,9 @@
         }
 
         try {
+            // 保存走的是裸 cart，不经过 buildCartQuestionsPayload，所以硬闸在这里单独补一次：
+            // 已删除的题写进 papers 会变成永久坏卷。
+            assertPaperCartFullyLoaded();
             const payload = {
                 title: window.PaperStore.meta.title,
                 subtitle: window.PaperStore.meta.subtitle,
@@ -3417,8 +4218,13 @@
         }
 
         // 3. Send POST API request to persist in DB (api.js monkey-patch automatically attaches X-Local-Token)
+        //    端点每次整体覆盖 figure_align / figure_size / image_layouts 三列，所以没改动的
+        //    字段必须原样带上：否则「只调位置」会把老师设过的插图尺寸静默清回 auto。
+        const persisted = window.PaperStore.questionsMap[qid] || {};
         const formData = new FormData();
         formData.append('figure_align', alignVal);
+        formData.append('figure_size', getQuestionFigSize(persisted));
+        formData.append('image_layouts', JSON.stringify(persisted.image_layouts || {}));
 
         fetch(`/api/questions/${qid}/figure_align`, {
             method: 'POST',
@@ -3438,6 +4244,42 @@
         });
     };
 
+    window.setFigureSize = function (qid, sizeVal) {
+        qid = parseInt(qid, 10);
+        if (!qid) return;
+        const name = PAPER_FIGURE_SIZE_CM[sizeVal] ? sizeVal : 'auto';
+        if (window.PaperStore.questionsMap[qid]) {
+            window.PaperStore.questionsMap[qid].figure_size = name;
+        }
+        const existingPopover = document.getElementById('figureAlignPopoverMenu');
+        if (existingPopover) existingPopover.remove();
+        if (typeof window.renderPart3QuestionStream === 'function') {
+            window.renderPart3QuestionStream();
+        }
+        if (typeof window.renderPaperCanvas === 'function') {
+            window.renderPaperCanvas();
+        }
+        const persisted = window.PaperStore.questionsMap[qid] || {};
+        const formData = new FormData();
+        formData.append('figure_align', persisted.figure_align || 'right');
+        formData.append('figure_size', name);
+        formData.append('image_layouts', JSON.stringify(persisted.image_layouts || {}));
+        fetch(`/api/questions/${qid}/figure_align`, { method: 'POST', body: formData })
+            .then(res => res.json())
+            .then(data => {
+                if (data.status === 'success' && window.showToast) {
+                    const q = window.PaperStore.questionsMap[qid] || {};
+                    const seqNum = (q.seq_num !== undefined) ? q.seq_num : qid;
+                    const label = name === 'auto' ? '自动' : (PAPER_FIGURE_SIZE_LABELS[name] || name);
+                    window.showToast(`已调整题目 #${seqNum} 插图尺寸为：${label}`, 'success');
+                }
+            })
+            .catch(err => {
+                console.error('Update figure_size failed:', err);
+                if (window.showToast) window.showToast('插图尺寸保存失败，刷新后可能回到默认', 'error');
+            });
+    };
+
     window.showFigureAlignPopover = function (event, qid) {
         event.preventDefault();
         event.stopPropagation();
@@ -3445,6 +4287,7 @@
         qid = parseInt(qid, 10);
         const q = window.PaperStore.questionsMap[qid] || {};
         const currentAlign = getQuestionFigAlign(q);
+        const currentSize = getQuestionFigSize(q);
 
         // Remove existing popover
         const existingPopover = document.getElementById('figureAlignPopoverMenu');
@@ -3460,7 +4303,7 @@
 
         // Keep inside viewport bounds
         if (left + 170 > window.innerWidth) left = window.innerWidth - 180;
-        if (top + 150 > window.innerHeight) top = window.innerHeight - 160;
+        if (top + 215 > window.innerHeight) top = window.innerHeight - 225;
 
         popover.style.left = `${left}px`;
         popover.style.top = `${top}px`;
@@ -3482,6 +4325,14 @@
                 <span><i class="fa-solid fa-align-right text-xs mr-2 text-brand-500"></i> 题干下方居右</span>
                 ${currentAlign === 'bottom_right' ? '<i class="fa-solid fa-check text-xs"></i>' : ''}
             </button>
+            <div class="px-2 pt-1 pb-1 text-[11px] font-bold text-slate-400 border-t border-slate-100 dark:border-slate-700">
+                <i class="fa-solid fa-expand text-brand-500 mr-1"></i> 题末插图尺寸
+            </div>
+            ${['auto', 'small', 'medium', 'large'].map(name => `
+            <button onclick="window.setFigureSize(${qid}, '${name}')" class="w-full text-left px-3 py-1.5 rounded-xl hover:bg-brand-50 hover:text-brand-600 transition-colors flex items-center justify-between ${currentSize === name ? 'bg-brand-50 font-bold text-brand-600' : ''}">
+                <span><i class="fa-solid fa-image text-xs mr-2 text-brand-500"></i> ${name === 'auto' ? '自动 (默认)' : (PAPER_FIGURE_SIZE_LABELS[name] || name)}</span>
+                ${currentSize === name ? '<i class="fa-solid fa-check text-xs"></i>' : ''}
+            </button>`).join('')}
         `;
 
         document.body.appendChild(popover);
@@ -3534,22 +4385,58 @@
         };
     }
 
+    // 与后端 mathbank/image_layout.split_image_anchors 一一对应的孪生实现。
+    // 判定必须带环境栈：落在 tabular / choices 里的图（典型就是「选项拼图」）不能摘到
+    // 题末，否则 A4 预览里同一张图出现两份、选项变成空壳，而且和 PDF 导出口径不一致。
+    const PAPER_IMAGE_ANCHOR_RE = /!\[.*?\]\(([^)]+)\)/;
+    const PAPER_IMAGE_ANCHOR_GLOBAL_RE = /!\[.*?\]\(([^)]+)\)/g;
+    const PAPER_LAYOUT_ENV_RE = /\\(begin|end)\{(tabular\*?|tabularx|longtable|tblr|longtblr|talltblr|choices)\}/g;
+
+    function splitPaperImageAnchors(source) {
+        const text = String(source || '');
+        const matches = [...text.matchAll(PAPER_IMAGE_ANCHOR_GLOBAL_RE)];
+        let end = text.length;
+        for (let idx = matches.length - 1; idx >= 0; idx -= 1) {
+            const match = matches[idx];
+            if (text.slice(match.index + match[0].length, end).trim()) break;
+            const stack = [];
+            const envs = [...text.slice(0, match.index).matchAll(PAPER_LAYOUT_ENV_RE)];
+            for (let k = 0; k < envs.length; k += 1) {
+                const kind = envs[k][1];
+                const name = envs[k][2];
+                if (kind === 'begin') stack.push(name);
+                else if (stack.length && stack[stack.length - 1] === name) stack.pop();
+            }
+            if (stack.length) break;
+            end = match.index;
+        }
+        return { anchored: text.slice(0, end).replace(/\s+$/, ''), detached: text.slice(end).trim() };
+    }
+
     function shouldPreserveInlinePaperImages(raw) {
         const source = String(raw || '');
-        const imagePattern = /!\[.*?\]\(([^)]+)\)/g;
-        const matches = [...source.matchAll(imagePattern)];
-        if (matches.length === 0) return false;
+        if (!PAPER_IMAGE_ANCHOR_RE.test(source)) return false;
+        const parts = splitPaperImageAnchors(source);
+        if (!parts.detached) return true;
+        // 摘掉题末图簇之后正文里还有图：图片和周围正文绑在一起，整题都别动
+        return PAPER_IMAGE_ANCHOR_RE.test(parts.anchored);
+    }
 
-        // A trailing image (or a trailing cluster of images) is the legacy
-        // detachable figure layout controlled by figure_align.  As soon as
-        // authored content continues after the first image, the image is an
-        // inline document anchor.  This includes images inside tabular cells,
-        // between sub-questions, and before captions or explanatory text.
-        const firstImageIndex = matches[0].index || 0;
-        const trailingContent = source.slice(firstImageIndex)
-            .replace(imagePattern, '')
-            .trim();
-        return trailingContent.length > 0;
+    // 锚定在正文/表格/选项里的图按逐图设置加宽度上限。没设过尺寸的题目一律原样返回，
+    // 所以这条路径对存量数据是零影响；已经带 style 的标签也不覆盖（KaTeX/公式渲染可能
+    // 已经写过内联样式）。
+    function applyPaperImageLayoutSizes(html, qid) {
+        const q = paperFigureQuestion(qid);
+        const layouts = (q && q.image_layouts) || null;
+        if (!layouts || !Object.keys(layouts).length) return html;
+        return String(html || '').replace(/<img\b[^>]*>/g, (tag) => {
+            if (/style="/i.test(tag)) return tag;
+            const srcMatch = tag.match(/src="([^"]*)"/i);
+            if (!srcMatch) return tag;
+            const cm = paperImageLayoutCm(qid, srcMatch[1]);
+            if (!cm) return tag;
+            return tag.replace(/^<img\b/, `<img style="max-width:${cm[0]}cm;max-height:${cm[1]}cm;"`);
+        });
     }
 
     function formatQuestionContentHtml(raw, qid = null, figAlign = 'right', embedInSolSpace = false, showControls = true) {
@@ -3563,9 +4450,12 @@
         // 货可画（0 个括号）；在这之后补画，就和 transform 重复（2 个括号）。
 
         if (shouldPreserveInlinePaperImages(html)) {
-            const inlineHtml = typeof window.parseMarkdownWithMath === 'function'
-                ? window.parseMarkdownWithMath(html)
-                : window.MathBankSafe.sanitizeRichHtml(html);
+            const inlineHtml = applyPaperImageLayoutSizes(
+                typeof window.parseMarkdownWithMath === 'function'
+                    ? window.parseMarkdownWithMath(html)
+                    : window.MathBankSafe.sanitizeRichHtml(html),
+                qid
+            );
             if (embedInSolSpace) {
                 return {
                     stemHtml: `<div>${inlineHtml}</div>`,
@@ -3606,6 +4496,12 @@
             const iconClass = effectiveAlign === 'center' ? 'fa-align-center' : 'fa-align-right';
             const qidAttr = parseInt(qid, 10) || 0;
             const countTag = imgSrcList.length > 1 ? ` (${imgSrcList.length}图)` : '';
+            // 设过尺寸就用厘米上限盖掉模板里的固定宽度；没设过的题目一个字符都不变
+            const figureStyleFor = (src) => {
+                const cm = paperFigureSizeCm(qid, src);
+                return cm ? ` style="max-width:${cm[0]}cm;max-height:${cm[1]}cm;"` : '';
+            };
+            const sizeTag = paperFigureSizeLabelFor(qid);
 
             const imgClass = showControls 
                 ? `${imgSrcList.length > 1 ? 'max-w-[150px] max-h-[140px]' : 'max-w-[200px] max-h-[170px]'} object-contain rounded-lg border border-slate-200 shadow-sm cursor-pointer hover:ring-2 hover:ring-brand-500 hover:scale-[1.02] transition-all inline-block`
@@ -3615,13 +4511,13 @@
                 const controlAttrs = showControls
                     ? `data-figure-align-qid="${qidAttr}" title="点击或右击可切换插图排版位置 (图${idx + 1} 当前: ${currentLabel})"`
                     : '';
-                return `<img src="${window.MathBankSafe.escapeAttribute(src)}" alt="题目配图 ${idx + 1}" class="${imgClass}" ${controlAttrs} loading="lazy" decoding="async">`;
+                return `<img src="${window.MathBankSafe.escapeAttribute(src)}" alt="题目配图 ${idx + 1}" class="${imgClass}"${figureStyleFor(src)} ${controlAttrs} loading="lazy" decoding="async">`;
             }).join('');
 
             const btnHtml = showControls ? `
                 <div class="mt-1 ${effectiveAlign === 'center' ? 'text-center' : 'text-right'}">
                     <button onclick="event.stopPropagation(); window.showFigureAlignPopover(event, ${qidAttr})" class="paper-fig-align-btn inline-flex items-center text-[10px] font-sans text-brand-700 bg-brand-50 hover:bg-brand-100 border border-brand-200/80 rounded-md px-1.5 py-0.5 transition-colors shadow-sm">
-                        <i class="fa-solid ${iconClass} text-[9px] mr-1 text-brand-500"></i> ${currentLabel}${countTag} <i class="fa-solid fa-chevron-down text-[8px] ml-1 opacity-70"></i>
+                        <i class="fa-solid ${iconClass} text-[9px] mr-1 text-brand-500"></i> ${currentLabel}${countTag}${sizeTag} <i class="fa-solid fa-chevron-down text-[8px] ml-1 opacity-70"></i>
                     </button>
                 </div>
             ` : '';
@@ -3655,7 +4551,7 @@
                     const rightImgClass = showControls
                         ? `${imgSrcList.length > 1 ? 'max-w-[125px] max-h-[115px]' : 'max-w-[155px] max-h-[135px]'} object-contain rounded-lg border border-slate-200 shadow-sm cursor-pointer hover:ring-2 hover:ring-brand-500 hover:scale-[1.02] transition-all inline-block`
                         : `${imgSrcList.length > 1 ? 'max-w-[125px] max-h-[115px]' : 'max-w-[155px] max-h-[135px]'} object-contain rounded-lg border border-slate-200 shadow-sm inline-block`;
-                    return `<img src="${window.MathBankSafe.escapeAttribute(src)}" alt="题目配图 ${idx + 1}" class="${rightImgClass}" ${controlAttrs} loading="lazy" decoding="async">`;
+                    return `<img src="${window.MathBankSafe.escapeAttribute(src)}" alt="题目配图 ${idx + 1}" class="${rightImgClass}"${figureStyleFor(src)} ${controlAttrs} loading="lazy" decoding="async">`;
                 }).join('');
 
                 const rightImgControlHtml = `

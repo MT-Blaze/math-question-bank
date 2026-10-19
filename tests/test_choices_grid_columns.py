@@ -131,6 +131,9 @@ function makeGrid(naturalWidths, gridWidth, hasKatex) {
         isConnected: true,
         clientWidth: gridWidth,
         dataset: { preferredColumns: '4', choiceColumns: null },
+        // 收尾还有一趟「超宽公式加横向滚动类」的标记扫描（markUnshrinkableChoiceMath）。
+        // 这个桩负责的是列数与缩放口径，公式级标记另有专门用例，这里返回空集即可。
+        querySelectorAll: function () { return []; },
         children: cells.map(function (c) {
             return { querySelector: function () { return c.content; } };
         }),
@@ -192,6 +195,7 @@ function makeFitGrid(cellSpecs) {
     var grid = {
         isConnected: true,
         clientWidth: 714,
+        querySelectorAll: function () { return []; },
         children: contents.map(function (content) {
             return {
                 querySelector: function (sel) {
@@ -290,6 +294,7 @@ def _cases_snippet() -> str:
     overflow = _extract_function(editor_source, "function choicesGridOverflows(grid) {")
     preferred = _extract_function(editor_source, "function getPreferredChoicesColumns(grid) {")
     fit = _extract_function(editor_source, "function fitOversizedChoicesContent(grid) {")
+    mark = _extract_function(editor_source, "function markUnshrinkableChoiceMath(grid) {")
     assert "is-measuring" in batch, "测量期必须切到 .is-measuring（nowrap 才生效）"
     assert "--choices-scale" in fit, "兜底必须写入 --choices-scale"
 
@@ -318,6 +323,8 @@ def _cases_snippet() -> str:
         + overflow
         + "\n"
         + fit
+        + "\n"
+        + mark
         + "\n"
         + can_adapt
         + "\n"
@@ -632,3 +639,127 @@ def test_detached_choices_grids_are_unobserved_on_rerender():
         "同一代网格重复 adapt 不该动已有目标（编辑器预览靠这条保持观察连续）"
     )
     assert again["unobserveTotal"] == 8, "活目标被误 unobserve：回收判据必须只看 isConnected"
+
+
+# --------------------------------------------------------------------------
+# 超宽公式横向滚动（移植自上游 V2.7.0）：只标真正装不下的那一条
+# --------------------------------------------------------------------------
+
+_MARK_JS = r"""
+function makeMarkMath(spec) {
+    const item = {
+        classes: (spec.classes || []).slice(),
+        closest: function (sel) {
+            if (sel === ".katex-display") return spec.inDisplay ? { nodeType: 1 } : null;
+            if (sel === ".choices-content") {
+                return spec.noContent ? null : { clientWidth: spec.contentWidth };
+            }
+            return null;
+        },
+        getBoundingClientRect: function () { return { width: spec.width }; },
+    };
+    item.classList = {
+        add: function (name) { if (item.classes.indexOf(name) === -1) item.classes.push(name); },
+        remove: function (name) {
+            const at = item.classes.indexOf(name);
+            if (at !== -1) item.classes.splice(at, 1);
+        },
+        contains: function (name) { return item.classes.indexOf(name) !== -1; },
+    };
+    return item;
+}
+
+function makeMarkGrid(specs, connected) {
+    const grid = {
+        isConnected: connected !== false,
+        queryCalls: 0,
+        clientWidth: 600,
+        items: specs.map(makeMarkMath),
+    };
+    grid.querySelectorAll = function (sel) {
+        grid.queryCalls += 1;
+        if (sel === ".choices-math-scroll") {
+            return grid.items.filter(function (m) {
+                return m.classList.contains("choices-math-scroll");
+            });
+        }
+        return grid.items.slice();
+    };
+    return grid;
+}
+
+function markedFlags(grid) {
+    return grid.items.map(function (m) { return m.classList.contains("choices-math-scroll"); });
+}
+"""
+
+
+def _mark_snippet() -> str:
+    editor_source = _read(EDITOR_PATH)
+    mark = _extract_function(editor_source, "function markUnshrinkableChoiceMath(grid) {")
+    assert "querySelectorAll('.choices-math-scroll')" in mark, (
+        "清理必须走同一条选择器，否则上一次的滚动态会赖在 DOM 上摘不掉"
+    )
+
+    return (
+        "\n"
+        + mark
+        + "\n"
+        + _MARK_JS
+        + "\n"
+        "const out = {};\n"
+        "const mixed = makeMarkGrid([{ width: 260, contentWidth: 200 }, "
+        "{ width: 120, contentWidth: 200 }]);\n"
+        "markUnshrinkableChoiceMath(mixed);\n"
+        "out.mixedRow = markedFlags(mixed);\n"
+        "out.mixedQueries = mixed.queryCalls;\n"
+        "const display = makeMarkGrid([{ width: 999, contentWidth: 200, inDisplay: true }]);\n"
+        "markUnshrinkableChoiceMath(display);\n"
+        "out.displayFormula = markedFlags(display);\n"
+        "const orphans = makeMarkGrid([{ width: 900, contentWidth: 200, noContent: true }]);\n"
+        "markUnshrinkableChoiceMath(orphans);\n"
+        "out.orphanFormula = markedFlags(orphans);\n"
+        "const stale = makeMarkGrid([\n"
+        "    { width: 100, contentWidth: 200, classes: ['choices-math-scroll'] },\n"
+        "    { width: 900, contentWidth: 200, inDisplay: true, "
+        "classes: ['choices-math-scroll'] },\n"
+        "    { width: 900, contentWidth: 200, noContent: true, "
+        "classes: ['choices-math-scroll'] },\n"
+        "]);\n"
+        "markUnshrinkableChoiceMath(stale);\n"
+        "out.staleClassCleared = markedFlags(stale);\n"
+        "const detached = makeMarkGrid(\n"
+        "    [{ width: 900, contentWidth: 200, classes: ['choices-math-scroll'] }], false\n"
+        ");\n"
+        "markUnshrinkableChoiceMath(detached);\n"
+        "out.detachedQueries = detached.queryCalls;\n"
+        "out.detachedFlags = markedFlags(detached);\n"
+        "console.log('###RESULT###' + JSON.stringify(out) + '###END###');\n"
+    )
+
+
+def test_mark_unshrinkable_choice_math_marks_only_real_overflow():
+    """抄自上游 V2.7.0：1 列 + 缩到字号下限仍装不下的行内公式，给它自己加横向滚动。
+
+    重点是"只标真溢出"：块级公式（.katex-display）本来就该整行铺开、不归这条路径管；
+    量不到 .choices-content 宽度的孤儿节点不能瞎标；每次调用先整体清一遍再重标，
+    否则容器变宽或撤掉缩放之后，旧的滚动态会一直残留。脱离文档的网格直接返回，
+    一次查询都不该发 —— 组卷页整卷重渲染时这里是热路径。
+    """
+
+    stdout = _run_node_script(_mark_snippet())
+    match = re.search(r"###RESULT###(.*?)###END###", stdout, re.S)
+    assert match, "node 侧没有产出结果"
+    data = json.loads(match.group(1))
+
+    assert data["mixedRow"] == [True, False], (
+        f"只有真溢出（260 > 200）的那条该进滚动态：{data['mixedRow']}"
+    )
+    assert data["mixedQueries"] == 2, "一轮标记 = 一次清理 + 一次扫描，多一趟就是重复遍历"
+    assert data["displayFormula"] == [False], ".katex-display 是块级公式，不参与横向滚动"
+    assert data["orphanFormula"] == [False], "量不到 .choices-content 宽度的公式不许标"
+    assert data["staleClassCleared"] == [False, False, False], (
+        f"陈旧滚动态必须整体清掉，含 display / 孤儿两条早退分支：{data['staleClassCleared']}"
+    )
+    assert data["detachedQueries"] == 0, "脱离文档的网格一次查询都不该发"
+    assert data["detachedFlags"] == [True], "脱离文档的网格不该被改动（早退，不清也不标）"

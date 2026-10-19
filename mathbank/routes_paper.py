@@ -1866,7 +1866,15 @@ def get_paper_questions(ids: str = "", db: Session = Depends(get_db)):
             return {"status": "success", "data": []}
         questions = db.query(Question).filter(Question.id.in_(id_list)).all()
         q_map = {q.id: _decorate_topic_field(q.to_dict()) for q in questions}
-        result = [q_map[qid] for qid in id_list if qid in q_map]
+        # seq_num 是题目卡与 A4 卷面显示的「用户口径题号」，不是物理主键。
+        # 组卷流改成分页 + 按需水合以后，购物车里的题不再顺带从列表里拿到 seq_num，
+        # 必须由这个批量端点补上，否则刷新后已选题目的题号整片空白。
+        seq_map = _main.get_seq_mapping(db, id_list)
+        result = [
+            {**q_map[qid], "seq_num": seq_map.get(qid)}
+            for qid in id_list
+            if qid in q_map
+        ]
         return {"status": "success", "data": result}
     except Exception as e:
         return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
@@ -2247,6 +2255,14 @@ def _build_paper_questions_data(questions_input, db):
                 continue
         if item.get("figure_align"):
             q_dict["figure_align"] = item.get("figure_align")
+        # 逐图插图排版与「老师手选过位置」的标记要一起透传：卷面快照里缺这些时，
+        # 导出会退回默认排版，把用户调过的插图尺寸悄悄改回去。
+        if item.get("figure_size"):
+            q_dict["figure_size"] = item.get("figure_size")
+        if isinstance(item.get("image_layouts"), dict):
+            q_dict["image_layouts"] = item.get("image_layouts")
+        if item.get("custom_figure_align") is not None:
+            q_dict["figure_align_custom"] = bool(item.get("custom_figure_align"))
         # 入库 LaTeX 图片还原为 Markdown 图：导出侧排版逻辑（尾随图右置/居中、
         # 表格内 adjustsbox）全部按 Markdown 图识别，不还原则 figure_align 失效。
         # 老数据（仍存 Markdown 图）无 includegraphics，原样返回，幂等安全。

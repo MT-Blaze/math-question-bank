@@ -9,7 +9,7 @@
 - **后端渐进式模块架构**：根目录 `main.py` 继续作为 `uvicorn main:app` 兼容入口；后端领域能力统一集中在 `mathbank/`。`database.py` 提供 SQLite ORM 与 Session，`db_migrations.py` 提供版本化、备份优先的数据库迁移，`backup.py` 提供带清单校验的完整备份与恢复，`asset_security.py` 统一校验上传内容与本地资产路径，`task_manager.py` 提供有界异步任务、协作取消与临时资源生命周期，`health.py` 提供启动就绪诊断，`paper_helper.py` 提供 LaTeX/PDF 编译排版，`parsing_pipeline.py` 承载 PDF/Word/试卷拆解的后处理与 AI 拆题实现（由 `main.py` 在底部导入并保留薄包装，使既有 `patch("main.xxx")` 接缝继续生效），`illustration_crop.py` 承载 OCR 插图坐标解析、按百分比裁图与坐标标签擦除（同样由 `main.py` 底部导入并保留同名薄包装），`sync_helper.py` 只负责 JSON 同步导出与 AI 题库导出，`mineru_cache.py` 提供 MinerU 云解析结果缓存（按内容哈希整包归档，命中即零云端请求），`paths.py` 统一锚定持久化与捆绑路径。`curriculums.py` 加载四套教材 JSON（`get_current_curriculum`/`set_current_curriculum` 为活跃教材树的可设置缓存，启动时由 `main.py` 回填），`prompts.py` 提供纯提示构建器，`ai_providers.py`、`ai_http.py`、`ai_json.py` 分别统一模型供应商解析、AI HTTP 请求与结构化输出解析。`auth.py` 提供 `LOCAL_TOKEN` 与 `require_local_token` 全局中间件依赖；`metadata.py` 提供进程级元数据缓存（`get_metadata_cache`/`set_metadata_cache`）与测试态动态 `METADATA_FILE` 解析（`IS_TESTING` 时落到 `custom_metadata_test.json`，避免覆盖真实配置）；**接口编排按域下沉为 `APIRouter` 模块**：`routes_lesson_plans.py`（教案 CRUD）、`routes_library.py`（stats/categories/sources 只读库）、`routes_runtime.py`（Pandoc 运行时状态/安装）、`routes_settings.py`（系统设置/版本检查/元数据配置）、`routes_questions.py`（题目增删改查/查重/关联）、`routes_ai.py`（OCR/整页 OCR/AI 解题/AI 分类/TikZ 生成纠正与渲染）、`routes_paper.py`（试卷解析任务 PDF/MinerU/docx/TeX/图片批量/组卷选题/试卷 CRUD 与导出），由 `main.py` 以 `app.include_router(...)` 挂载，`main.py` 本体保持薄入口。运维、迁移、检索与 Release 工具统一位于 `scripts/`，从项目根目录使用 `python3 -m scripts.<模块名>` 运行。严禁重新在根目录新增业务模块或复制供应商判断规则。
 - **数据库**：SQLite + SQLAlchemy（轻量级，数据存储在本地 `.db` 文件中）。
 - **前端页面**：纯 HTML + 原生 JavaScript。
-- **前端脚本拆分**：前端 JS 采用无编译的“渐进式级联加载”架构，按 `api.js`、`editor.js`、`ocr.js`、`import.js`、`paper.js`、`lesson.js`、`filter-panel.js` 的顺序级联加载；`api.js` 负责全局状态、API 与安全信任边界，`editor.js` 负责编辑与渲染，`ocr.js` 负责 OCR 图像交互，`import.js` 负责导入拆卷与编辑器保存，`paper.js` 负责组卷工作台，`lesson.js` 负责教案编辑，`filter-panel.js` 负责筛选面板。加载顺序严格依存，不允许产生任何编译及捆绑动作。
+- **前端脚本拆分**：前端 JS 采用无编译的“渐进式级联加载”架构，按 `api.js`、`editor.js`、`ocr.js`、`import.js`、`paper.js`、`lesson.js`、`filter-panel.js` 的顺序级联加载；`tailwind_gate.js` 必须在 `<head>` 内**早于** `/static/lib/tailwind/tailwind.min.js`（晚一步就抢不到 MutationObserver，闸门静默失效）；`virtual_list.js` 必须早于 `paper.js`（首次渲染就要拿到构造器）。新增 JS 一律要登记进 `main.py` 的 `js_files` 与 `tests/test_frontend_usability.py` 的 `JS_FILES`，漏登记的那只会在用户浏览器里长期吃旧缓存；`api.js` 负责全局状态、API 与安全信任边界，`editor.js` 负责编辑与渲染，`ocr.js` 负责 OCR 图像交互，`import.js` 负责导入拆卷与编辑器保存，`paper.js` 负责组卷工作台，`lesson.js` 负责教案编辑，`filter-panel.js` 负责筛选面板。加载顺序严格依存，不允许产生任何编译及捆绑动作。
 - **前端共享助手唯一来源**：`window.MathBankSafe`（信任边界）、`window.MathBankModal`（弹窗栈，自动维护 `role`/`aria-modal`/`aria-hidden`、焦点陷阱与 Escape 关闭）、`escapeHtml`、`buildDuplicateAutoTag`/`appendDuplicateTagToTags` 一律由 `api.js` 定义，后续模块**禁止重复定义同名函数**——级联加载会让后加载者覆盖前者，曾因此出现 `lesson.js` 的 `showToast` 包装调用 `window.showToast` 指向自身导致无限递归、以及 `paper.js` 覆盖 `getDifficultyBadge` 后丢掉旧难度模型与转义的问题。新增通用 UI 函数请先放进 `api.js`。
 - **前端样式与字体**：Tailwind CSS + FontAwesome 图标库 + Inter/Outfit 字体包（均已下载至本地 `/static/lib` 支持 100% 离线使用与跨平台系统降级）。
 - **公式渲染**：KaTeX（已下载至本地支持 100% 离线数学公式渲染），必须支持题干与解析框实时解析、秒级渲染。
@@ -30,7 +30,7 @@
 > 所有持久化文件和捆绑资源路径必须从 `mathbank.paths` 获取，并以 `PROJECT_ROOT` 为锚点。禁止新增依赖当前工作目录的 `./data_backup`、`os.getcwd()` 或“脚本所在目录就是数据库目录”等隐式假设，确保从任意工作目录启动服务或 CLI 都访问同一份数据。
 
 > [!WARNING]
-> **JavaScript 语法防错与浏览器兼容性警示**：前端的五个脚本文件在浏览器中级联加载。任何人在修改 JS 代码时，必须遵循以下规则：
+> **JavaScript 语法防错与浏览器兼容性警示**：前端的脚本文件在浏览器中级联加载。任何人在修改 JS 代码时，必须遵循以下规则：
 > 1. **确保无任何语法错误**：语法错误会导致浏览器停止解析后续脚本，挂起 `DOMContentLoaded` 事件，使界面死锁。修改后建议运行 `node -c static/js/*.js` 校验。
 > 2. **禁用正则后行断言**：前端代码中**严禁使用正则后行断言 `(?<!...)` 和 `(?<=...)`**，此类语法在旧版浏览器（如 Safari < 16.4）或移动端 WebView 中会触发致命的 `SyntaxError` 中断加载。必须改用捕获组或字符串拆分逻辑。
 > 3. **版本号缓存击穿 (Cache Busting)**：后端在首页路由 `read_index` 中根据前端 JS/CSS/Favicon 修改时间戳自动追加版本号后缀（如 `?v=时间戳`）。开发者无需手动修改 HTML 中的版本号。
@@ -40,11 +40,13 @@
 ### 3.1 题目收集与存储
 - **题干录入**：支持多行纯文本与 LaTeX 代码混合输入，界面配备实时 KaTeX 渲染预览区。
 - **入库格式唯一归一化链（三条录入路径必须汇合）**：`mathbank/latex_normalize.normalize_for_storage(value, question_type, is_answer)` 是 `questions.content` / `questions.answer_markdown` 落库前**唯一**的归一化入口，顺序固定为「还原字面 `\n` → 清跨页页标 → `\fillin` 规范化 → 结构层（`tabular`/`choices`/`\includegraphics`/`\textbf`）→ 字符层（补 `$` 定界符、`*`→`\cdot`）→ 解析紧凑化（`$$`→`$`、`\n{3,}`→`\n\n`，仅解析侧）」。题干另走 `normalize_stem_for_storage`：跑完上述链后**再剥离**开头的原卷题号（`1.`/`2、`/`17(1)` 中的 `17`；`3.5`、`2019·`、`（1）` 不匹配），题号回填到 `questions.paper_question_no`（已有值不覆盖）——A4 组卷预览（`paper.js` 的 `globalQIndex`）与 exam-zh PDF（`\arabic*.` 计数器，`exam_19` 按 1/9/12/15 跳号）都会自行编号，题干残留题号会排成「1. 1. …」。该链**幂等**：`post_process` 末段（拆卷卡片预览）与 `routes_questions` 的 create/update 写库边界各跑一次，结果必须字节相同，因此卡片里手改过的文字、草稿箱再保存、已入库题目二次保存都不会让源码走形。**禁止在任何录入路径上抢跑其中的单步**：历史上拆题阶段先跑字符层、写库时只跑结构层，导致同一写法进库变成两种源码；且字符层先跑会把管道表格整行包成 `$| a | b |$`，让结构层认不出表格而**丢行**（`mathbank/math_markdown.py` 已改为把管道表格行占位保护，`\fillin` 规范化提前到保护之前并绕过已有数学态）。新增录入通道只允许复用这两个入口，不得复制其中任何一步；`main.normalize_fillin_macro` 与 `scripts/migrate_fillin.py` 保留同名薄包装指向 `mathbank/math_markdown`。回归契约见 `tests/test_entry_path_latex_parity.py`（收敛 / 幂等 / 表格保真 / 全栈三路径 / XeLaTeX 真编译无单编号）。
+- **规范分式（`mathbank/fraction_style.py`）**：正文级分式统一成 `\dfrac`、上标与分式内部降回 `\frac`。它是纯函数（不读写存储、不增删数学定界符），只在 `POST /api/format/fractions` 上做无状态文本转换；定界符不配对、未知/自定义宏、`\displaystyle` 等样式控制宏、代码块、TikZ 源码、`%` 注释与 `\text{}` 所在的整段数学一律原样放过，且必须幂等。录入页「规范分式」按钮坚持**先预览确认、再写回编辑框**，真正入库仍然是用户点【保存】那一次。
 - **插图管理**：提供图片上传与 TikZ 绘图代码输入。图片保存在本地文件系统（`static/uploads/`），数据库存储相对路径。
 - **插图排版位置联动与多图复合渲染**：
   - **多模式与多插图支持**：插图在后端存储 `figure_align` 属性（支持 `right` 题干右侧、`center` 下方居中、`bottom_right` 下方居右）。
   - **插图锚点与预览同步**：题末单图或连续图片簇继续由 `figure_align` 控制右侧、居中或居右排版；图片后仍有正文、表格闭合结构、标题或说明时，前端组卷预览与 LaTeX/PDF 导出必须保留全部 Markdown 图片的原始正文锚点。`tabular`、`tabular*`、`tabularx`、`longtable`、`tblr`、`longtblr`、`talltblr` 单元格内图片不得抽取到题末，多图复杂题的网页与 PDF 顺序必须和题库详情一致。
-  - **交互弹窗切换**：在 A4 试卷预览框中点击或右击题末可分离插图可弹出气泡菜单切换排版位置，并通过 `POST /api/questions/{qid}/figure_align` 持久化；正文或表格内锚定图片不显示整题插图位置控件，避免移动后破坏语义结构。
+  - **交互弹窗切换**：在 A4 试卷预览框中点击或右击题末可分离插图可弹出气泡菜单切换排版位置与尺寸，并通过 `POST /api/questions/{qid}/figure_align` 持久化；正文或表格内锚定图片不显示整题插图位置控件，避免移动后破坏语义结构。该端点三列（`figure_align` / `figure_size` / `image_layouts`）一律「没传就不动」，前端也必须把未改动的字段原样回传，否则「只调位置」会把老师设过的插图尺寸静默清回 `auto`。
+  - **题末可分离图簇唯一判定（`mathbank/image_layout.py`）**：`split_image_anchors()` 带 `tabular` 系与 `choices` 环境栈，只摘「环境之外、且一直到文末只剩图」的那一段；选项拼图因此在网页预览与 LaTeX/PDF 导出里都留在原锚点，不会出现同一张图两份。前端 `paper.js` 的 `splitPaperImageAnchors()` 是它的孪生实现，两侧必须同口径（`tests/test_frontend_usability.py` 逐案对比钉死）。整题 `figure_size` 管题末图簇，逐图 `image_layouts` 管锚定图，取值只能是 `auto|small|medium|large` 与 `left|center|right` 枚举，且只保留正文里真实出现的图，绝不接受任意 CSS/TeX。
   - **解答题留白调控**：解答题支持留白高度调控。若插图设为 `bottom_right` 或 `center`，插图包含在留白空间顶侧，避免垂直叠加过长。切换为 `exam_19`（高考卷）时自动恢复紧凑布局。
 - **选择题与填空题环境规范**：
   - 选择题选项统一格式化为 LaTeX `choices` 环境（`\begin{choices}` 和 `\item`），剥离原本的 A., B., C., D. 标号前缀。
@@ -66,7 +68,8 @@
   - **编辑会话状态 (`EditorState`)**：`api.js` 的 `EditorState` 是当前题目 ID、序号、草稿 ID 与编辑模式的唯一状态来源，禁止引入平行全局变量。
 - **草稿箱与未保存决策流**：
   - 草稿统一存放在 LocalStorage 键 `mathbank_local_drafts`。离开未保存 Dirty 页面时提供“存入本地库/暂存草稿/离开/返回”决策流，入库后自动从草稿箱移除。
-- **题库列表分页契约**：`GET /api/questions` 不传 `page` 时保留历史数组响应；传入 `page` 后返回 `{items,total,page,page_size,total_pages}`，`page_size` 限制为 1–100，`sort` 仅支持 `asc` / `desc` 语义。侧栏必须使用分页响应，并以 `AbortController` 和请求序号保证最后一次请求胜出。
+- **题库列表分页契约**：`GET /api/questions` 不传 `page` 时保留历史数组响应；传入 `page` 后返回 `{items,total,page,page_size,total_pages}`，`page_size` 限制为 1–200，`sort` 仅支持 `asc` / `desc` 语义。侧栏必须使用分页响应，并以 `AbortController` 和请求序号保证最后一次请求胜出。
+- **列表摘要（lean）契约**：`GET /api/questions?mode=lean` 只下发 `id`/题型/章节考向/`preview`（题干剥数学定界符后的 140 字摘要，插图记作〔图〕）与 `image_count`/`has_answer` 等轻量标志，**绝不含** `content`、`options`、`answer_markdown`、`tikz_code`、`review`；`lean` 永远分页（未传 `page` 时按第 1 页处理），因为万题规模下整库数组就是白屏。完整题面只能由 `GET /api/paper/questions?ids=` 批量按需取回（含 `seq_num`）。所有过滤（章节、考向、题型、搜索词）必须留在 SQL 的 `WHERE` + `LIMIT/OFFSET` 里执行，禁止把整表捞进 Python 再筛；列表排序依赖复合索引 `ix_questions_created_at_id(created_at,id)`，缺它时执行计划会退化成 `SCAN + USE TEMP B-TREE FOR ORDER BY`。
 - **入库前题目查重**：试卷 OCR/PDF/Word/TeX 识别、拆分和草稿编辑阶段不得自动查重；仅在用户点击单题【导入此题】、批量【导入选中题目】或普通编辑器保存时调用 `POST /api/questions/check-duplicates`。批量导入必须在任何一道题写库前完成整批预检，同时查批内与库内重复，确认后以最多 3 个并发任务逐题入库并保留部分成功语义。查重结果必须绑定 `parsedQuestionsGeneration`、客户题目标识及内容快照；题干、解析、题型或配图改变后旧结果立即失效。
 - **查重指纹与判定边界**：`question_fingerprints` 是 schema v6 引入、schema v7 将分桶索引扩展为 `(fingerprint_version, bandN, token_count)` 的可重建派生索引，指纹算法必须带 `fingerprint_version`。精确层使用保守规范化后的 SHA-256 普通索引（严禁 `UNIQUE`）；近似层使用 128-bit SimHash 拆成 8 个 16-bit 分桶索引召回有界候选，再对少量候选精排，不得全库逐题比较。schema v8 新增 8 个 `(fingerprint_version, text_bandN, token_count)` 文字片段索引：仅在精确/SimHash 候选精排后仍无需复核结果时启用，以 literal 与数字骨架 token 4-gram OPH 召回“多处小改+增删句子”题目；两阶段昂贵精排候选共享同一上限。规范化必须保留数字、变量、正负号、关系符、量词、定义域、区间开闭、选项及小问顺序；这些关键数学 token 不同时最高只能提示“可能是变式题”。数字骨架只能扩大候选召回，严禁影响 exact/critical 最终裁定。答案、解析、分类、难度、标签和来源不参与主指纹；答案差异只作为人工复核理由。可见配图按解码像素哈希提供证据，TikZ 按保守源码哈希提供证据；缺图、图不同或指纹不可用时必须标记配图待核对。
 - **查重写入与故障边界**：新建/更新题目时，`Question`、`QuestionCurriculum` 与当前版本指纹必须在同一 SQLite 事务内提交。已完成预检的请求携带 `duplicate_snapshot_hash`，写入前再复查精确指纹以关闭并发窗口；仅用户明确选择“仍作为独立题保存”时接受 `duplicate_override=independent`。查重只是可解释、可忽略的“疑似已收录”提示，严禁自动删除、自动合并或复用 `association_group_id`。查重接口/图像指纹失败时必须明示“查重暂不可用”并放行正常保存，不得伪装成“未发现重复”。旧题指纹只能在服务就绪、已完成必要备份后以小批次、可中断方式后台回填；索引未完成时 UI 必须显示覆盖率，不得声称已完整查重。
@@ -153,6 +156,41 @@
 - **面板架构**：右侧控制面板静态固定，下方 A4 画布具备独立滚动条，避免重叠。
 - **拖拽与管理**：支持 HTML5 原拖拽试题卡片排序，具备侧边栏折叠及已保存试卷的数据库存档与载入管理。
 - **按题查看答案**：题库卡片默认隐藏答案，通过 `has_answer` 轻量标志区分空答案；首次展开时调用 `GET /api/questions/{id}` 按需获取完整 `answer_markdown`，在当前会话内缓存并经 `MathBankSafe` + KaTeX 安全渲染。展开状态不进入 LocalStorage，也不得影响右侧试卷正文、PDF 或导出结果。
+
+### 3.10.1 组卷页海量数据架构（万题级性能红线）
+- **变高虚拟滚动（`static/js/virtual_list.js`）**：题库流与已选题列表只渲染视口内加少量 overscan 的行。
+  前缀和 + 二分定位行号；行高按 key 持久化并由 `ResizeObserver` 量回真实值，量高之后必须补偿锚点位移
+  （`scrollTop +=`），否则向上滚动会整屏跳动。拖拽期间调用 `setDragLock(true)` 冻结窗口增删——源节点被回收
+  等于拖拽作废；`disabled` 整表模式仅供压测 A/B 对照。
+- **每帧只读一次布局**：`_measureChrome()` 缓存 `offsetTop`/`clientHeight`，`_scrollTop` 每帧只从滚动容器读一次；
+  多读一次就是一次强制同步布局。选项网格试列数（`adaptChoicesGridNodes`）合并成整批一次，滚动中直接顺延，
+  停手后由 settle 落点统一补算。
+- **Tailwind Play CDN 闸门（`static/js/tailwind_gate.js`）**：Play CDN 在 `documentElement` 上挂着「class/childList
+  一变就重扫整棵文档生成 CSS」的观察器，实测占滚动期主线程 self-time 的 23%。闸门只登记精确匹配该签名的观察器
+  （盯 `disabled` 等业务观察器绝不关），滚动/批量重建期间 `pause()`，停手或 900ms 硬上限到点时 `resume()` 并用一次
+  class 增删补扫。两条铁律：`pause()` 必须调**原生** disconnect（用包装版会把登记项一起删掉，`resume` 变空操作，
+  样式静默缺失而压测数字假好）；暂停期间新建的全站观察器不许启动。
+- **按需水合与有界缓存**：列表只有 140 字预览，行进入视口（`IntersectionObserver`，rootMargin 240px）后才批量补齐
+  完整题面；`addToCart` 必须先 `await` 该题水合。已水合 ID 与 KaTeX 排版结果都是 LRU 有界缓存，**购物车里的题永不淘汰**
+  （它随时要参与导出硬闸）。
+- **购物车三态水合（移植自上游）**：`missingIds` / `confirmedMissingIds` / `failedIds` 三者语义严格区分——
+  「服务端说这道题不存在」与「这批请求整批失败」绝不能混为一谈，后者不许顺势删题。刷新后由
+  `renderPaperWorkspace()` 并行发「第一页 lean」与 `ensureCartQuestionsLoaded()`，LocalStorage 里的购物车
+  永远以 `/api/paper/questions?ids=` 补回，分页改造不得以任何形式丢题。「移除失效题目」只过滤失效 ID，
+  保留其余题目的顺序、分值与留白。
+- **页面加载禁止整库拉取（`static/js/import.js` 已修）**：录入页「关联题目」下拉曾在初始化时直接调
+  `refreshRelatedDropdown()`，任何工作台加载都会发一次不带分页的 `GET /api/questions`——十万题时每次页面
+  加载都要拖回 139MB 并生成十万个 `<option>`。现改为点开下拉首帧懒加载（lean 最新 200 题），选中题不在
+  其中时走 `/api/paper/questions?ids=` 只定向水合那一道，手输题号走 `q=#题号` 的 lean 单页防抖反查。
+  所有列表消费者一律禁止裸 GET `/api/questions`；回归见 `test_related_question_dropdown_never_fetches_the_whole_bank`。
+- **导出前硬闸**：`assertPaperCartFullyLoaded()` 挂在 `buildCartQuestionsPayload()` 入口与 `savePaperToDb` 内，
+  卷面还有未水合的题就抛错终止——A4 预览会静默跳过空 `content` 的题，静默跳题等于悄悄出一张缺题的卷子。
+- **压测口径**：`python -m scripts.seed_perf_load --target 10000` 造压测库（绝不允许指向真实库），
+  `python -m scripts.perf_paper_stress --mode new|legacy` 用无头 Chromium 量首屏、视口水合、滚动帧时长分布、
+  long task、DOM 节点数、接口字节与购物车持久化。压测实例必须用 `MATHBANK_DATABASE_FILE` 换库，
+  运行时锁按数据库命名（`RUNTIME_LOCK_FILE`），否则会和正式服务抢同一把锁而起不来。
+老架构首屏超时（`--first-timeout`）不是脚本失败而是对照结论：脚本记 `stalled` 照常出报告，
+  现场快照一律用轮询式 `wait_for_function` + JSON.stringify 取——老架构主线程被万行渲染压死时 `page.evaluate` 会永远排队，禁止使用。
 
 ### 3.11 高考级 LaTeX/PDF 编译引擎
 - **试卷模板与排版**：

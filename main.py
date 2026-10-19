@@ -686,7 +686,11 @@ def read_index():
         
         # Inject dynamic cache-busting version parameter based on file mtime
         import re as _re
-        js_files = ["api.js", "editor.js", "ocr.js", "import.js", "paper.js", "lesson.js", "lecture.js", "filter-panel.js"]
+        # 顺序无关，但每个 /static/js/*.js 都必须登记：漏登记的那只会在用户浏览器里
+        # 一直吃旧缓存（虚拟滚动上线后「改了没生效」是最难排查的一类假故障）。
+        # tailwind_gate.js 也必须吃缓存击穿：它晚一步加载就抢在 Tailwind CDN 之后，
+        # 虚拟滚动的样式闸门会静默失效（症状是压测数字变好、页面样式偶发缺失）。
+        js_files = ["tailwind_gate.js", "api.js", "editor.js", "ocr.js", "import.js", "paper.js", "virtual_list.js", "lesson.js", "lecture.js", "filter-panel.js"]
         for js in js_files:
             js_path = str(STATIC_JS_DIR / js)
             if not os.path.exists(js_path):

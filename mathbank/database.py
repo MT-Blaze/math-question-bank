@@ -1,8 +1,10 @@
 import datetime
 import sqlite3
 import json
+import re
 from pathlib import Path
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     Column,
     DateTime,
@@ -21,6 +23,19 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import declarative_base, sessionmaker
 from mathbank.paths import DATABASE_FILE, sqlite_url
+
+# 题末可分离插图的尺寸枚举：与 mathbank/image_layout.SIZE_CM 一一对应。
+# auto 表示沿用导出侧既有默认宽度，绝不允许把任意 CSS/TeX 写进库里。
+FIGURE_SIZE_VALUES = frozenset({"auto", "small", "medium", "large"})
+FIGURE_ALIGN_VALUES = frozenset({"right", "center", "bottom_right"})
+
+
+def normalize_figure_size(value) -> str:
+    """把外部传入的插图尺寸收敛到枚举，非法值一律退回 auto。"""
+
+    normalized = str(value or "").strip()
+    return normalized if normalized in FIGURE_SIZE_VALUES else "auto"
+
 
 # SQLite Database URL
 SQLALCHEMY_DATABASE_URL = sqlite_url(DATABASE_FILE)
@@ -102,8 +117,43 @@ def configure_sqlite_wal(database_engine: Engine) -> str | None:
         pass
     return mode
 
+_PREVIEW_IMAGE_RE = re.compile(
+    r"!\[[^\]]*\]\([^)]*\)|\\includegraphics(?:\[[^\]]*\])?\{[^}]*\}"
+)
+_PREVIEW_DELIM_RE = re.compile(r"\$\$?|\\[\(\)\[\]]")
+_PREVIEW_SPACING_RE = re.compile(
+    r"\\(?:quad|qquad|enspace|thinspace|medspace|thickspace|[,;!:])(?![A-Za-z])|~"
+)
+_PREVIEW_SPACE_RE = re.compile(r"\s+")
+
+
+def _plain_text_preview(value, limit: int = 140) -> str:
+    """把 LaTeX/Markdown 混排的题干压成一行纯文本预览（列表接口专用）。
+
+    只剥「不影响阅读的包装」：插图折成〔图〕占位（组卷时看得出这道题有没有配图
+    就够），数学定界符与间距宏去掉，**公式本体原样保留**——教师日常就写 LaTeX，
+    `\\frac{1}{2}` 比硬压成 `12` 更好认，也不会把预览骗成「题干很短」。
+    """
+
+    text = _PREVIEW_IMAGE_RE.sub("〔图〕", str(value or ""))
+    text = _PREVIEW_DELIM_RE.sub(" ", text)
+    text = _PREVIEW_SPACING_RE.sub(" ", text)
+    text = _PREVIEW_SPACE_RE.sub(" ", text).strip()
+    if len(text) > limit:
+        return text[:limit].rstrip() + "…"
+    return text
+
+
 class Question(Base):
     __tablename__ = "questions"
+
+    # 列表接口默认按「录入时间 + 物理 ID」排序。缺这条复合索引时，SQLite 对
+    # ORDER BY created_at DESC, id DESC 只能 SCAN 全表再建 TEMP B-TREE 重排，
+    # 十万题规模下每翻一页都要重排整表。单条 (created_at, id) 索引即可同时
+    # 服务升/降序——SQLite 会反向扫描索引，不必为每个方向各建一条。
+    __table_args__ = (
+        Index("ix_questions_created_at_id", "created_at", "id"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     content = Column(Text, nullable=False)  # 题干 (LaTeX + markdown)
@@ -127,6 +177,17 @@ class Question(Base):
     _content_tikz_assets = Column(Text, default="[]", name="content_tikz_assets")  # 题干多图 TikZ 源码与渲染图映射
     _answer_tikz_assets = Column(Text, default="[]", name="answer_tikz_assets")  # 解答多图 TikZ 源码与渲染图映射
     figure_align = Column(String(50), default="right")  # 插图排版位置: right (题干右侧), center (下方居中), bottom_right (下方居右)
+    figure_align_custom = Column(
+        Boolean, nullable=False, default=False, server_default="0"
+    )  # 用户是否明确挑选过插图位置；没挑过时导出的默认排版仍可随卷型变化
+    figure_size = Column(
+        String(20), nullable=False, default="auto", server_default="auto"
+    )  # 题末可分离插图尺寸: auto, small, medium, large
+    # 逐图排版（align/size）以 JSON 存在 image_layouts 列。属性名与列名刻意不同，
+    # 这样 SQLAlchemy 存的是校验后的 JSON 原文，读出来的是布局字典。
+    _image_layouts = Column(
+        Text, nullable=False, default="{}", server_default="{}", name="image_layouts"
+    )
     tags = Column(Text, default="")  # 自定义标签 (逗号分隔或字符串)
     # 知识点（细粒度多对多，独立于考向树的小节/考向，参考库 knowledge_points 范式）
     knowledge_points = Column(Text, default="")  # 知识点缓存串（逗号分隔，便于列表/搜索）
@@ -145,6 +206,24 @@ class Question(Base):
     error_prone_points = Column(Text, default="[]")  # 易错点（JSON 数组）
     usage_count = Column(Integer, default=0, index=True)  # 组卷引用次数
     created_at = Column(DateTime, default=_utcnow_naive)
+
+    @property
+    def image_layouts(self):
+        from .image_layout import normalize_image_layouts
+
+        try:
+            return normalize_image_layouts(self._image_layouts or "{}", self.content)
+        except ValueError:
+            # 布局只是可选装饰：脏数据不该让整条列表或整份导出 500，退回默认即可
+            return {}
+
+    @image_layouts.setter
+    def image_layouts(self, value):
+        from .image_layout import normalize_image_layouts
+
+        self._image_layouts = json.dumps(
+            normalize_image_layouts(value, self.content), ensure_ascii=False
+        )
 
     @property
     def image_paths(self):
@@ -259,6 +338,9 @@ class Question(Base):
             "content_tikz_assets": self.content_tikz_assets,
             "answer_tikz_assets": self.answer_tikz_assets,
             "figure_align": self.figure_align or "right",
+            "figure_align_custom": bool(self.figure_align_custom),
+            "figure_size": normalize_figure_size(self.figure_size),
+            "image_layouts": self.image_layouts,
             "tags": self.tags,
             "knowledge_points": self.knowledge_points,
             "exam_year": self.exam_year,
@@ -299,6 +381,9 @@ class Question(Base):
                 self.content_tikz_assets or self.answer_tikz_assets or self.tikz_code
             ),
             "figure_align": self.figure_align or "right",
+            "figure_align_custom": bool(self.figure_align_custom),
+            "figure_size": normalize_figure_size(self.figure_size),
+            "image_layouts": self.image_layouts,
             "tags": self.tags,
             "knowledge_points": self.knowledge_points,
             "exam_year": self.exam_year,
@@ -314,6 +399,38 @@ class Question(Base):
             "error_prone_points": _parse_json_list(self.error_prone_points),
             "usage_count": self.usage_count or 0,
             "created_at": (self.created_at.isoformat() + "Z") if self.created_at else None
+        }
+
+    def to_lean_dict(self):
+        """列表/组卷流的轻量摘要：只带卡片渲染必需的元信息与题干预览。
+
+        与 ``to_summary_dict`` 的差别是**刻意的**：列表接口不再下发完整
+        ``content``、``options``、``tikz_code`` 与任何答案正文。十万题规模下，
+        「一页 JSON 把整题干拖回来」正是性能崩塌的根源；需要完整题面时走
+        ``/api/questions/{id}``（展开答案）或 ``/api/paper/questions?ids=``
+        （加入试卷 / 卷面渲染）按需取。
+        """
+
+        return {
+            "id": self.id,
+            "lean": True,
+            "preview": _plain_text_preview(self.content),
+            "question_type": self.question_type,
+            "difficulty": self.difficulty,
+            "source": self.source,
+            "category_compulsory": self.category_compulsory,
+            "category_chapter": self.category_chapter,
+            "category_knowledge": self.category_knowledge,
+            "applicable_grade": self.applicable_grade or "",
+            "topic_id": self.topic_id or "",
+            "paper_category": self.paper_category or "",
+            "paper_question_no": self.paper_question_no or "",
+            "has_answer": bool((self.answer_markdown or "").strip()),
+            "image_count": len(self.display_image_paths),
+            "has_tikz_assets": bool(
+                self.content_tikz_assets or self.answer_tikz_assets or self.tikz_code
+            ),
+            "usage_count": self.usage_count or 0,
         }
 
 class LessonPlan(Base):
@@ -1168,6 +1285,11 @@ def init_db():
                 # v11 replaces the topic name column with a stable topic_id.
                 required_columns["questions"].discard("topic")
                 required_columns["questions"].add("topic_id")
+            if current_version >= 26:
+                # v26 起题末插图支持逐图尺寸/位置：已定版却缺列说明结构被截断过
+                required_columns["questions"].add("image_layouts")
+                required_columns["questions"].add("figure_size")
+                required_columns["questions"].add("figure_align_custom")
             for table_name in core_tables:
                 columns = {
                     row[1]

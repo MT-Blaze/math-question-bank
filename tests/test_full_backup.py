@@ -3,6 +3,7 @@ import json
 import os
 import sqlite3
 import stat
+import subprocess
 import sys
 import types
 import zipfile
@@ -874,3 +875,60 @@ def test_windows_runtime_lock_uses_one_byte_nonblocking_lock(tmp_path, monkeypat
     with acquire_runtime_lock(tmp_path / "runtime.lock", platform_name="nt"):
         assert calls[-1][1:] == (fake_msvcrt.LK_NBLCK, 1)
     assert calls[-1][1:] == (fake_msvcrt.LK_UNLCK, 1)
+
+
+def _paths_layout(database_file):
+    """在子进程里按给定 MATHBANK_DATABASE_FILE 重新算一遍 paths 落点。
+
+    paths 的库/锁判定是 import 期读环境变量的，进程内改 os.environ 再 reload 会把
+    其它模块的既有引用打成半新半旧，所以用一条干净的子进程来量。
+    """
+
+    script = (
+        "import json;"
+        "from mathbank import paths;"
+        "print(json.dumps({"
+        "'database': paths.DATABASE_FILE.name,"
+        "'lock': paths.RUNTIME_LOCK_FILE.name"
+        "}))"
+    )
+    env = dict(os.environ)
+    if database_file is None:
+        env.pop("MATHBANK_DATABASE_FILE", None)
+    else:
+        env["MATHBANK_DATABASE_FILE"] = database_file
+    result = subprocess.run(
+        [sys.executable, "-B", "-X", "utf8", "-c", script],
+        cwd=str(Path(__file__).resolve().parents[1]),
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout.strip().splitlines()[-1])
+
+
+def test_default_database_keeps_the_historical_runtime_lock(tmp_path):
+    """不设环境变量时锁文件必须还是 runtime.lock——正式服务和恢复 CLI 靠它互斥。"""
+
+    from mathbank import paths
+
+    assert paths.RUNTIME_LOCK_FILE == paths.SYSTEM_GENERATED_DIR / "runtime.lock"
+    layout = _paths_layout(None)
+    assert layout == {"database": "math_question_bank.db", "lock": "runtime.lock"}
+
+
+def test_runtime_lock_follows_the_database_override(tmp_path):
+    """换库必须同时换锁：否则压测/运维另起的实例会和正式服务抢同一把锁，永远起不来。
+
+    反过来也要成立——两条不同数据库的锁互不相干，但**同一条**数据库仍然互斥，
+    因为两个实例算出来的是同一个锁文件名。
+    """
+
+    layout = _paths_layout("math_question_bank_stress.db")
+
+    assert layout["database"] == "math_question_bank_stress.db"
+    assert layout["lock"] == "runtime-math_question_bank_stress.lock"
+    assert layout["lock"] != "runtime.lock"

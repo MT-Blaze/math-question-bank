@@ -1163,10 +1163,13 @@ window.topicName = function(t) {
             // We just call the API settings check or hit general lists to see if dotenv loaded keys
             // In case keys are missing, backend returns descriptive headers
             const indicator = document.getElementById('apiStatusIndicator');
-            
+
+            // 就绪探针必须走 /healthz。这里原先 fetch('/api/questions') 不带 page，
+            // 命中的是「整库数组」的 legacy 分支——十万题规模下，每打开一次页面都要
+            // 先拖回几十 MB JSON，而代价只换来右上角一个小绿点。
             // Simple check by hitting backend
-            fetch('/api/questions')
-                .then(r => r.json())
+            fetch('/healthz')
+                .then(r => r.ok ? r.json() : Promise.reject(new Error('healthz ' + r.status)))
                 .then(() => {
                     // Config status check done. We can't query secret directly so we inspect indicator.
                     indicator.className = "flex items-center space-x-1.5 px-3 py-1.5 rounded-full text-xs font-medium bg-green-50 text-green-700 border border-green-200";
