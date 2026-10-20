@@ -13,7 +13,7 @@ import uuid
 from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException
 from fastapi.responses import JSONResponse
 from pathlib import Path
-from sqlalchemy import and_, or_, cast, func
+from sqlalchemy import and_, or_, case, cast, func
 from sqlalchemy import Integer as _SQLInteger
 from sqlalchemy.orm import Session
 from typing import Optional
@@ -220,6 +220,35 @@ def schedule_question_fingerprint_retry(
         )
 
 
+def _serialize_question_rows(db: Session, questions, *, lean_mode: bool) -> list[dict]:
+    """序列化列表行（lean 摘要或完整摘要），供分页/精确查找两条出口共用。"""
+
+    seq_map = get_seq_mapping(db, [item.id for item in questions])
+    if lean_mode:
+        return [
+            {
+                **_decorate_topic_field(item.to_lean_dict()),
+                "seq_num": seq_map.get(item.id),
+                "school_source_label": resolve_school_label(item.source_school_id) or None,
+                "quality": _quality_level_of(item),
+            }
+            for item in questions
+        ]
+    topics_map = load_questions_topics_map(
+        db, [item.id for item in questions], get_active_version_code()
+    )
+    return [
+        {
+            **_decorate_topic_field(item.to_summary_dict()),
+            "seq_num": seq_map.get(item.id),
+            "topics": _decorate_topic_slots(topics_map.get(item.id, [])),
+            "school_source_label": resolve_school_label(item.source_school_id) or None,
+            "quality": _quality_level_of(item),
+        }
+        for item in questions
+    ]
+
+
 @router.get("/api/questions")
 def list_questions(
     q: str = None,
@@ -261,44 +290,75 @@ def list_questions(
         page = 1
 
     query = db.query(Question)
-    
-    # Check if searching for a specific display sequence number
-    target_id_by_seq = None
-    if search_q:
-        clean_q = search_q.strip()
-        if clean_q.startswith("#"):
-            clean_q = clean_q[1:]
-        if clean_q.isdigit():
-            seq_val = int(clean_q)
-            if seq_val >= 1:
-                row = (
-                    db.query(Question.id)
-                    .order_by(Question.id.asc())
-                    .offset(seq_val - 1)
-                    .limit(1)
-                    .first()
-                )
-                if row:
-                    target_id_by_seq = row[0]
 
-    if search_q:
-        if target_id_by_seq is not None:
-            query = query.filter(
-                (Question.id == target_id_by_seq) |
-                (Question.content.like(f"%{search_q}%")) | 
-                (Question.source.like(f"%{search_q}%")) |
-                (Question.answer_markdown.like(f"%{search_q}%")) |
-                (Question.review.like(f"%{search_q}%")) |
-                (Question.tags.like(f"%{search_q}%"))
-            )
+    # 搜索语义：`#61` = 内部 ID 精确查找（不参与全文模糊、忽略筛选条件）；
+    # `61` = 内部 ID 命中则置顶，未命中再按历史题号映射兜底，最后才全文模糊。
+    raw_search = str(search_q or "").strip()
+    search_mode = "fulltext"
+    pin_id = None
+    pin_kind = None
+    exact_only = False
+
+    if raw_search.startswith("#"):
+        candidate = raw_search[1:].strip()
+        if candidate.isdigit() and int(candidate) >= 1:
+            exact_only = True
+            pin_id = int(candidate)
+            pin_kind = "id"
+            search_mode = "id_exact"
+    elif raw_search.isdigit() and int(raw_search) >= 1:
+        numeric = int(raw_search)
+        if db.query(Question.id).filter(Question.id == numeric).first():
+            pin_id = numeric
+            pin_kind = "id"
+            search_mode = "id_first"
         else:
-            query = query.filter(
-                (Question.content.like(f"%{search_q}%")) | 
-                (Question.source.like(f"%{search_q}%")) |
-                (Question.answer_markdown.like(f"%{search_q}%")) |
-                (Question.review.like(f"%{search_q}%")) |
-                (Question.tags.like(f"%{search_q}%"))
+            row = (
+                db.query(Question.id)
+                .order_by(Question.id.asc())
+                .offset(numeric - 1)
+                .limit(1)
+                .first()
             )
+            if row:
+                pin_id = row[0]
+                pin_kind = "seq_num"
+                search_mode = "number_first"
+
+    if exact_only:
+        questions = db.query(Question).filter(Question.id == pin_id).all()
+        items = _serialize_question_rows(db, questions, lean_mode=lean_mode)
+        if page is None:
+            return items
+        return {
+            "items": items,
+            "total": len(items),
+            "page": 1,
+            "page_size": max(1, min(int(page_size), 200)),
+            "total_pages": 1,
+            "search": {
+                "query": raw_search,
+                "mode": search_mode,
+                "exact_match": (
+                    {
+                        "id": items[0]["id"],
+                        "seq_num": items[0].get("seq_num"),
+                        "kind": pin_kind,
+                    }
+                    if items
+                    else None
+                ),
+            },
+        }
+
+    if raw_search:
+        query = query.filter(
+            (Question.content.like(f"%{raw_search}%"))
+            | (Question.source.like(f"%{raw_search}%"))
+            | (Question.answer_markdown.like(f"%{raw_search}%"))
+            | (Question.review.like(f"%{raw_search}%"))
+            | (Question.tags.like(f"%{raw_search}%"))
+        )
     if comp_val:
         query = query.filter(Question.category_compulsory == comp_val)
     if chap_val:
@@ -389,6 +449,14 @@ def list_questions(
         # 默认视图排除烂题：质量档位 -1（tags 含「烂题」）。tags 为 NULL 时也要保留。
         query = query.filter(or_(Question.tags.is_(None), ~Question.tags.like("%烂题%")))
 
+    if pin_id is not None:
+        # 数字搜索的精准匹配必须始终可见：即使当前筛选条件会排除它，也把它
+        # 作为独立分支并进结果集，并在排序里固定到第一行。
+        normal_ids = query.with_entities(Question.id)
+        query = db.query(Question).filter(
+            or_(Question.id == pin_id, Question.id.in_(normal_ids))
+        )
+
     if str(sort).lower() == "paper_no":
         # 整卷浏览：按原题号自然序（提取前导数字），题号缺失的落后面。
         order_columns = (
@@ -402,6 +470,8 @@ def list_questions(
             if str(sort).lower() == "asc"
             else (Question.created_at.desc(), Question.id.desc())
         )
+    if pin_id is not None:
+        order_columns = (case((Question.id == pin_id, 0), else_=1),) + order_columns
     if page is not None:
         safe_page_size = max(1, min(int(page_size), 200))
         total = query.count()
@@ -413,56 +483,34 @@ def list_questions(
             .limit(safe_page_size)
             .all()
         )
-        seq_map = get_seq_mapping(db, [item.id for item in questions])
-        if lean_mode:
-            # lean：列表只回摘要与 140 字预览，完整题面/选项/答案一律按需另取。
-            # 也不附带 topics 槽位数组——组卷流不读它，十万题时它是纯浪费的字节。
-            items = [
-                {
-                    **_decorate_topic_field(item.to_lean_dict()),
-                    "seq_num": seq_map.get(item.id),
-                    "school_source_label": resolve_school_label(item.source_school_id) or None,
-                    "quality": _quality_level_of(item),
-                }
-                for item in questions
-            ]
-        else:
-            topics_map = load_questions_topics_map(
-                db, [item.id for item in questions], get_active_version_code()
-            )
-            items = [
-                {
-                    **_decorate_topic_field(item.to_summary_dict()),
-                    "seq_num": seq_map.get(item.id),
-                    "topics": _decorate_topic_slots(topics_map.get(item.id, [])),
-                    "school_source_label": resolve_school_label(item.source_school_id) or None,
-                    "quality": _quality_level_of(item),
-                }
-                for item in questions
-            ]
-        return {
+        items = _serialize_question_rows(db, questions, lean_mode=lean_mode)
+        response = {
             "items": items,
             "total": total,
             "page": safe_page,
             "page_size": safe_page_size,
             "total_pages": total_pages,
         }
+        if raw_search:
+            exact_match = None
+            if pin_id is not None and safe_page == 1:
+                for item in items:
+                    if item.get("id") == pin_id:
+                        exact_match = {
+                            "id": pin_id,
+                            "seq_num": item.get("seq_num"),
+                            "kind": pin_kind,
+                        }
+                        break
+            response["search"] = {
+                "query": raw_search,
+                "mode": search_mode,
+                "exact_match": exact_match,
+            }
+        return response
 
     questions = query.order_by(*order_columns).all()
-    seq_map = get_seq_mapping(db, [item.id for item in questions])
-    topics_map = load_questions_topics_map(
-        db, [item.id for item in questions], get_active_version_code()
-    )
-    return [
-        {
-            **_decorate_topic_field(item.to_summary_dict()),
-            "seq_num": seq_map.get(item.id),
-            "topics": _decorate_topic_slots(topics_map.get(item.id, [])),
-            "school_source_label": resolve_school_label(item.source_school_id) or None,
-            "quality": _quality_level_of(item),
-        }
-        for item in questions
-    ]
+    return _serialize_question_rows(db, questions, lean_mode=False)
 
 
 # ---------------------------------------------------------------------------

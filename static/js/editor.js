@@ -3324,6 +3324,29 @@ function deleteDraft(id) {
                 .catch(() => { container.innerHTML = '<div class="p-6 text-center text-slate-400 text-xs">试卷列表加载失败</div>'; });
         };
 
+        function buildBankExactMatchBanner(exactMatch, exactOnly) {
+            if (!exactMatch) return null;
+            const box = document.createElement('div');
+            box.id = 'bankExactMatchBanner';
+            box.setAttribute('role', 'status');
+            box.className = 'exact-match-banner mx-1.5 mb-2 flex items-start gap-2 rounded-lg border border-brand-200 bg-brand-50 px-3 py-2 text-[11px] font-semibold text-brand-700 dark:border-brand-700/60 dark:bg-brand-900/30 dark:text-brand-200';
+            const icon = document.createElement('i');
+            icon.className = 'fa-solid fa-crosshairs mt-0.5';
+            icon.setAttribute('aria-hidden', 'true');
+            const text = document.createElement('span');
+            const seq = exactMatch.seq_num == null ? '—' : exactMatch.seq_num;
+            if (exactMatch.kind === 'seq_num') {
+                text.textContent = `精准匹配 · 题号 #${seq}（内部 ID #${exactMatch.id}）`;
+            } else if (exactOnly) {
+                text.textContent = `ID 精确查找 · 内部 ID #${exactMatch.id}（已忽略筛选条件）`;
+            } else {
+                text.textContent = `精准匹配 · 内部 ID #${exactMatch.id}（题号 #${seq}）`;
+            }
+            box.appendChild(icon);
+            box.appendChild(text);
+            return box;
+        }
+
         function loadQuestions(retryCount = 0) {
             const loadSequence = ++bankQuestionsLoadSequence;
             if (bankQuestionsRetryTimer) {
@@ -3408,16 +3431,37 @@ function deleteDraft(id) {
                         : requestedPage;
 
                     currentBankPage = Math.min(responsePage, totalPages);
+
+                    const searchMeta = payload && payload.search && typeof payload.search === 'object'
+                        ? payload.search
+                        : null;
+                    const exactMatch = searchMeta && searchMeta.exact_match
+                        ? searchMeta.exact_match
+                        : null;
+                    const exactOnly = !!searchMeta && searchMeta.mode === 'id_exact';
+
                     qListContainer.innerHTML = '';
                     
                     if (totalItems === 0) {
+                        const emptyTitle = exactOnly
+                            ? `未找到 ID 为 ${String(q).trim().replace(/^#\s*/, '')} 的题目`
+                            : '未找到匹配题目';
+                        const emptyHint = exactOnly
+                            ? '<p class="mt-1 text-[10px] text-slate-400"># 前缀按内部 ID 精确查找，不会退回全文搜索</p>'
+                            : '';
                         qListContainer.innerHTML = `
                             <div class="p-6 text-center text-slate-400 text-xs">
                                 <i class="fa-solid fa-box-open text-2xl mb-1 text-slate-400"></i>
-                                <p>未找到匹配题目</p>
+                                <p>${window.MathBankSafe.escapeText(emptyTitle)}</p>
+                                ${emptyHint}
                             </div>`;
                         renderSidebarPagination(0, 1, 'bank');
                         return;
+                    }
+
+                    if (exactMatch) {
+                        const banner = buildBankExactMatchBanner(exactMatch, exactOnly);
+                        if (banner) qListContainer.appendChild(banner);
                     }
                     
                     // 质量标签：四档单击循环（普通→好题→经典→烂题→普通）
@@ -3481,6 +3525,9 @@ function deleteDraft(id) {
                                 <div class="flex items-center gap-1.5 justify-end flex-wrap flex-1 ml-2 pr-9">
                                     ${qualityBadgeHtml(qualityLevel)}
                                     ${tagsHtml}
+                                    ${exactMatch && exactMatch.id === item.id
+                                        ? '<span class="text-[9px] font-extrabold px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-600 border border-emerald-200 shrink-0">精准匹配</span>'
+                                        : ''}
                                     <span class="text-[10px] font-extrabold px-1.5 py-0.5 rounded bg-brand-50 text-brand-600 shadow-sm">#${window.MathBankSafe.escapeText(item.seq_num)}</span>
                                 </div>
                             </div>
