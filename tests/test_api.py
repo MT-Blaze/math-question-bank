@@ -497,6 +497,80 @@ def test_bailian_solve_uses_model_specific_thinking_policy(
         assert sent["reasoning_effort"] == expected_effort
 
 
+@pytest.mark.parametrize(
+    ("solve_model", "parse_model", "expected_model"),
+    [
+        ("BAILIAN/qwen3.8-flash", "BAILIAN/qwen3.7-plus", "qwen3.8-flash"),
+        ("", "BAILIAN/deepseek-v4.1-flash", "deepseek-v4.1-flash"),
+    ],
+)
+def test_ai_solve_without_model_falls_back_to_server_side_configuration(
+    client,
+    solve_model,
+    parse_model,
+    expected_model,
+):
+    """缺 model 的 AI 解析请求必须读系统设置，不得退回写死的 DeepSeek。
+
+    批量录入的两处【AI 生成解析】曾不传 model，于是吃到 Form 默认值
+    ``deepseek-flash``，在只配了百炼密钥的机器上报「未配置 DeepSeek API Key」。
+    """
+    response_payload = MagicMock(status_code=200)
+    response_payload.json.return_value = {
+        "choices": [{"message": {"content": "【参考答案】2\n【详细解析】略"}}]
+    }
+    env = {
+        "DEEPSEEK_API_KEY": "",
+        "PREFER_SOLVE_MODEL": solve_model,
+        "PREFER_PARSE_MODEL": parse_model,
+        "ALI_BAILIAN_API_KEY": "bailian-key",
+        "ALI_BAILIAN_API_BASE": "https://bailian.example/v1/",
+    }
+
+    with patch.dict(os.environ, env), patch(
+        "mathbank.ai_http.robust_request_post", return_value=response_payload
+    ) as mock_post:
+        response = client.post(
+            "/api/ai/solve",
+            data={
+                "content": "求 $1+1$。",
+                "question_type": "detailed_answer",
+                "stream": "false",
+            },
+            headers={"X-Local-Token": LOCAL_TOKEN},
+        )
+
+    assert response.status_code == 200, response.json()
+    args, kwargs = mock_post.call_args
+    assert args[0] == "https://bailian.example/v1/chat/completions"
+    sent = kwargs["json"]
+    assert sent["model"] == expected_model
+    # 百炼侧绝不出现 DeepSeek 私有字段
+    assert "thinking" not in sent
+
+
+def test_ai_solve_missing_key_error_names_the_actual_gap(client):
+    """报错必须指向真正缺失的密钥，而不是让用户去配一家没在用的厂商。"""
+
+    env = {
+        "DEEPSEEK_API_KEY": "",
+        "PREFER_SOLVE_MODEL": "",
+        "PREFER_PARSE_MODEL": "",
+    }
+    with patch.dict(os.environ, env):
+        response = client.post(
+            "/api/ai/solve",
+            data={"content": "求 $1+1$。", "stream": "false"},
+            headers={"X-Local-Token": LOCAL_TOKEN},
+        )
+
+    assert response.status_code == 400
+    message = response.json()["message"]
+    assert "DEEPSEEK_API_KEY" in message
+    assert "解答模型" in message
+    assert "deepseek-flash" in message
+
+
 def test_parse_paper_flows_use_shared_provider_resolution(client):
     from unittest.mock import MagicMock, patch
     import re

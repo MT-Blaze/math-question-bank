@@ -569,6 +569,69 @@ def test_deepseek_thinking_policy_defaults_by_task():
     assert "reasoning_effort" not in parse
 
 
+def test_provider_code_overrides_a_deepseek_model_name_on_another_gateway():
+    """厂商参数契约由 provider_code 决定，模型名不得越权。
+
+    实测 .env 把 PREFER_PARSE_MODEL 配成 BAILIAN/deepseek-v4.1-flash：网关转发的
+    DeepSeek 模型只认自己的 enable_thinking，注入 DeepSeek 私有 thinking 等于
+    没有任何思考开关（这类模型默认开思考，批量解析被拖成分钟级）。
+    """
+
+    assert not is_deepseek_thinking_capable(
+        model_name="deepseek-v4.1-flash",
+        api_base="https://token-plan.example.com/compatible-mode/v1",
+        provider_code="bailian",
+    )
+    assert not is_deepseek_thinking_capable(
+        model_name="deepseek-ai/DeepSeek-V4.1-Flash",
+        api_base="https://api.siliconflow.cn/v1",
+        provider_code="siliconflow",
+    )
+
+    payload = {"model": "deepseek-v4.1-flash", "enable_thinking": True, "max_tokens": 65536}
+    untouched = apply_deepseek_thinking_policy(
+        payload,
+        model_name="deepseek-v4.1-flash",
+        api_base="https://token-plan.example.com/compatible-mode/v1",
+        provider_code="bailian",
+        task="parse",
+        thinking_enabled=False,
+    )
+    assert untouched == payload, "百炼请求绝不能被写入 DeepSeek 私有字段"
+
+    # 结构化任务改由百炼自己的字段关掉思考，且不动非 Qwen 的 token 契约
+    switched = apply_bailian_thinking_policy(
+        payload,
+        provider_code="bailian",
+        model_name="deepseek-v4.1-flash",
+        task="parse",
+    )
+    assert switched["enable_thinking"] is False
+    assert switched["max_tokens"] == 65536
+    assert "max_completion_tokens" not in switched
+    assert "thinking" not in switched
+
+    # 官方 DeepSeek 与不带 provider_code 的历史判定保持不变
+    official = apply_deepseek_thinking_policy(
+        {"model": "deepseek-flash"},
+        model_name="deepseek-flash",
+        api_base="https://api.deepseek.com",
+        provider_code="deepseek",
+        task="parse",
+    )
+    assert official["thinking"] == {"type": "disabled"}
+    assert is_deepseek_thinking_capable(
+        model_name="deepseek-ai/DeepSeek-V4.1-Flash",
+        api_base="https://api.siliconflow.cn/v1",
+    )
+    # 中转站没有自己的思考契约，仍按模型名/接口地址判定
+    assert is_deepseek_thinking_capable(
+        model_name="deepseek-v4.1-flash",
+        api_base="https://transit.example.com/v1",
+        provider_code="zhongzhan_gpt",
+    )
+
+
 def test_draw_provider_routes_deepseek_to_the_official_endpoint():
     """画图任务的提供商下拉里也有 DeepSeek，不能误发到硅基流动。"""
 

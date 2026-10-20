@@ -5865,3 +5865,23 @@ def test_unlabeled_floating_image_is_not_glued_into_option_cell():
     result = _run_node_script(script)
     assert result.returncode == 0, result.stderr
     assert "OK" in result.stdout
+
+
+def test_batch_import_solve_calls_send_the_configured_solve_model():
+    """拆卷卡片的【AI 生成解析】必须带上系统配置的解答模型。
+
+    两处 /api/ai/solve 曾只发 content/question_type/stream，后端 Form 默认值把请求
+    钉死在 deepseek-flash 上，只配了百炼密钥的机器直接报「未配置 DeepSeek API Key」。
+    """
+
+    import_source = _read(STATIC_JS_DIR / "import.js")
+    assert import_source.count("fetch('/api/ai/solve'") == 2
+    assert (
+        import_source.count(
+            "formData.append('model', typeof systemPreferSolveModel"
+        )
+        == 2
+    )
+    # 取不到系统配置时发空串，让后端读环境变量——前端绝不写死厂商
+    assert "systemPreferSolveModel : 'deepseek" not in import_source
+    assert ": '')" in import_source

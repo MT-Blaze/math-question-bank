@@ -474,20 +474,33 @@ def ai_solve(
     ocr_result: str = Form(""),
     custom_prompt: str = Form(""),
     thinking: str = Form("enabled"),
-    model: str = Form("deepseek-flash"),
+    model: str = Form(""),
     stream: str = Form("false")
 ):
-    provider = _main.resolve_text_provider(model)
+    # 模型来源与服务端其它 AI 端点同一口径：调用方没带 model 时读系统设置，
+    # 绝不用 Form 默认值把用户配好的厂商顶成 DeepSeek。
+    model_config = (
+        str(model or "").strip()
+        or os.getenv("PREFER_SOLVE_MODEL")
+        or os.getenv("PREFER_PARSE_MODEL")
+        or "deepseek-flash"
+    )
+    provider = _main.resolve_text_provider(model_config)
     api_key = provider.api_key
     api_base = provider.api_base
     model_name = provider.model_name
     provider_name = provider.credential_label
 
     if not api_key:
+        missing_key_env = provider.api_key_env or "对应厂商的密钥环境变量"
         return JSONResponse(
             content={
-                "status": "error", 
-                "message": f"未配置对应的 API Key ({provider_name})，无法智能解答！请在工作台右上角设置面板进行配置。"
+                "status": "error",
+                "message": (
+                    f"当前解答模型「{provider.raw_model}」走的是 {provider.provider_label} 接口，"
+                    f"但 {missing_key_env} 尚未配置，无法智能解答。"
+                    "请在设置面板补上该厂商的 API Key，或把【解答模型】切换到已配置密钥的厂商。"
+                )
             },
             status_code=400
         )

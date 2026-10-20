@@ -234,6 +234,12 @@ _DEEPSEEK_NO_THINKING_TASKS = frozenset(
     {"classify", "parse", "paper_selection", "latex_diagnostic", "ocr"}
 )
 
+# 这些厂商有自己的思考参数契约，``thinking`` 是 DeepSeek 官方 API 的私有字段。
+# 百炼网关转发的 deepseek-v4.1-flash 只认 ``enable_thinking``，硅基流动同理
+# （见 routes_ai 的 is_siliconflow 分支）——一旦 provider_code 给出，它以厂商为准，
+# 模型名不得越权把私有字段注入到别家的请求里。
+_PROVIDER_OWN_THINKING_CONTRACT = frozenset({"bailian", "siliconflow"})
+
 
 def is_deepseek_thinking_capable(
     *,
@@ -246,6 +252,8 @@ def is_deepseek_thinking_capable(
     normalized_model = str(model_name or "").strip().lower()
     normalized_base = str(api_base or "").strip().lower()
     normalized_code = str(provider_code or "").strip().lower()
+    if normalized_code in _PROVIDER_OWN_THINKING_CONTRACT:
+        return False
     mentions_deepseek = (
         "deepseek" in normalized_model
         or "deepseek" in normalized_base
@@ -316,23 +324,34 @@ def apply_bailian_thinking_policy(
 ) -> Dict[str, Any]:
     """Apply task-specific reasoning parameters only to current Bailian Qwen.
 
-    Other providers and legacy/custom Bailian models are returned unchanged so
-    this policy cannot alter DeepSeek, SiliconFlow, transit, or saved legacy
+    Other providers and transit/custom requests are returned unchanged so this
+    policy cannot alter DeepSeek, SiliconFlow, transit, or saved legacy
     behavior. Qwen3.7 uses ``thinking_budget`` while Qwen3.8 Max uses
-    ``reasoning_effort``; the two controls are never sent together.
+    ``reasoning_effort``; the two controls are never sent together. Non-Qwen
+    models served through the Bailian gateway only get the generic
+    ``enable_thinking`` off-switch for structured tasks, and no token fields
+    are rewritten there.
     """
 
     result = dict(payload)
     normalized_provider = str(provider_code or "").strip().lower()
     normalized_model = str(model_name or "").strip().lower()
+    normalized_task = str(task or "").strip().lower()
     is_qwen37 = normalized_model.startswith("qwen3.7-")
     is_qwen38_max = normalized_model == "qwen3.8-max" or normalized_model.startswith(
         "qwen3.8-max-"
     )
-    if normalized_provider != "bailian" or not (is_qwen37 or is_qwen38_max):
+    if normalized_provider != "bailian":
+        return result
+    if not (is_qwen37 or is_qwen38_max):
+        # 网关转发的非 Qwen 模型（实测在用的 deepseek-v4.1-flash）没有 Qwen 的
+        # thinking_budget / max_completion_tokens 契约，只有通用的 enable_thinking，
+        # 且默认开思考。结构化任务必须显式关掉，否则批量解析按 53 tok/s 的
+        # 推理输出计费并拖成分钟级；其余取值不动，交给调用方与厂商默认。
+        if normalized_task in _BAILIAN_NO_THINKING_TASKS:
+            result["enable_thinking"] = False
         return result
 
-    normalized_task = str(task or "").strip().lower()
     result.pop("reasoning_effort", None)
     result.pop("thinking_budget", None)
     result.pop("max_completion_tokens", None)

@@ -11189,6 +11189,7 @@ function saveParsedQuestion(index) {
                 const formData = new FormData();
                 formData.append('content', q.content || '');
                 formData.append('question_type', q.question_type || 'detailed_answer');
+                formData.append('model', typeof systemPreferSolveModel !== 'undefined' ? systemPreferSolveModel : '');
                 formData.append('stream', 'false');
 
                 const res = await fetch('/api/ai/solve', {
@@ -11309,6 +11310,7 @@ function saveParsedQuestion(index) {
                         const formData = new FormData();
                         formData.append('content', q.content || '');
                         formData.append('question_type', q.question_type || 'detailed_answer');
+                        formData.append('model', typeof systemPreferSolveModel !== 'undefined' ? systemPreferSolveModel : '');
                         formData.append('stream', 'false');
 
                         const res = await fetch('/api/ai/solve', {
