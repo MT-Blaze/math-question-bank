@@ -1,0 +1,1851 @@
+{
+  "generated_at": "2026-10-20 19:45:46",
+  "database": "E:\\math-question-bank-main\\math_question_bank.db",
+  "schools_file": "E:\\math-question-bank-main\\mathbank\\resources\\schools.json",
+  "schools_sha256": "497cff540a298255d1f76d96b54a4e7a8a8f9fc0cbbd639860f629037659f2c5",
+  "display_order_sha256": "c038705209bc62fa962f2c438833b009f656090507168f7464a5002de07200a5",
+  "canonical_rule": "schools.json 的 name（与录题页文件名预填一致）",
+  "summary": {
+    "total_questions": 418,
+    "distinct_sources": 24,
+    "changed_questions": 127,
+    "id_backfills": 21,
+    "manual_questions": 3,
+    "unchanged_questions": 288,
+    "question_sources_rows": 2,
+    "question_sources_changed": 1,
+    "question_sources_manual": 1,
+    "province_conflicts": 0
+  },
+  "changes": [
+    {
+      "qid": 56,
+      "before": "2024年东北师附高一上学期9月月考",
+      "after": "2024年东北师大附中高一上学期9月月考",
+      "token": "东北师附",
+      "school_id": "sch_0c91a077ec",
+      "school_name": "东北师大附中",
+      "province": "吉林省",
+      "city": "长春市",
+      "source_school_id_before": "sch_0c91a077ec"
+    },
+    {
+      "qid": 57,
+      "before": "2024年东北师附高一上学期9月月考",
+      "after": "2024年东北师大附中高一上学期9月月考",
+      "token": "东北师附",
+      "school_id": "sch_0c91a077ec",
+      "school_name": "东北师大附中",
+      "province": "吉林省",
+      "city": "长春市",
+      "source_school_id_before": "sch_0c91a077ec"
+    },
+    {
+      "qid": 58,
+      "before": "2024年东北师附高一上学期9月月考",
+      "after": "2024年东北师大附中高一上学期9月月考",
+      "token": "东北师附",
+      "school_id": "sch_0c91a077ec",
+      "school_name": "东北师大附中",
+      "province": "吉林省",
+      "city": "长春市",
+      "source_school_id_before": "sch_0c91a077ec"
+    },
+    {
+      "qid": 59,
+      "before": "2024年东北师附高一上学期9月月考",
+      "after": "2024年东北师大附中高一上学期9月月考",
+      "token": "东北师附",
+      "school_id": "sch_0c91a077ec",
+      "school_name": "东北师大附中",
+      "province": "吉林省",
+      "city": "长春市",
+      "source_school_id_before": "sch_0c91a077ec"
+    },
+    {
+      "qid": 60,
+      "before": "2024年东北师附高一上学期9月月考",
+      "after": "2024年东北师大附中高一上学期9月月考",
+      "token": "东北师附",
+      "school_id": "sch_0c91a077ec",
+      "school_name": "东北师大附中",
+      "province": "吉林省",
+      "city": "长春市",
+      "source_school_id_before": "sch_0c91a077ec"
+    },
+    {
+      "qid": 61,
+      "before": "2024年东北师附高一上学期9月月考",
+      "after": "2024年东北师大附中高一上学期9月月考",
+      "token": "东北师附",
+      "school_id": "sch_0c91a077ec",
+      "school_name": "东北师大附中",
+      "province": "吉林省",
+      "city": "长春市",
+      "source_school_id_before": "sch_0c91a077ec"
+    },
+    {
+      "qid": 62,
+      "before": "2024年东北师附高一上学期9月月考",
+      "after": "2024年东北师大附中高一上学期9月月考",
+      "token": "东北师附",
+      "school_id": "sch_0c91a077ec",
+      "school_name": "东北师大附中",
+      "province": "吉林省",
+      "city": "长春市",
+      "source_school_id_before": "sch_0c91a077ec"
+    },
+    {
+      "qid": 63,
+      "before": "2024年东北师附高一上学期9月月考",
+      "after": "2024年东北师大附中高一上学期9月月考",
+      "token": "东北师附",
+      "school_id": "sch_0c91a077ec",
+      "school_name": "东北师大附中",
+      "province": "吉林省",
+      "city": "长春市",
+      "source_school_id_before": "sch_0c91a077ec"
+    },
+    {
+      "qid": 64,
+      "before": "2024年东北师附高一上学期9月月考",
+      "after": "2024年东北师大附中高一上学期9月月考",
+      "token": "东北师附",
+      "school_id": "sch_0c91a077ec",
+      "school_name": "东北师大附中",
+      "province": "吉林省",
+      "city": "长春市",
+      "source_school_id_before": "sch_0c91a077ec"
+    },
+    {
+      "qid": 65,
+      "before": "2024年东北师附高一上学期9月月考",
+      "after": "2024年东北师大附中高一上学期9月月考",
+      "token": "东北师附",
+      "school_id": "sch_0c91a077ec",
+      "school_name": "东北师大附中",
+      "province": "吉林省",
+      "city": "长春市",
+      "source_school_id_before": "sch_0c91a077ec"
+    },
+    {
+      "qid": 66,
+      "before": "2024年东北师附高一上学期9月月考",
+      "after": "2024年东北师大附中高一上学期9月月考",
+      "token": "东北师附",
+      "school_id": "sch_0c91a077ec",
+      "school_name": "东北师大附中",
+      "province": "吉林省",
+      "city": "长春市",
+      "source_school_id_before": "sch_0c91a077ec"
+    },
+    {
+      "qid": 67,
+      "before": "2024年东北师附高一上学期9月月考",
+      "after": "2024年东北师大附中高一上学期9月月考",
+      "token": "东北师附",
+      "school_id": "sch_0c91a077ec",
+      "school_name": "东北师大附中",
+      "province": "吉林省",
+      "city": "长春市",
+      "source_school_id_before": "sch_0c91a077ec"
+    },
+    {
+      "qid": 68,
+      "before": "2024年东北师附高一上学期9月月考",
+      "after": "2024年东北师大附中高一上学期9月月考",
+      "token": "东北师附",
+      "school_id": "sch_0c91a077ec",
+      "school_name": "东北师大附中",
+      "province": "吉林省",
+      "city": "长春市",
+      "source_school_id_before": "sch_0c91a077ec"
+    },
+    {
+      "qid": 69,
+      "before": "2024年东北师附高一上学期9月月考",
+      "after": "2024年东北师大附中高一上学期9月月考",
+      "token": "东北师附",
+      "school_id": "sch_0c91a077ec",
+      "school_name": "东北师大附中",
+      "province": "吉林省",
+      "city": "长春市",
+      "source_school_id_before": "sch_0c91a077ec"
+    },
+    {
+      "qid": 70,
+      "before": "2024年东北师附高一上学期9月月考",
+      "after": "2024年东北师大附中高一上学期9月月考",
+      "token": "东北师附",
+      "school_id": "sch_0c91a077ec",
+      "school_name": "东北师大附中",
+      "province": "吉林省",
+      "city": "长春市",
+      "source_school_id_before": "sch_0c91a077ec"
+    },
+    {
+      "qid": 71,
+      "before": "2024年东北师附高一上学期9月月考",
+      "after": "2024年东北师大附中高一上学期9月月考",
+      "token": "东北师附",
+      "school_id": "sch_0c91a077ec",
+      "school_name": "东北师大附中",
+      "province": "吉林省",
+      "city": "长春市",
+      "source_school_id_before": "sch_0c91a077ec"
+    },
+    {
+      "qid": 72,
+      "before": "2024年东北师附高一上学期9月月考",
+      "after": "2024年东北师大附中高一上学期9月月考",
+      "token": "东北师附",
+      "school_id": "sch_0c91a077ec",
+      "school_name": "东北师大附中",
+      "province": "吉林省",
+      "city": "长春市",
+      "source_school_id_before": "sch_0c91a077ec"
+    },
+    {
+      "qid": 96,
+      "before": "2023年哈师大附中10月月考",
+      "after": "2023年哈师附10月月考",
+      "token": "哈师大附中",
+      "school_id": "sch_a76135c1d2",
+      "school_name": "哈师附",
+      "province": "黑龙江省",
+      "city": "哈尔滨市",
+      "source_school_id_before": "sch_a76135c1d2"
+    },
+    {
+      "qid": 97,
+      "before": "2023年哈师大附中高一上学期10月月考",
+      "after": "2023年哈师附高一上学期10月月考",
+      "token": "哈师大附中",
+      "school_id": "sch_a76135c1d2",
+      "school_name": "哈师附",
+      "province": "黑龙江省",
+      "city": "哈尔滨市",
+      "source_school_id_before": "sch_a76135c1d2"
+    },
+    {
+      "qid": 99,
+      "before": "2023年哈师大附中高一上学期10月月考",
+      "after": "2023年哈师附高一上学期10月月考",
+      "token": "哈师大附中",
+      "school_id": "sch_a76135c1d2",
+      "school_name": "哈师附",
+      "province": "黑龙江省",
+      "city": "哈尔滨市",
+      "source_school_id_before": "sch_a76135c1d2"
+    },
+    {
+      "qid": 100,
+      "before": "2023年哈师大附中高一上学期10月月考",
+      "after": "2023年哈师附高一上学期10月月考",
+      "token": "哈师大附中",
+      "school_id": "sch_a76135c1d2",
+      "school_name": "哈师附",
+      "province": "黑龙江省",
+      "city": "哈尔滨市",
+      "source_school_id_before": "sch_a76135c1d2"
+    },
+    {
+      "qid": 101,
+      "before": "2023年哈师大附中高一上学期10月月考",
+      "after": "2023年哈师附高一上学期10月月考",
+      "token": "哈师大附中",
+      "school_id": "sch_a76135c1d2",
+      "school_name": "哈师附",
+      "province": "黑龙江省",
+      "city": "哈尔滨市",
+      "source_school_id_before": "sch_a76135c1d2"
+    },
+    {
+      "qid": 102,
+      "before": "2023年哈师大附中高一上学期10月月考",
+      "after": "2023年哈师附高一上学期10月月考",
+      "token": "哈师大附中",
+      "school_id": "sch_a76135c1d2",
+      "school_name": "哈师附",
+      "province": "黑龙江省",
+      "city": "哈尔滨市",
+      "source_school_id_before": "sch_a76135c1d2"
+    },
+    {
+      "qid": 103,
+      "before": "2023年哈师大附中高一上学期10月月考",
+      "after": "2023年哈师附高一上学期10月月考",
+      "token": "哈师大附中",
+      "school_id": "sch_a76135c1d2",
+      "school_name": "哈师附",
+      "province": "黑龙江省",
+      "city": "哈尔滨市",
+      "source_school_id_before": "sch_a76135c1d2"
+    },
+    {
+      "qid": 104,
+      "before": "2023年哈师大附中高一上学期10月月考",
+      "after": "2023年哈师附高一上学期10月月考",
+      "token": "哈师大附中",
+      "school_id": "sch_a76135c1d2",
+      "school_name": "哈师附",
+      "province": "黑龙江省",
+      "city": "哈尔滨市",
+      "source_school_id_before": "sch_a76135c1d2"
+    },
+    {
+      "qid": 105,
+      "before": "2023年哈师大附中高一上学期10月月考",
+      "after": "2023年哈师附高一上学期10月月考",
+      "token": "哈师大附中",
+      "school_id": "sch_a76135c1d2",
+      "school_name": "哈师附",
+      "province": "黑龙江省",
+      "city": "哈尔滨市",
+      "source_school_id_before": "sch_a76135c1d2"
+    },
+    {
+      "qid": 106,
+      "before": "2023年哈师大附中高一上学期10月月考",
+      "after": "2023年哈师附高一上学期10月月考",
+      "token": "哈师大附中",
+      "school_id": "sch_a76135c1d2",
+      "school_name": "哈师附",
+      "province": "黑龙江省",
+      "city": "哈尔滨市",
+      "source_school_id_before": "sch_a76135c1d2"
+    },
+    {
+      "qid": 107,
+      "before": "2023年哈师大附中高一上学期10月月考",
+      "after": "2023年哈师附高一上学期10月月考",
+      "token": "哈师大附中",
+      "school_id": "sch_a76135c1d2",
+      "school_name": "哈师附",
+      "province": "黑龙江省",
+      "city": "哈尔滨市",
+      "source_school_id_before": "sch_a76135c1d2"
+    },
+    {
+      "qid": 108,
+      "before": "2023年哈师大附中高一上学期10月月考",
+      "after": "2023年哈师附高一上学期10月月考",
+      "token": "哈师大附中",
+      "school_id": "sch_a76135c1d2",
+      "school_name": "哈师附",
+      "province": "黑龙江省",
+      "city": "哈尔滨市",
+      "source_school_id_before": "sch_a76135c1d2"
+    },
+    {
+      "qid": 109,
+      "before": "2023年哈师大附中高一上学期10月月考",
+      "after": "2023年哈师附高一上学期10月月考",
+      "token": "哈师大附中",
+      "school_id": "sch_a76135c1d2",
+      "school_name": "哈师附",
+      "province": "黑龙江省",
+      "city": "哈尔滨市",
+      "source_school_id_before": "sch_a76135c1d2"
+    },
+    {
+      "qid": 110,
+      "before": "2023年哈师大附中高一上学期10月月考",
+      "after": "2023年哈师附高一上学期10月月考",
+      "token": "哈师大附中",
+      "school_id": "sch_a76135c1d2",
+      "school_name": "哈师附",
+      "province": "黑龙江省",
+      "city": "哈尔滨市",
+      "source_school_id_before": "sch_a76135c1d2"
+    },
+    {
+      "qid": 111,
+      "before": "2023年哈师大附中高一上学期10月月考",
+      "after": "2023年哈师附高一上学期10月月考",
+      "token": "哈师大附中",
+      "school_id": "sch_a76135c1d2",
+      "school_name": "哈师附",
+      "province": "黑龙江省",
+      "city": "哈尔滨市",
+      "source_school_id_before": "sch_a76135c1d2"
+    },
+    {
+      "qid": 112,
+      "before": "2023年哈师大附中高一上学期10月月考",
+      "after": "2023年哈师附高一上学期10月月考",
+      "token": "哈师大附中",
+      "school_id": "sch_a76135c1d2",
+      "school_name": "哈师附",
+      "province": "黑龙江省",
+      "city": "哈尔滨市",
+      "source_school_id_before": "sch_a76135c1d2"
+    },
+    {
+      "qid": 113,
+      "before": "2023年哈师大附中高一上学期10月月考",
+      "after": "2023年哈师附高一上学期10月月考",
+      "token": "哈师大附中",
+      "school_id": "sch_a76135c1d2",
+      "school_name": "哈师附",
+      "province": "黑龙江省",
+      "city": "哈尔滨市",
+      "source_school_id_before": "sch_a76135c1d2"
+    },
+    {
+      "qid": 114,
+      "before": "2023年哈师大附中高一上学期10月月考",
+      "after": "2023年哈师附高一上学期10月月考",
+      "token": "哈师大附中",
+      "school_id": "sch_a76135c1d2",
+      "school_name": "哈师附",
+      "province": "黑龙江省",
+      "city": "哈尔滨市",
+      "source_school_id_before": "sch_a76135c1d2"
+    },
+    {
+      "qid": 115,
+      "before": "2023年哈师大附中高一上学期10月月考",
+      "after": "2023年哈师附高一上学期10月月考",
+      "token": "哈师大附中",
+      "school_id": "sch_a76135c1d2",
+      "school_name": "哈师附",
+      "province": "黑龙江省",
+      "city": "哈尔滨市",
+      "source_school_id_before": "sch_a76135c1d2"
+    },
+    {
+      "qid": 116,
+      "before": "2023年哈师大附中高一上学期10月月考",
+      "after": "2023年哈师附高一上学期10月月考",
+      "token": "哈师大附中",
+      "school_id": "sch_a76135c1d2",
+      "school_name": "哈师附",
+      "province": "黑龙江省",
+      "city": "哈尔滨市",
+      "source_school_id_before": "sch_a76135c1d2"
+    },
+    {
+      "qid": 118,
+      "before": "2024年哈师大附中高一上学期10月月考",
+      "after": "2024年哈师附高一上学期10月月考",
+      "token": "哈师大附中",
+      "school_id": "sch_a76135c1d2",
+      "school_name": "哈师附",
+      "province": "黑龙江省",
+      "city": "哈尔滨市",
+      "source_school_id_before": "sch_a76135c1d2"
+    },
+    {
+      "qid": 119,
+      "before": "2024年哈师大附中高一上学期10月月考",
+      "after": "2024年哈师附高一上学期10月月考",
+      "token": "哈师大附中",
+      "school_id": "sch_a76135c1d2",
+      "school_name": "哈师附",
+      "province": "黑龙江省",
+      "city": "哈尔滨市",
+      "source_school_id_before": "sch_a76135c1d2"
+    },
+    {
+      "qid": 120,
+      "before": "2024年哈师大附中高一上学期10月月考",
+      "after": "2024年哈师附高一上学期10月月考",
+      "token": "哈师大附中",
+      "school_id": "sch_a76135c1d2",
+      "school_name": "哈师附",
+      "province": "黑龙江省",
+      "city": "哈尔滨市",
+      "source_school_id_before": "sch_a76135c1d2"
+    },
+    {
+      "qid": 122,
+      "before": "2024年哈师大附中高一上学期10月月考",
+      "after": "2024年哈师附高一上学期10月月考",
+      "token": "哈师大附中",
+      "school_id": "sch_a76135c1d2",
+      "school_name": "哈师附",
+      "province": "黑龙江省",
+      "city": "哈尔滨市",
+      "source_school_id_before": "sch_a76135c1d2"
+    },
+    {
+      "qid": 123,
+      "before": "2024年哈师大附中高一上学期10月月考",
+      "after": "2024年哈师附高一上学期10月月考",
+      "token": "哈师大附中",
+      "school_id": "sch_a76135c1d2",
+      "school_name": "哈师附",
+      "province": "黑龙江省",
+      "city": "哈尔滨市",
+      "source_school_id_before": "sch_a76135c1d2"
+    },
+    {
+      "qid": 125,
+      "before": "2024年哈师大附中高一上学期10月月考",
+      "after": "2024年哈师附高一上学期10月月考",
+      "token": "哈师大附中",
+      "school_id": "sch_a76135c1d2",
+      "school_name": "哈师附",
+      "province": "黑龙江省",
+      "city": "哈尔滨市",
+      "source_school_id_before": "sch_a76135c1d2"
+    },
+    {
+      "qid": 126,
+      "before": "2024年哈师大附中高一上学期10月月考",
+      "after": "2024年哈师附高一上学期10月月考",
+      "token": "哈师大附中",
+      "school_id": "sch_a76135c1d2",
+      "school_name": "哈师附",
+      "province": "黑龙江省",
+      "city": "哈尔滨市",
+      "source_school_id_before": "sch_a76135c1d2"
+    },
+    {
+      "qid": 127,
+      "before": "2024年哈师大附中高一上学期10月月考",
+      "after": "2024年哈师附高一上学期10月月考",
+      "token": "哈师大附中",
+      "school_id": "sch_a76135c1d2",
+      "school_name": "哈师附",
+      "province": "黑龙江省",
+      "city": "哈尔滨市",
+      "source_school_id_before": "sch_a76135c1d2"
+    },
+    {
+      "qid": 128,
+      "before": "2024年哈师大附中高一上学期10月月考",
+      "after": "2024年哈师附高一上学期10月月考",
+      "token": "哈师大附中",
+      "school_id": "sch_a76135c1d2",
+      "school_name": "哈师附",
+      "province": "黑龙江省",
+      "city": "哈尔滨市",
+      "source_school_id_before": "sch_a76135c1d2"
+    },
+    {
+      "qid": 129,
+      "before": "2024年哈师大附中高一上学期10月月考",
+      "after": "2024年哈师附高一上学期10月月考",
+      "token": "哈师大附中",
+      "school_id": "sch_a76135c1d2",
+      "school_name": "哈师附",
+      "province": "黑龙江省",
+      "city": "哈尔滨市",
+      "source_school_id_before": "sch_a76135c1d2"
+    },
+    {
+      "qid": 130,
+      "before": "2024年哈师大附中高一上学期10月月考",
+      "after": "2024年哈师附高一上学期10月月考",
+      "token": "哈师大附中",
+      "school_id": "sch_a76135c1d2",
+      "school_name": "哈师附",
+      "province": "黑龙江省",
+      "city": "哈尔滨市",
+      "source_school_id_before": "sch_a76135c1d2"
+    },
+    {
+      "qid": 131,
+      "before": "2024年哈师大附中高一上学期10月月考",
+      "after": "2024年哈师附高一上学期10月月考",
+      "token": "哈师大附中",
+      "school_id": "sch_a76135c1d2",
+      "school_name": "哈师附",
+      "province": "黑龙江省",
+      "city": "哈尔滨市",
+      "source_school_id_before": "sch_a76135c1d2"
+    },
+    {
+      "qid": 132,
+      "before": "2024年哈师大附中高一上学期10月月考",
+      "after": "2024年哈师附高一上学期10月月考",
+      "token": "哈师大附中",
+      "school_id": "sch_a76135c1d2",
+      "school_name": "哈师附",
+      "province": "黑龙江省",
+      "city": "哈尔滨市",
+      "source_school_id_before": "sch_a76135c1d2"
+    },
+    {
+      "qid": 133,
+      "before": "2024年哈师大附中高一上学期10月月考",
+      "after": "2024年哈师附高一上学期10月月考",
+      "token": "哈师大附中",
+      "school_id": "sch_a76135c1d2",
+      "school_name": "哈师附",
+      "province": "黑龙江省",
+      "city": "哈尔滨市",
+      "source_school_id_before": "sch_a76135c1d2"
+    },
+    {
+      "qid": 134,
+      "before": "2024年哈师大附中高一上学期10月月考",
+      "after": "2024年哈师附高一上学期10月月考",
+      "token": "哈师大附中",
+      "school_id": "sch_a76135c1d2",
+      "school_name": "哈师附",
+      "province": "黑龙江省",
+      "city": "哈尔滨市",
+      "source_school_id_before": "sch_a76135c1d2"
+    },
+    {
+      "qid": 135,
+      "before": "2024年哈师大附中高一上学期10月月考",
+      "after": "2024年哈师附高一上学期10月月考",
+      "token": "哈师大附中",
+      "school_id": "sch_a76135c1d2",
+      "school_name": "哈师附",
+      "province": "黑龙江省",
+      "city": "哈尔滨市",
+      "source_school_id_before": "sch_a76135c1d2"
+    },
+    {
+      "qid": 136,
+      "before": "2024年哈师大附中高一上学期10月月考",
+      "after": "2024年哈师附高一上学期10月月考",
+      "token": "哈师大附中",
+      "school_id": "sch_a76135c1d2",
+      "school_name": "哈师附",
+      "province": "黑龙江省",
+      "city": "哈尔滨市",
+      "source_school_id_before": "sch_a76135c1d2"
+    },
+    {
+      "qid": 137,
+      "before": "2024年哈师大附中高一上学期10月月考",
+      "after": "2024年哈师附高一上学期10月月考",
+      "token": "哈师大附中",
+      "school_id": "sch_a76135c1d2",
+      "school_name": "哈师附",
+      "province": "黑龙江省",
+      "city": "哈尔滨市",
+      "source_school_id_before": "sch_a76135c1d2"
+    },
+    {
+      "qid": 138,
+      "before": "2024年哈师大附中高一上学期10月月考",
+      "after": "2024年哈师附高一上学期10月月考",
+      "token": "哈师大附中",
+      "school_id": "sch_a76135c1d2",
+      "school_name": "哈师附",
+      "province": "黑龙江省",
+      "city": "哈尔滨市",
+      "source_school_id_before": "sch_a76135c1d2"
+    },
+    {
+      "qid": 139,
+      "before": "2025年双鸭山一中高一上学期9月月考",
+      "after": "2025年双山一中高一上学期9月月考",
+      "token": "双鸭山一中",
+      "school_id": "sch_a6d4cafd78",
+      "school_name": "双山一中",
+      "province": "黑龙江省",
+      "city": "双鸭山市",
+      "source_school_id_before": "sch_a6d4cafd78"
+    },
+    {
+      "qid": 140,
+      "before": "2025年双鸭山一中高一上学期9月月考",
+      "after": "2025年双山一中高一上学期9月月考",
+      "token": "双鸭山一中",
+      "school_id": "sch_a6d4cafd78",
+      "school_name": "双山一中",
+      "province": "黑龙江省",
+      "city": "双鸭山市",
+      "source_school_id_before": "sch_a6d4cafd78"
+    },
+    {
+      "qid": 141,
+      "before": "2025年双鸭山一中高一上学期9月月考",
+      "after": "2025年双山一中高一上学期9月月考",
+      "token": "双鸭山一中",
+      "school_id": "sch_a6d4cafd78",
+      "school_name": "双山一中",
+      "province": "黑龙江省",
+      "city": "双鸭山市",
+      "source_school_id_before": "sch_a6d4cafd78"
+    },
+    {
+      "qid": 142,
+      "before": "2025年双鸭山一中高一上学期9月月考",
+      "after": "2025年双山一中高一上学期9月月考",
+      "token": "双鸭山一中",
+      "school_id": "sch_a6d4cafd78",
+      "school_name": "双山一中",
+      "province": "黑龙江省",
+      "city": "双鸭山市",
+      "source_school_id_before": "sch_a6d4cafd78"
+    },
+    {
+      "qid": 143,
+      "before": "2025年双鸭山一中高一上学期9月月考",
+      "after": "2025年双山一中高一上学期9月月考",
+      "token": "双鸭山一中",
+      "school_id": "sch_a6d4cafd78",
+      "school_name": "双山一中",
+      "province": "黑龙江省",
+      "city": "双鸭山市",
+      "source_school_id_before": "sch_a6d4cafd78"
+    },
+    {
+      "qid": 144,
+      "before": "2025年双鸭山一中高一上学期9月月考",
+      "after": "2025年双山一中高一上学期9月月考",
+      "token": "双鸭山一中",
+      "school_id": "sch_a6d4cafd78",
+      "school_name": "双山一中",
+      "province": "黑龙江省",
+      "city": "双鸭山市",
+      "source_school_id_before": "sch_a6d4cafd78"
+    },
+    {
+      "qid": 145,
+      "before": "2025年双鸭山一中高一上学期9月月考",
+      "after": "2025年双山一中高一上学期9月月考",
+      "token": "双鸭山一中",
+      "school_id": "sch_a6d4cafd78",
+      "school_name": "双山一中",
+      "province": "黑龙江省",
+      "city": "双鸭山市",
+      "source_school_id_before": "sch_a6d4cafd78"
+    },
+    {
+      "qid": 146,
+      "before": "2025年双鸭山一中高一上学期9月月考",
+      "after": "2025年双山一中高一上学期9月月考",
+      "token": "双鸭山一中",
+      "school_id": "sch_a6d4cafd78",
+      "school_name": "双山一中",
+      "province": "黑龙江省",
+      "city": "双鸭山市",
+      "source_school_id_before": "sch_a6d4cafd78"
+    },
+    {
+      "qid": 147,
+      "before": "2025年双鸭山一中高一上学期9月月考",
+      "after": "2025年双山一中高一上学期9月月考",
+      "token": "双鸭山一中",
+      "school_id": "sch_a6d4cafd78",
+      "school_name": "双山一中",
+      "province": "黑龙江省",
+      "city": "双鸭山市",
+      "source_school_id_before": "sch_a6d4cafd78"
+    },
+    {
+      "qid": 148,
+      "before": "2025年双鸭山一中高一上学期9月月考",
+      "after": "2025年双山一中高一上学期9月月考",
+      "token": "双鸭山一中",
+      "school_id": "sch_a6d4cafd78",
+      "school_name": "双山一中",
+      "province": "黑龙江省",
+      "city": "双鸭山市",
+      "source_school_id_before": "sch_a6d4cafd78"
+    },
+    {
+      "qid": 149,
+      "before": "2025年双鸭山一中高一上学期9月月考",
+      "after": "2025年双山一中高一上学期9月月考",
+      "token": "双鸭山一中",
+      "school_id": "sch_a6d4cafd78",
+      "school_name": "双山一中",
+      "province": "黑龙江省",
+      "city": "双鸭山市",
+      "source_school_id_before": "sch_a6d4cafd78"
+    },
+    {
+      "qid": 150,
+      "before": "2025年双鸭山一中高一上学期9月月考",
+      "after": "2025年双山一中高一上学期9月月考",
+      "token": "双鸭山一中",
+      "school_id": "sch_a6d4cafd78",
+      "school_name": "双山一中",
+      "province": "黑龙江省",
+      "city": "双鸭山市",
+      "source_school_id_before": "sch_a6d4cafd78"
+    },
+    {
+      "qid": 151,
+      "before": "2025年双鸭山一中高一上学期9月月考",
+      "after": "2025年双山一中高一上学期9月月考",
+      "token": "双鸭山一中",
+      "school_id": "sch_a6d4cafd78",
+      "school_name": "双山一中",
+      "province": "黑龙江省",
+      "city": "双鸭山市",
+      "source_school_id_before": "sch_a6d4cafd78"
+    },
+    {
+      "qid": 152,
+      "before": "2025年双鸭山一中高一上学期9月月考",
+      "after": "2025年双山一中高一上学期9月月考",
+      "token": "双鸭山一中",
+      "school_id": "sch_a6d4cafd78",
+      "school_name": "双山一中",
+      "province": "黑龙江省",
+      "city": "双鸭山市",
+      "source_school_id_before": "sch_a6d4cafd78"
+    },
+    {
+      "qid": 153,
+      "before": "2025年双鸭山一中高一上学期9月月考",
+      "after": "2025年双山一中高一上学期9月月考",
+      "token": "双鸭山一中",
+      "school_id": "sch_a6d4cafd78",
+      "school_name": "双山一中",
+      "province": "黑龙江省",
+      "city": "双鸭山市",
+      "source_school_id_before": "sch_a6d4cafd78"
+    },
+    {
+      "qid": 154,
+      "before": "2025年双鸭山一中高一上学期9月月考",
+      "after": "2025年双山一中高一上学期9月月考",
+      "token": "双鸭山一中",
+      "school_id": "sch_a6d4cafd78",
+      "school_name": "双山一中",
+      "province": "黑龙江省",
+      "city": "双鸭山市",
+      "source_school_id_before": "sch_a6d4cafd78"
+    },
+    {
+      "qid": 155,
+      "before": "2025年双鸭山一中高一上学期9月月考",
+      "after": "2025年双山一中高一上学期9月月考",
+      "token": "双鸭山一中",
+      "school_id": "sch_a6d4cafd78",
+      "school_name": "双山一中",
+      "province": "黑龙江省",
+      "city": "双鸭山市",
+      "source_school_id_before": "sch_a6d4cafd78"
+    },
+    {
+      "qid": 156,
+      "before": "2025年双鸭山一中高一上学期9月月考",
+      "after": "2025年双山一中高一上学期9月月考",
+      "token": "双鸭山一中",
+      "school_id": "sch_a6d4cafd78",
+      "school_name": "双山一中",
+      "province": "黑龙江省",
+      "city": "双鸭山市",
+      "source_school_id_before": "sch_a6d4cafd78"
+    },
+    {
+      "qid": 157,
+      "before": "2025年双鸭山一中高一上学期9月月考",
+      "after": "2025年双山一中高一上学期9月月考",
+      "token": "双鸭山一中",
+      "school_id": "sch_a6d4cafd78",
+      "school_name": "双山一中",
+      "province": "黑龙江省",
+      "city": "双鸭山市",
+      "source_school_id_before": "sch_a6d4cafd78"
+    },
+    {
+      "qid": 158,
+      "before": "2024年长春外国语高一上学期9月月考",
+      "after": "2024年长春外国语学校高一上学期9月月考",
+      "token": "长春外国语",
+      "school_id": "sch_57d691d10f",
+      "school_name": "长春外国语学校",
+      "province": "吉林省",
+      "city": "长春市",
+      "source_school_id_before": "sch_57d691d10f"
+    },
+    {
+      "qid": 159,
+      "before": "2024年长春外国语高一上学期9月月考",
+      "after": "2024年长春外国语学校高一上学期9月月考",
+      "token": "长春外国语",
+      "school_id": "sch_57d691d10f",
+      "school_name": "长春外国语学校",
+      "province": "吉林省",
+      "city": "长春市",
+      "source_school_id_before": "sch_57d691d10f"
+    },
+    {
+      "qid": 160,
+      "before": "2024年长春外国语高一上学期9月月考",
+      "after": "2024年长春外国语学校高一上学期9月月考",
+      "token": "长春外国语",
+      "school_id": "sch_57d691d10f",
+      "school_name": "长春外国语学校",
+      "province": "吉林省",
+      "city": "长春市",
+      "source_school_id_before": "sch_57d691d10f"
+    },
+    {
+      "qid": 161,
+      "before": "2024年长春外国语高一上学期9月月考",
+      "after": "2024年长春外国语学校高一上学期9月月考",
+      "token": "长春外国语",
+      "school_id": "sch_57d691d10f",
+      "school_name": "长春外国语学校",
+      "province": "吉林省",
+      "city": "长春市",
+      "source_school_id_before": "sch_57d691d10f"
+    },
+    {
+      "qid": 162,
+      "before": "2024年长春外国语高一上学期9月月考",
+      "after": "2024年长春外国语学校高一上学期9月月考",
+      "token": "长春外国语",
+      "school_id": "sch_57d691d10f",
+      "school_name": "长春外国语学校",
+      "province": "吉林省",
+      "city": "长春市",
+      "source_school_id_before": "sch_57d691d10f"
+    },
+    {
+      "qid": 163,
+      "before": "2024年长春外国语高一上学期9月月考",
+      "after": "2024年长春外国语学校高一上学期9月月考",
+      "token": "长春外国语",
+      "school_id": "sch_57d691d10f",
+      "school_name": "长春外国语学校",
+      "province": "吉林省",
+      "city": "长春市",
+      "source_school_id_before": "sch_57d691d10f"
+    },
+    {
+      "qid": 164,
+      "before": "2024年长春外国语高一上学期9月月考",
+      "after": "2024年长春外国语学校高一上学期9月月考",
+      "token": "长春外国语",
+      "school_id": "sch_57d691d10f",
+      "school_name": "长春外国语学校",
+      "province": "吉林省",
+      "city": "长春市",
+      "source_school_id_before": "sch_57d691d10f"
+    },
+    {
+      "qid": 165,
+      "before": "2024年长春外国语高一上学期9月月考",
+      "after": "2024年长春外国语学校高一上学期9月月考",
+      "token": "长春外国语",
+      "school_id": "sch_57d691d10f",
+      "school_name": "长春外国语学校",
+      "province": "吉林省",
+      "city": "长春市",
+      "source_school_id_before": "sch_57d691d10f"
+    },
+    {
+      "qid": 166,
+      "before": "2024年长春外国语高一上学期9月月考",
+      "after": "2024年长春外国语学校高一上学期9月月考",
+      "token": "长春外国语",
+      "school_id": "sch_57d691d10f",
+      "school_name": "长春外国语学校",
+      "province": "吉林省",
+      "city": "长春市",
+      "source_school_id_before": "sch_57d691d10f"
+    },
+    {
+      "qid": 167,
+      "before": "2024年长春外国语高一上学期9月月考",
+      "after": "2024年长春外国语学校高一上学期9月月考",
+      "token": "长春外国语",
+      "school_id": "sch_57d691d10f",
+      "school_name": "长春外国语学校",
+      "province": "吉林省",
+      "city": "长春市",
+      "source_school_id_before": "sch_57d691d10f"
+    },
+    {
+      "qid": 168,
+      "before": "2024年长春外国语高一上学期9月月考",
+      "after": "2024年长春外国语学校高一上学期9月月考",
+      "token": "长春外国语",
+      "school_id": "sch_57d691d10f",
+      "school_name": "长春外国语学校",
+      "province": "吉林省",
+      "city": "长春市",
+      "source_school_id_before": "sch_57d691d10f"
+    },
+    {
+      "qid": 169,
+      "before": "2024年长春外国语高一上学期9月月考",
+      "after": "2024年长春外国语学校高一上学期9月月考",
+      "token": "长春外国语",
+      "school_id": "sch_57d691d10f",
+      "school_name": "长春外国语学校",
+      "province": "吉林省",
+      "city": "长春市",
+      "source_school_id_before": "sch_57d691d10f"
+    },
+    {
+      "qid": 170,
+      "before": "2024年长春外国语高一上学期9月月考",
+      "after": "2024年长春外国语学校高一上学期9月月考",
+      "token": "长春外国语",
+      "school_id": "sch_57d691d10f",
+      "school_name": "长春外国语学校",
+      "province": "吉林省",
+      "city": "长春市",
+      "source_school_id_before": "sch_57d691d10f"
+    },
+    {
+      "qid": 171,
+      "before": "2024年长春外国语高一上学期9月月考",
+      "after": "2024年长春外国语学校高一上学期9月月考",
+      "token": "长春外国语",
+      "school_id": "sch_57d691d10f",
+      "school_name": "长春外国语学校",
+      "province": "吉林省",
+      "city": "长春市",
+      "source_school_id_before": "sch_57d691d10f"
+    },
+    {
+      "qid": 172,
+      "before": "2024年长春外国语高一上学期9月月考",
+      "after": "2024年长春外国语学校高一上学期9月月考",
+      "token": "长春外国语",
+      "school_id": "sch_57d691d10f",
+      "school_name": "长春外国语学校",
+      "province": "吉林省",
+      "city": "长春市",
+      "source_school_id_before": "sch_57d691d10f"
+    },
+    {
+      "qid": 173,
+      "before": "2024年长春外国语高一上学期9月月考",
+      "after": "2024年长春外国语学校高一上学期9月月考",
+      "token": "长春外国语",
+      "school_id": "sch_57d691d10f",
+      "school_name": "长春外国语学校",
+      "province": "吉林省",
+      "city": "长春市",
+      "source_school_id_before": "sch_57d691d10f"
+    },
+    {
+      "qid": 174,
+      "before": "2024年长春外国语高一上学期9月月考",
+      "after": "2024年长春外国语学校高一上学期9月月考",
+      "token": "长春外国语",
+      "school_id": "sch_57d691d10f",
+      "school_name": "长春外国语学校",
+      "province": "吉林省",
+      "city": "长春市",
+      "source_school_id_before": "sch_57d691d10f"
+    },
+    {
+      "qid": 175,
+      "before": "2024年长春外国语高一上学期9月月考",
+      "after": "2024年长春外国语学校高一上学期9月月考",
+      "token": "长春外国语",
+      "school_id": "sch_57d691d10f",
+      "school_name": "长春外国语学校",
+      "province": "吉林省",
+      "city": "长春市",
+      "source_school_id_before": "sch_57d691d10f"
+    },
+    {
+      "qid": 176,
+      "before": "2024年长春外国语高一上学期9月月考",
+      "after": "2024年长春外国语学校高一上学期9月月考",
+      "token": "长春外国语",
+      "school_id": "sch_57d691d10f",
+      "school_name": "长春外国语学校",
+      "province": "吉林省",
+      "city": "长春市",
+      "source_school_id_before": "sch_57d691d10f"
+    },
+    {
+      "qid": 409,
+      "before": "2022年哈师大附中高一上学期10月月考",
+      "after": "2022年哈师附高一上学期10月月考",
+      "token": "哈师大附中",
+      "school_id": "sch_a76135c1d2",
+      "school_name": "哈师附",
+      "province": "黑龙江省",
+      "city": "哈尔滨市",
+      "source_school_id_before": "sch_a76135c1d2"
+    },
+    {
+      "qid": 410,
+      "before": "2022年哈师大附中高一上学期10月月考",
+      "after": "2022年哈师附高一上学期10月月考",
+      "token": "哈师大附中",
+      "school_id": "sch_a76135c1d2",
+      "school_name": "哈师附",
+      "province": "黑龙江省",
+      "city": "哈尔滨市",
+      "source_school_id_before": "sch_a76135c1d2"
+    },
+    {
+      "qid": 411,
+      "before": "2022年哈师大附中高一上学期10月月考",
+      "after": "2022年哈师附高一上学期10月月考",
+      "token": "哈师大附中",
+      "school_id": "sch_a76135c1d2",
+      "school_name": "哈师附",
+      "province": "黑龙江省",
+      "city": "哈尔滨市",
+      "source_school_id_before": "sch_a76135c1d2"
+    },
+    {
+      "qid": 412,
+      "before": "2022年哈师大附中高一上学期10月月考",
+      "after": "2022年哈师附高一上学期10月月考",
+      "token": "哈师大附中",
+      "school_id": "sch_a76135c1d2",
+      "school_name": "哈师附",
+      "province": "黑龙江省",
+      "city": "哈尔滨市",
+      "source_school_id_before": "sch_a76135c1d2"
+    },
+    {
+      "qid": 413,
+      "before": "2022年哈师大附中高一上学期10月月考",
+      "after": "2022年哈师附高一上学期10月月考",
+      "token": "哈师大附中",
+      "school_id": "sch_a76135c1d2",
+      "school_name": "哈师附",
+      "province": "黑龙江省",
+      "city": "哈尔滨市",
+      "source_school_id_before": "sch_a76135c1d2"
+    },
+    {
+      "qid": 414,
+      "before": "2022年哈师大附中高一上学期10月月考",
+      "after": "2022年哈师附高一上学期10月月考",
+      "token": "哈师大附中",
+      "school_id": "sch_a76135c1d2",
+      "school_name": "哈师附",
+      "province": "黑龙江省",
+      "city": "哈尔滨市",
+      "source_school_id_before": "sch_a76135c1d2"
+    },
+    {
+      "qid": 415,
+      "before": "2022年哈师大附中高一上学期10月月考",
+      "after": "2022年哈师附高一上学期10月月考",
+      "token": "哈师大附中",
+      "school_id": "sch_a76135c1d2",
+      "school_name": "哈师附",
+      "province": "黑龙江省",
+      "city": "哈尔滨市",
+      "source_school_id_before": "sch_a76135c1d2"
+    },
+    {
+      "qid": 416,
+      "before": "2022年哈师大附中高一上学期10月月考",
+      "after": "2022年哈师附高一上学期10月月考",
+      "token": "哈师大附中",
+      "school_id": "sch_a76135c1d2",
+      "school_name": "哈师附",
+      "province": "黑龙江省",
+      "city": "哈尔滨市",
+      "source_school_id_before": "sch_a76135c1d2"
+    },
+    {
+      "qid": 417,
+      "before": "2022年哈师大附中高一上学期10月月考",
+      "after": "2022年哈师附高一上学期10月月考",
+      "token": "哈师大附中",
+      "school_id": "sch_a76135c1d2",
+      "school_name": "哈师附",
+      "province": "黑龙江省",
+      "city": "哈尔滨市",
+      "source_school_id_before": "sch_a76135c1d2"
+    },
+    {
+      "qid": 418,
+      "before": "2022年哈师大附中高一上学期10月月考",
+      "after": "2022年哈师附高一上学期10月月考",
+      "token": "哈师大附中",
+      "school_id": "sch_a76135c1d2",
+      "school_name": "哈师附",
+      "province": "黑龙江省",
+      "city": "哈尔滨市",
+      "source_school_id_before": "sch_a76135c1d2"
+    },
+    {
+      "qid": 419,
+      "before": "2022年哈师大附中高一上学期10月月考",
+      "after": "2022年哈师附高一上学期10月月考",
+      "token": "哈师大附中",
+      "school_id": "sch_a76135c1d2",
+      "school_name": "哈师附",
+      "province": "黑龙江省",
+      "city": "哈尔滨市",
+      "source_school_id_before": "sch_a76135c1d2"
+    },
+    {
+      "qid": 420,
+      "before": "2022年哈师大附中高一上学期10月月考",
+      "after": "2022年哈师附高一上学期10月月考",
+      "token": "哈师大附中",
+      "school_id": "sch_a76135c1d2",
+      "school_name": "哈师附",
+      "province": "黑龙江省",
+      "city": "哈尔滨市",
+      "source_school_id_before": "sch_a76135c1d2"
+    },
+    {
+      "qid": 421,
+      "before": "2022年哈师大附中高一上学期10月月考",
+      "after": "2022年哈师附高一上学期10月月考",
+      "token": "哈师大附中",
+      "school_id": "sch_a76135c1d2",
+      "school_name": "哈师附",
+      "province": "黑龙江省",
+      "city": "哈尔滨市",
+      "source_school_id_before": "sch_a76135c1d2"
+    },
+    {
+      "qid": 422,
+      "before": "2022年哈师大附中高一上学期10月月考",
+      "after": "2022年哈师附高一上学期10月月考",
+      "token": "哈师大附中",
+      "school_id": "sch_a76135c1d2",
+      "school_name": "哈师附",
+      "province": "黑龙江省",
+      "city": "哈尔滨市",
+      "source_school_id_before": "sch_a76135c1d2"
+    },
+    {
+      "qid": 423,
+      "before": "2022年哈师大附中高一上学期10月月考",
+      "after": "2022年哈师附高一上学期10月月考",
+      "token": "哈师大附中",
+      "school_id": "sch_a76135c1d2",
+      "school_name": "哈师附",
+      "province": "黑龙江省",
+      "city": "哈尔滨市",
+      "source_school_id_before": "sch_a76135c1d2"
+    },
+    {
+      "qid": 424,
+      "before": "2022年哈师大附中高一上学期10月月考",
+      "after": "2022年哈师附高一上学期10月月考",
+      "token": "哈师大附中",
+      "school_id": "sch_a76135c1d2",
+      "school_name": "哈师附",
+      "province": "黑龙江省",
+      "city": "哈尔滨市",
+      "source_school_id_before": "sch_a76135c1d2"
+    },
+    {
+      "qid": 425,
+      "before": "2022年哈师大附中高一上学期10月月考",
+      "after": "2022年哈师附高一上学期10月月考",
+      "token": "哈师大附中",
+      "school_id": "sch_a76135c1d2",
+      "school_name": "哈师附",
+      "province": "黑龙江省",
+      "city": "哈尔滨市",
+      "source_school_id_before": "sch_a76135c1d2"
+    },
+    {
+      "qid": 426,
+      "before": "2022年哈师大附中高一上学期10月月考",
+      "after": "2022年哈师附高一上学期10月月考",
+      "token": "哈师大附中",
+      "school_id": "sch_a76135c1d2",
+      "school_name": "哈师附",
+      "province": "黑龙江省",
+      "city": "哈尔滨市",
+      "source_school_id_before": "sch_a76135c1d2"
+    },
+    {
+      "qid": 427,
+      "before": "2022年哈师大附中高一上学期10月月考",
+      "after": "2022年哈师附高一上学期10月月考",
+      "token": "哈师大附中",
+      "school_id": "sch_a76135c1d2",
+      "school_name": "哈师附",
+      "province": "黑龙江省",
+      "city": "哈尔滨市",
+      "source_school_id_before": "sch_a76135c1d2"
+    },
+    {
+      "qid": 428,
+      "before": "2022年哈师大附中高一上学期10月月考",
+      "after": "2022年哈师附高一上学期10月月考",
+      "token": "哈师大附中",
+      "school_id": "sch_a76135c1d2",
+      "school_name": "哈师附",
+      "province": "黑龙江省",
+      "city": "哈尔滨市",
+      "source_school_id_before": "sch_a76135c1d2"
+    },
+    {
+      "qid": 429,
+      "before": "2022年哈师大附中高一上学期10月月考",
+      "after": "2022年哈师附高一上学期10月月考",
+      "token": "哈师大附中",
+      "school_id": "sch_a76135c1d2",
+      "school_name": "哈师附",
+      "province": "黑龙江省",
+      "city": "哈尔滨市",
+      "source_school_id_before": "sch_a76135c1d2"
+    },
+    {
+      "qid": 431,
+      "before": "2023年哈师大附中高一上学期10月月考",
+      "after": "2023年哈师附高一上学期10月月考",
+      "token": "哈师大附中",
+      "school_id": "sch_a76135c1d2",
+      "school_name": "哈师附",
+      "province": "黑龙江省",
+      "city": "哈尔滨市",
+      "source_school_id_before": "sch_a76135c1d2"
+    },
+    {
+      "qid": 432,
+      "before": "2023年哈师大附中高一上学期10月月考",
+      "after": "2023年哈师附高一上学期10月月考",
+      "token": "哈师大附中",
+      "school_id": "sch_a76135c1d2",
+      "school_name": "哈师附",
+      "province": "黑龙江省",
+      "city": "哈尔滨市",
+      "source_school_id_before": "sch_a76135c1d2"
+    },
+    {
+      "qid": 438,
+      "before": "2023年哈师大附中高一上学期10月月考",
+      "after": "2023年哈师附高一上学期10月月考",
+      "token": "哈师大附中",
+      "school_id": "sch_a76135c1d2",
+      "school_name": "哈师附",
+      "province": "黑龙江省",
+      "city": "哈尔滨市",
+      "source_school_id_before": "sch_a76135c1d2"
+    },
+    {
+      "qid": 439,
+      "before": "2023年哈师大附中高一上学期10月月考",
+      "after": "2023年哈师附高一上学期10月月考",
+      "token": "哈师大附中",
+      "school_id": "sch_a76135c1d2",
+      "school_name": "哈师附",
+      "province": "黑龙江省",
+      "city": "哈尔滨市",
+      "source_school_id_before": "sch_a76135c1d2"
+    },
+    {
+      "qid": 441,
+      "before": "2023年哈师大附中高一上学期10月月考",
+      "after": "2023年哈师附高一上学期10月月考",
+      "token": "哈师大附中",
+      "school_id": "sch_a76135c1d2",
+      "school_name": "哈师附",
+      "province": "黑龙江省",
+      "city": "哈尔滨市",
+      "source_school_id_before": "sch_a76135c1d2"
+    },
+    {
+      "qid": 442,
+      "before": "2023年哈师大附中高一上学期10月月考",
+      "after": "2023年哈师附高一上学期10月月考",
+      "token": "哈师大附中",
+      "school_id": "sch_a76135c1d2",
+      "school_name": "哈师附",
+      "province": "黑龙江省",
+      "city": "哈尔滨市",
+      "source_school_id_before": "sch_a76135c1d2"
+    },
+    {
+      "qid": 445,
+      "before": "2023年哈师大附中高一上学期10月月考",
+      "after": "2023年哈师附高一上学期10月月考",
+      "token": "哈师大附中",
+      "school_id": "sch_a76135c1d2",
+      "school_name": "哈师附",
+      "province": "黑龙江省",
+      "city": "哈尔滨市",
+      "source_school_id_before": "sch_a76135c1d2"
+    },
+    {
+      "qid": 446,
+      "before": "2023年哈师大附中高一上学期10月月考",
+      "after": "2023年哈师附高一上学期10月月考",
+      "token": "哈师大附中",
+      "school_id": "sch_a76135c1d2",
+      "school_name": "哈师附",
+      "province": "黑龙江省",
+      "city": "哈尔滨市",
+      "source_school_id_before": "sch_a76135c1d2"
+    },
+    {
+      "qid": 447,
+      "before": "2023年哈师大附中高一上学期10月月考",
+      "after": "2023年哈师附高一上学期10月月考",
+      "token": "哈师大附中",
+      "school_id": "sch_a76135c1d2",
+      "school_name": "哈师附",
+      "province": "黑龙江省",
+      "city": "哈尔滨市",
+      "source_school_id_before": "sch_a76135c1d2"
+    },
+    {
+      "qid": 448,
+      "before": "2023年哈师大附中高一上学期10月月考",
+      "after": "2023年哈师附高一上学期10月月考",
+      "token": "哈师大附中",
+      "school_id": "sch_a76135c1d2",
+      "school_name": "哈师附",
+      "province": "黑龙江省",
+      "city": "哈尔滨市",
+      "source_school_id_before": "sch_a76135c1d2"
+    },
+    {
+      "qid": 449,
+      "before": "2023年哈师大附中高一上学期10月月考",
+      "after": "2023年哈师附高一上学期10月月考",
+      "token": "哈师大附中",
+      "school_id": "sch_a76135c1d2",
+      "school_name": "哈师附",
+      "province": "黑龙江省",
+      "city": "哈尔滨市",
+      "source_school_id_before": "sch_a76135c1d2"
+    },
+    {
+      "qid": 450,
+      "before": "2023年哈师大附中高一上学期10月月考",
+      "after": "2023年哈师附高一上学期10月月考",
+      "token": "哈师大附中",
+      "school_id": "sch_a76135c1d2",
+      "school_name": "哈师附",
+      "province": "黑龙江省",
+      "city": "哈尔滨市",
+      "source_school_id_before": "sch_a76135c1d2"
+    }
+  ],
+  "id_backfills": [
+    {
+      "qid": 452,
+      "source": "2024年大庆实验高一上学期期中",
+      "token": "大庆实验",
+      "school_id": "sch_5ee120b71a",
+      "school_name": "大庆实验"
+    },
+    {
+      "qid": 453,
+      "source": "2024年大庆实验高一上学期期中",
+      "token": "大庆实验",
+      "school_id": "sch_5ee120b71a",
+      "school_name": "大庆实验"
+    },
+    {
+      "qid": 454,
+      "source": "2024年大庆实验高一上学期期中",
+      "token": "大庆实验",
+      "school_id": "sch_5ee120b71a",
+      "school_name": "大庆实验"
+    },
+    {
+      "qid": 455,
+      "source": "2024年大庆实验高一上学期期中",
+      "token": "大庆实验",
+      "school_id": "sch_5ee120b71a",
+      "school_name": "大庆实验"
+    },
+    {
+      "qid": 456,
+      "source": "2024年大庆实验高一上学期期中",
+      "token": "大庆实验",
+      "school_id": "sch_5ee120b71a",
+      "school_name": "大庆实验"
+    },
+    {
+      "qid": 457,
+      "source": "2024年大庆实验高一上学期期中",
+      "token": "大庆实验",
+      "school_id": "sch_5ee120b71a",
+      "school_name": "大庆实验"
+    },
+    {
+      "qid": 458,
+      "source": "2024年大庆实验高一上学期期中",
+      "token": "大庆实验",
+      "school_id": "sch_5ee120b71a",
+      "school_name": "大庆实验"
+    },
+    {
+      "qid": 459,
+      "source": "2024年大庆实验高一上学期期中",
+      "token": "大庆实验",
+      "school_id": "sch_5ee120b71a",
+      "school_name": "大庆实验"
+    },
+    {
+      "qid": 460,
+      "source": "2024年大庆实验高一上学期期中",
+      "token": "大庆实验",
+      "school_id": "sch_5ee120b71a",
+      "school_name": "大庆实验"
+    },
+    {
+      "qid": 461,
+      "source": "2024年大庆实验高一上学期期中",
+      "token": "大庆实验",
+      "school_id": "sch_5ee120b71a",
+      "school_name": "大庆实验"
+    },
+    {
+      "qid": 462,
+      "source": "2024年大庆实验高一上学期期中",
+      "token": "大庆实验",
+      "school_id": "sch_5ee120b71a",
+      "school_name": "大庆实验"
+    },
+    {
+      "qid": 463,
+      "source": "2024年大庆实验高一上学期期中",
+      "token": "大庆实验",
+      "school_id": "sch_5ee120b71a",
+      "school_name": "大庆实验"
+    },
+    {
+      "qid": 464,
+      "source": "2024年大庆实验高一上学期期中",
+      "token": "大庆实验",
+      "school_id": "sch_5ee120b71a",
+      "school_name": "大庆实验"
+    },
+    {
+      "qid": 465,
+      "source": "2024年大庆实验高一上学期期中",
+      "token": "大庆实验",
+      "school_id": "sch_5ee120b71a",
+      "school_name": "大庆实验"
+    },
+    {
+      "qid": 466,
+      "source": "2024年大庆实验高一上学期期中",
+      "token": "大庆实验",
+      "school_id": "sch_5ee120b71a",
+      "school_name": "大庆实验"
+    },
+    {
+      "qid": 467,
+      "source": "2024年大庆实验高一上学期期中",
+      "token": "大庆实验",
+      "school_id": "sch_5ee120b71a",
+      "school_name": "大庆实验"
+    },
+    {
+      "qid": 468,
+      "source": "2024年大庆实验高一上学期期中",
+      "token": "大庆实验",
+      "school_id": "sch_5ee120b71a",
+      "school_name": "大庆实验"
+    },
+    {
+      "qid": 469,
+      "source": "2024年大庆实验高一上学期期中",
+      "token": "大庆实验",
+      "school_id": "sch_5ee120b71a",
+      "school_name": "大庆实验"
+    },
+    {
+      "qid": 470,
+      "source": "2024年大庆实验高一上学期期中",
+      "token": "大庆实验",
+      "school_id": "sch_5ee120b71a",
+      "school_name": "大庆实验"
+    },
+    {
+      "qid": 471,
+      "source": "2024年大庆实验高一上学期期中",
+      "token": "大庆实验",
+      "school_id": "sch_5ee120b71a",
+      "school_name": "大庆实验"
+    },
+    {
+      "qid": 472,
+      "source": "2024年大庆实验高一上学期期中",
+      "token": "大庆实验",
+      "school_id": "sch_5ee120b71a",
+      "school_name": "大庆实验"
+    }
+  ],
+  "manual": [
+    {
+      "qid": 9,
+      "source": "1",
+      "reason": "junk",
+      "detail": "",
+      "candidates": [],
+      "source_school_id_before": ""
+    },
+    {
+      "qid": 10,
+      "source": "1",
+      "reason": "junk",
+      "detail": "",
+      "candidates": [],
+      "source_school_id_before": ""
+    },
+    {
+      "qid": 11,
+      "source": "1",
+      "reason": "junk",
+      "detail": "",
+      "candidates": [],
+      "source_school_id_before": ""
+    }
+  ],
+  "source_breakdown": [
+    {
+      "source": "2025年牡丹江一中高一上学期9月月考",
+      "count": 34,
+      "action": "keep",
+      "after": "2025年牡丹江一中高一上学期9月月考",
+      "school_name": "牡丹江一中",
+      "school_id": "sch_ecf0039631",
+      "source_school_id": "sch_ecf0039631"
+    },
+    {
+      "source": "2023年哈师大附中高一上学期10月月考",
+      "count": 31,
+      "action": "rewrite",
+      "after": "2023年哈师附高一上学期10月月考",
+      "school_name": "哈师附",
+      "school_id": "sch_a76135c1d2",
+      "source_school_id": "sch_a76135c1d2"
+    },
+    {
+      "source": "2025年德强高一上学期9月月考",
+      "count": 22,
+      "action": "keep",
+      "after": "2025年德强高一上学期9月月考",
+      "school_name": "德强",
+      "school_id": "sch_45aeac8f81",
+      "source_school_id": "sch_45aeac8f81"
+    },
+    {
+      "source": "2022年哈师大附中高一上学期10月月考",
+      "count": 21,
+      "action": "rewrite",
+      "after": "2022年哈师附高一上学期10月月考",
+      "school_name": "哈师附",
+      "school_id": "sch_a76135c1d2",
+      "source_school_id": "sch_a76135c1d2"
+    },
+    {
+      "source": "2023年大庆实验高一上学期10月月考",
+      "count": 21,
+      "action": "keep",
+      "after": "2023年大庆实验高一上学期10月月考",
+      "school_name": "大庆实验",
+      "school_id": "sch_5ee120b71a",
+      "source_school_id": "sch_5ee120b71a"
+    },
+    {
+      "source": "2024年大庆实验高一上学期10月月考",
+      "count": 21,
+      "action": "keep",
+      "after": "2024年大庆实验高一上学期10月月考",
+      "school_name": "大庆实验",
+      "school_id": "sch_5ee120b71a",
+      "source_school_id": "sch_5ee120b71a"
+    },
+    {
+      "source": "2024年大庆实验高一上学期期中",
+      "count": 21,
+      "action": "keep",
+      "after": "2024年大庆实验高一上学期期中",
+      "school_name": "大庆实验",
+      "school_id": "sch_5ee120b71a",
+      "source_school_id": ""
+    },
+    {
+      "source": "2022年哈九中高一上学期9月月考",
+      "count": 20,
+      "action": "keep",
+      "after": "2022年哈九中高一上学期9月月考",
+      "school_name": "哈九中",
+      "school_id": "sch_da75e3239a",
+      "source_school_id": "sch_da75e3239a"
+    },
+    {
+      "source": "2023年哈三中高一上学期9月月考",
+      "count": 20,
+      "action": "keep",
+      "after": "2023年哈三中高一上学期9月月考",
+      "school_name": "哈三中",
+      "school_id": "sch_d7441bcaab",
+      "source_school_id": "sch_d7441bcaab"
+    },
+    {
+      "source": "2023年铁人中学高一上学期10月月考",
+      "count": 20,
+      "action": "keep",
+      "after": "2023年铁人中学高一上学期10月月考",
+      "school_name": "铁人中学",
+      "school_id": "sch_e59f5f46fd",
+      "source_school_id": "sch_e59f5f46fd"
+    },
+    {
+      "source": "2022年哈三中高一上学期9月月考",
+      "count": 19,
+      "action": "keep",
+      "after": "2022年哈三中高一上学期9月月考",
+      "school_name": "哈三中",
+      "school_id": "sch_d7441bcaab",
+      "source_school_id": "sch_d7441bcaab"
+    },
+    {
+      "source": "2024年哈师大附中高一上学期10月月考",
+      "count": 19,
+      "action": "rewrite",
+      "after": "2024年哈师附高一上学期10月月考",
+      "school_name": "哈师附",
+      "school_id": "sch_a76135c1d2",
+      "source_school_id": "sch_a76135c1d2"
+    },
+    {
+      "source": "2024年长春外国语高一上学期9月月考",
+      "count": 19,
+      "action": "rewrite",
+      "after": "2024年长春外国语学校高一上学期9月月考",
+      "school_name": "长春外国语学校",
+      "school_id": "sch_57d691d10f",
+      "source_school_id": "sch_57d691d10f"
+    },
+    {
+      "source": "2025年双鸭山一中高一上学期9月月考",
+      "count": 19,
+      "action": "rewrite",
+      "after": "2025年双山一中高一上学期9月月考",
+      "school_name": "双山一中",
+      "school_id": "sch_a6d4cafd78",
+      "source_school_id": "sch_a6d4cafd78"
+    },
+    {
+      "source": "2021年铁人中学高一上学期10月月考",
+      "count": 18,
+      "action": "keep",
+      "after": "2021年铁人中学高一上学期10月月考",
+      "school_name": "铁人中学",
+      "school_id": "sch_e59f5f46fd",
+      "source_school_id": "sch_e59f5f46fd"
+    },
+    {
+      "source": "2022年大庆实验高一上学期10月月考",
+      "count": 18,
+      "action": "keep",
+      "after": "2022年大庆实验高一上学期10月月考",
+      "school_name": "大庆实验",
+      "school_id": "sch_5ee120b71a",
+      "source_school_id": "sch_5ee120b71a"
+    },
+    {
+      "source": "2022年铁人中学高一上学期10月月考",
+      "count": 18,
+      "action": "keep",
+      "after": "2022年铁人中学高一上学期10月月考",
+      "school_name": "铁人中学",
+      "school_id": "sch_e59f5f46fd",
+      "source_school_id": "sch_e59f5f46fd"
+    },
+    {
+      "source": "2026年哈九中高三上学期9月月考",
+      "count": 18,
+      "action": "keep",
+      "after": "2026年哈九中高三上学期9月月考",
+      "school_name": "哈九中",
+      "school_id": "sch_da75e3239a",
+      "source_school_id": "sch_da75e3239a"
+    },
+    {
+      "source": "2024年东北师附高一上学期9月月考",
+      "count": 17,
+      "action": "rewrite",
+      "after": "2024年东北师大附中高一上学期9月月考",
+      "school_name": "东北师大附中",
+      "school_id": "sch_0c91a077ec",
+      "source_school_id": "sch_0c91a077ec"
+    },
+    {
+      "source": "2023年东北师大附中高一上学期10月月考",
+      "count": 16,
+      "action": "keep",
+      "after": "2023年东北师大附中高一上学期10月月考",
+      "school_name": "东北师大附中",
+      "school_id": "sch_0c91a077ec",
+      "source_school_id": "sch_0c91a077ec"
+    },
+    {
+      "source": "1",
+      "count": 3,
+      "action": "junk",
+      "after": "1",
+      "school_name": "",
+      "school_id": "",
+      "source_school_id": ""
+    },
+    {
+      "source": "2023年哈师大附中10月月考",
+      "count": 1,
+      "action": "rewrite",
+      "after": "2023年哈师附10月月考",
+      "school_name": "哈师附",
+      "school_id": "sch_a76135c1d2",
+      "source_school_id": "sch_a76135c1d2"
+    },
+    {
+      "source": "2023年大庆实验高一上学期",
+      "count": 1,
+      "action": "keep",
+      "after": "2023年大庆实验高一上学期",
+      "school_name": "大庆实验",
+      "school_id": "sch_5ee120b71a",
+      "source_school_id": "sch_5ee120b71a"
+    },
+    {
+      "source": "2023年铁人中学高一上学期期末",
+      "count": 1,
+      "action": "keep",
+      "after": "2023年铁人中学高一上学期期末",
+      "school_name": "铁人中学",
+      "school_id": "sch_e59f5f46fd",
+      "source_school_id": "sch_e59f5f46fd"
+    }
+  ],
+  "question_sources": {
+    "changes": [
+      {
+        "row_id": 2,
+        "question_id": 96,
+        "before": "哈师大附中",
+        "after": "哈师附",
+        "token": "哈师大附中",
+        "school_id": "sch_a76135c1d2",
+        "school_name": "哈师附",
+        "set_school_id": false
+      }
+    ],
+    "manual": [
+      {
+        "row_id": 1,
+        "question_id": 12,
+        "region": "",
+        "paper_title": "四川省宜宾市南溪第一中学期末",
+        "reason": "orphan_row",
+        "detail": "question_id 在 questions 表中不存在（孤儿来源行）"
+      }
+    ],
+    "geo_suggestions": [
+      {
+        "row_id": 2,
+        "question_id": 96,
+        "field": "province",
+        "suggested": "黑龙江省"
+      },
+      {
+        "row_id": 2,
+        "question_id": 96,
+        "field": "city",
+        "suggested": "哈尔滨市"
+      }
+    ],
+    "province_conflicts": []
+  }
+}
