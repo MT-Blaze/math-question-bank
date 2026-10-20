@@ -749,6 +749,8 @@ def build_exam_preamble(include_answers: bool = False, title: str = "") -> list:
     lines.append(r"  math-font = xits,")
     lines.append(r"  fillin/no-answer-type=none")
     lines.append(r"}")
+    # 选择题标号统一为中文教辅标准的全角点格式（A．B．C．D．）
+    lines.append(r"\setchoices{label=\Alph*．}")
     lines.append(r"\newcommand{\customcurve}[1][1]{%")
     lines.append(r"  \tikz[baseline,yshift=3,scale=0.05,thick,line width=0.8pt,")
     lines.append(r"        line cap=round, domain=-1:2.832, samples=300]{")

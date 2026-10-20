@@ -192,7 +192,7 @@ global.window = {
 };
 """ + _escape_html_helper_source() + helper_source + r"""
 const fillin = String.raw`\fillin`;
-const renderedFillin = String.raw`$\underline{\hspace{1.5cm}}$`;
+const renderedFillin = String.raw`$\displaystyle \underline{\hspace{1.5cm}}$`;
 for (let count = 1; count <= 6; count += 1) {
   const source = `11${fillin.repeat(count)}`;
   const rendered = window.preprocessFormulaForKaTeX(source);
@@ -205,15 +205,20 @@ for (let count = 1; count <= 6; count += 1) {
   }
 }
 
-for (const source of [
-  String.raw`$a$$b$$c$`,
-  String.raw`$a$$b$$c$$d$$e$`,
-  String.raw`prefix$$a+b$$suffix`,
-  String.raw`text $a$ and $b$`,
+for (const [source, expected] of [
+  [String.raw`$a$$b$$c$`, String.raw`$\displaystyle a$$\displaystyle b$$\displaystyle c$`],
+  [String.raw`$a$$b$$c$$d$$e$`, String.raw`$\displaystyle a$$\displaystyle b$$\displaystyle c$$\displaystyle d$$\displaystyle e$`],
+  [String.raw`prefix$$a+b$$suffix`, String.raw`prefix$$a+b$$suffix`],
+  [String.raw`text $a$ and $b$`, String.raw`text $\displaystyle a$ and $\displaystyle b$`],
+  [String.raw`\(x < \frac{1}{2}\)`, String.raw`\(\displaystyle x < \frac{1}{2}\)`],
+  [String.raw`$\displaystyle \frac{1}{2}$`, String.raw`$\displaystyle \frac{1}{2}$`],
 ]) {
   const rendered = window.preprocessFormulaForKaTeX(source);
-  if (rendered !== source) {
+  if (rendered !== expected) {
     throw new Error(`adjacent math changed: ${source} -> ${rendered}`);
+  }
+  if (window.preprocessFormulaForKaTeX(rendered) !== rendered) {
+    throw new Error(`inline displaystyle wrap is not idempotent: ${rendered}`);
   }
   if (rendered.includes('@@MATH_PLACEHOLDER_')) {
     throw new Error(`math placeholder leaked: ${rendered}`);
@@ -256,15 +261,15 @@ global.window = {
 };
 """ + _escape_html_helper_source() + helper_source + r"""
 const cases = [
-  [String.raw`已知$x^2$成立`, String.raw`已知 $x^2$ 成立`],
-  [String.raw`则  $a^2$  的取值`, String.raw`则 $a^2$ 的取值`],
-  [String.raw`计算$x^2$，得$y^2$。`, String.raw`计算 $x^2$，得 $y^2$。`],
-  [String.raw`（$a$）与（$b$）`, String.raw`（$a$）与（$b$）`],
-  [String.raw`A.$x^2$B`, String.raw`A.$x^2$B`],
-  [String.raw`已知 x+y=1$x^2$成立`, String.raw`已知 x+y=1$x^2$ 成立`],
+  [String.raw`已知$x^2$成立`, String.raw`已知 $\displaystyle x^2$ 成立`],
+  [String.raw`则  $a^2$  的取值`, String.raw`则 $\displaystyle a^2$ 的取值`],
+  [String.raw`计算$x^2$，得$y^2$。`, String.raw`计算 $\displaystyle x^2$，得 $\displaystyle y^2$。`],
+  [String.raw`（$a$）与（$b$）`, String.raw`（$\displaystyle a$）与（$\displaystyle b$）`],
+  [String.raw`A.$x^2$B`, String.raw`A.$\displaystyle x^2$B`],
+  [String.raw`已知 x+y=1$x^2$成立`, String.raw`已知 x+y=1$\displaystyle x^2$ 成立`],
   [String.raw`汉$$x^2$$汉`, String.raw`汉$$x^2$$汉`],
   [String.raw`汉\[x^2\]汉`, String.raw`汉\[x^2\]汉`],
-  [String.raw`设\(x^2\)成立`, String.raw`设 \(x^2\) 成立`],
+  [String.raw`设\(x^2\)成立`, String.raw`设 \(\displaystyle x^2\) 成立`],
 ];
 for (const [source, expected] of cases) {
   const rendered = window.preprocessFormulaForKaTeX(source);
@@ -286,11 +291,11 @@ for (const [source, expected] of cases) {
 // 输入里 \begin{choices} 已变成网格 HTML，环境边界不复存在（预览永远从源码起，不喂 HTML）。
 const choicesCases = [
   [String.raw`已知$x^2$成立\begin{choices}\item $-3$或$5$\item $3$或$-3$\end{choices}`,
-   [String.raw`已知 $x^2$ 成立`, String.raw`$-3$或$5$`, String.raw`$3$或$-3$`], 1],
+   [String.raw`已知 $\displaystyle x^2$ 成立`, String.raw`$\displaystyle -3$或$\displaystyle 5$`, String.raw`$\displaystyle 3$或$\displaystyle -3$`], 1],
   [String.raw`若$x^2$成立\begin{choices}\item 选项$a$或$b$\end{choices}且$y^2$成立`
    + String.raw`\begin{choices}\item $c$或$d$\end{choices}解析：由$x^2$得$y^2$。`,
-   [String.raw`若 $x^2$ 成立`, String.raw`且 $y^2$ 成立`, String.raw`选项$a$或$b$`,
-    String.raw`$c$或$d$`, String.raw`解析：由 $x^2$ 得 $y^2$。`], 2],
+   [String.raw`若 $\displaystyle x^2$ 成立`, String.raw`且 $\displaystyle y^2$ 成立`, String.raw`选项$\displaystyle a$或$\displaystyle b$`,
+    String.raw`$\displaystyle c$或$\displaystyle d$`, String.raw`解析：由 $\displaystyle x^2$ 得 $\displaystyle y^2$。`], 2],
 ];
 for (const [source, expectedList, gridCount] of choicesCases) {
   const rendered = window.preprocessFormulaForKaTeX(source);
@@ -311,14 +316,17 @@ for (const [source, expectedList, gridCount] of choicesCases) {
 // ⑧ 行首选项标号整行豁免。判据来自 import.js 的解析卡分组器（行首标号 + 裸标号两处，
 // 含 [A-D] 边界），所以 E. 开头不在判据内、照补——这一条同时钉住「两边永远同口径」。
 const labelCases = [
-  ['A.已知$x$成立', ['A.已知$x$成立'], ['A.已知 $x$ 成立']],
+  ['A.已知$x$成立', [String.raw`A.已知$\displaystyle x$成立`], [String.raw`A.已知 $\displaystyle x$ 成立`]],
   ['已知$x^2$成立\nA.已知$x$成立\nＢ．由$y$得$z$\n解析：由$x$得$y$。',
-   ['已知 $x^2$ 成立', 'A.已知$x$成立', 'Ｂ．由$y$得$z$', '解析：由 $x$ 得 $y$。'],
-   ['A.已知 $x$ 成立', 'Ｂ．由 $y$ 得 $z$']],
+   [String.raw`已知 $\displaystyle x^2$ 成立`, String.raw`A.已知$\displaystyle x$成立`,
+    String.raw`Ｂ．由$\displaystyle y$得$\displaystyle z$`, String.raw`解析：由 $\displaystyle x$ 得 $\displaystyle y$。`],
+   [String.raw`A.已知 $\displaystyle x$ 成立`, String.raw`Ｂ．由 $\displaystyle y$ 得 $\displaystyle z$`]],
   ['已知$x$成立\nA.\n$x$或$y$\nB.\n$z$或$w$',
-   ['已知 $x$ 成立', '$x$或$y$', '$z$或$w$'], ['$x$ 或 $y$', '$z$ 或 $w$']],
-  ['已知$x^2$成立\r\nA.\r\n$x$或$y$', ['已知 $x^2$ 成立', '$x$或$y$'], ['$x$ 或 $y$']],
-  ['E.$x$或$y$', ['E.$x$ 或 $y$'], []],
+   [String.raw`已知 $\displaystyle x$ 成立`, String.raw`$\displaystyle x$或$\displaystyle y$`, String.raw`$\displaystyle z$或$\displaystyle w$`],
+   [String.raw`$\displaystyle x$ 或 $\displaystyle y$`, String.raw`$\displaystyle z$ 或 $\displaystyle w$`]],
+  ['已知$x^2$成立\r\nA.\r\n$x$或$y$', [String.raw`已知 $\displaystyle x^2$ 成立`, String.raw`$\displaystyle x$或$\displaystyle y$`],
+   [String.raw`$\displaystyle x$ 或 $\displaystyle y$`]],
+  ['E.$x$或$y$', [String.raw`E.$\displaystyle x$ 或 $\displaystyle y$`], []],
 ];
 for (const [source, mustInclude, mustExclude] of labelCases) {
   const rendered = window.preprocessFormulaForKaTeX(source);
@@ -783,6 +791,7 @@ return {
     paperChoicesHeightPx: paperChoicesHeightPx,
     paperBlockLinePx: paperBlockLinePx,
     paperFigureHeightPx: paperFigureHeightPx,
+    paperInlineWidthPx: paperInlineWidthPx,
     paperTableRowCount: paperTableRowCount,
     paperTextHeightPx: paperTextHeightPx,
     estimateA4HeaderHeight: estimateA4HeaderHeight,
@@ -823,6 +832,22 @@ if (longH <= shortH) fail('选项折列没有抬高整题估高：' + shortH + '
 // 3) 行盒口径：光有 $[0,2)$ 这种不带命令的公式也要按公式行高（回归：曾漏判成 17px）
 if (api.paperBlockLinePx('$[0,2)$') !== A4.mathLinePx) fail('无命令内联式行高漏判');
 if (api.paperBlockLinePx('\\dfrac{1}{a}>\\dfrac{1}{b}') !== A4.bigMathLinePx) fail('dfrac 行高口径漂移');
+if (api.paperBlockLinePx('\\frac{1}{a}>\\frac{1}{b}') !== A4.bigMathLinePx) fail('行内 frac 已是 displaystyle，行高口径漂移');
+if (api.paperBlockLinePx('\\sqrt{x}+1') !== A4.fracLinePx) fail('sqrt 行高口径漂移');
+
+// 3b) 宽度补偿口径：全部来自无头浏览器里**已加载字体**的 KaTeX 实测（14px 行内）
+//     \sqrt{x} 23.81 / x 9.70 → 牌面恒为 +14.11px = 2.0 半角单位（旧 0.9 少算约 8px）
+//     \frac{1}{2} 行内 displaystyle 后 12.55，与 \dfrac{1}{2} 完全同宽（旧模型给 \dfrac 另加 +0.5，估到 20px）
+//     \left(\frac{1}{2}\right)^2 撑高括号实测 44.27（逐件相加只有 36px）
+if (api.paperInlineWidthPx('$\\sqrt{x}$') < 23.0) fail('根号牌面补偿不足：' + api.paperInlineWidthPx('$\\sqrt{x}$'));
+if (api.paperInlineWidthPx('$\\frac{1}{2}$') < 12.5) fail('行内分式 displaystyle 宽度补偿不足');
+if (api.paperInlineWidthPx('$\\left(\\frac{1}{2}\\right)^2$') < 44.0) fail('撑高定界符补偿不足');
+const fracWide = api.paperInlineWidthPx('$\\frac{1}{2}$');
+['\\dfrac', '\\cfrac', '\\tfrac'].forEach(function (macro) {
+    if (Math.abs(api.paperInlineWidthPx('$' + macro + '{1}{2}$') - fracWide) > 0.001) {
+        fail(macro + ' 与 \\frac 已同档渲染，宽度补偿却分叉');
+    }
+});
 if (api.paperBlockLinePx('纯文字没有公式') !== A4.linePx) fail('纯文字行高不该被抬高');
 
 // 4) 段间空行在预览里渲染成 <br><br>，实测多占一个行高

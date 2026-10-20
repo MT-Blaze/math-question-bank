@@ -27,9 +27,7 @@ from mathbank.latex_preflight import (
     repair_complement_glyphs,
     wrap_bare_math_variables,
 )
-from mathbank.fraction_style import normalize_fraction_style
 from mathbank.math_markdown import (
-    _replace_delimited_math,
     compact_solution_markdown,
     normalize_fillin_macro,
     normalize_question_math_markdown,
@@ -662,6 +660,7 @@ def normalize_content_for_latex_storage(md: str, question_type: str = "") -> str
     md = _merge_stacked_choice_images(md)
     md = latexify_images(md)         # 图片：Markdown/LaTeX -> includegraphics{文件名}
     md = latexify_choices(md, question_type)  # 选项：纯文本/分行图 -> choices 环境
+    md = normalize_choice_label_dots(md)       # 选项标号：统一为全角点 A．
     md = latexify_bold(md)           # 加粗：**x** -> textbf
     return md
 
@@ -1007,27 +1006,6 @@ def dedupe_answer_image_references(text: str) -> tuple[str, list]:
 
 
 # ---------------------------------------------------------------------------
-# 行内分式：网页与 PDF 同一字号
-# ---------------------------------------------------------------------------
-# KaTeX 在行内 ``$...$`` 里默认用 textstyle，``\frac`` 的分子分母会被压成脚注大小，
-# 而 exam-zh/XeLaTeX 导出的 PDF 在同样的行内公式里看起来更大——预览与成品不一致。
-# 只处理行内定界符（``$...$`` 与 ``\(...\)``），显示公式（``$$...$$`` / ``\[...\]``）
-# 原样放过；分式内部与上标仍由 :func:`normalize_fraction_style` 降回 ``\frac``，
-# 未知宏、代码块、TikZ、``\text{}`` 内的内容一律不动。
-def normalize_inline_fraction_style(text: str) -> str:
-    if not isinstance(text, str) or "\\frac" not in text:
-        return text
-
-    def _normalize(span: str) -> str:
-        if span.startswith("$$") or span.startswith(r"\["):
-            return span
-        return normalize_fraction_style(span)
-
-    return _replace_delimited_math(text, _normalize)
-
-
-
-# ---------------------------------------------------------------------------
 # 分段函数 / 方程组排版标准化：只允许 cases
 # ---------------------------------------------------------------------------
 # 「``\left\{ \begin{aligned} … \end{aligned} \right.``」是 MinerU 与公式编辑器对
@@ -1098,8 +1076,9 @@ def normalize_for_storage(value: str, question_type: str = "", is_answer: bool =
        这条既有不变量冲突。
     6. ``cases`` 归一（分段函数 / 方程组 / 不等式组）排在字符层之前：它只认
        ``\\left\\{`` + 行式环境这一种纯数学形态，与表格、定界符互不干扰。
-    7. 行内分式 ``\\frac``→``\\dfrac`` 必须排在字符层之后：只有那时数学片段才有完整
-       定界符；它只动 ``$...$`` / ``\\(...\\)``，显示公式与 ``\\text{}`` 内部统放过。
+
+    行内分式**不在链上改写**：``\\frac`` 原样入库，统考卷口径由渲染层实现
+    （网页端注入 ``\\displaystyle``，PDF 导言区 ``\\everymath{\\displaystyle}``）。
 
     ⚠️ 本函数必须**只在真正要落地的时候跑**（``post_process`` 末段与写库边界），
     任何录入路径都不许在它之前单独跑其中的某一步：这条链只对「自己的输出」幂等
@@ -1133,9 +1112,6 @@ def normalize_for_storage(value: str, question_type: str = "", is_answer: bool =
     value = normalize_fillin_macro(value)
     value = normalize_content_for_latex_storage(value, question_type)
     value = normalize_question_math_markdown(value)
-    # 行内分式统一 \\dfrac（预览与 PDF 同字号），必须排在字符层之后：那时所有数学
-    # 片段才有完整定界符；显示公式与 \\text{} 内部由 fraction_style 自己放过。
-    value = normalize_inline_fraction_style(value)
     # 变量语义包裹（R10）必须排在字符层之后：字符层已经包好的 ``$p$`` 这里会因为
     # 紧邻 ``$`` 被否决，天然幂等；反过来先包再跑字符层，裸字母会被并入 ASCII run 处理。
     value = wrap_bare_math_variables(value)[0]
@@ -1267,4 +1243,53 @@ def normalize_choice_paren_macro(value: str, question_type: str = "") -> str:
     if figures:
         cleaned += "\n" + figures
     return cleaned.rstrip()
+
+
+# 选择题选项标号统一为全角点（U+FF0E）
+# 覆盖形态：A. / A、/ A，/ A: / A： → A．
+_CHOICE_LABEL_DOT_RE = re.compile(
+    r"(\\item\s+)([A-H])(?=[\.、．,，:：])",
+    re.MULTILINE,
+)
+
+
+def normalize_choice_label_dots(value: str) -> str:
+    """把选择题选项标号的标点统一成全角点 `．`（U+FF0E）。
+
+    仅作用于 ``\\begin{choices}...\\end{choices}`` 环境内的 ``\\item`` 行；
+    幂等：已统一的不再改动。
+
+    覆盖形态：
+      - \\item A. ... → \\item A．...
+      - \\item A、... → \\item A．...
+      - \\item A，... → \\item A．...
+      - \\item A:... → \\item A．...
+      - \\item A．... → 不动（已是标准）
+
+    数学区 `$...$` / `$$...$$` 内的字母绝不碰（choices 环境内不应有数学定界符包裹的标号）。
+    """
+    if not value or r"\begin{choices}" not in value:
+        return value
+
+    def _replace(match: re.Match) -> str:
+        prefix = match.group(1)  # \item + 空白
+        letter = match.group(2)  # A-H
+        return f"{prefix}{letter}．"
+
+    # 只在 choices 环境内替换
+    lines = value.split("\n")
+    out: list[str] = []
+    in_choices = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped == r"\begin{choices}":
+            in_choices = True
+        elif stripped == r"\end{choices}":
+            in_choices = False
+
+        if in_choices and r"\item" in line:
+            line = _CHOICE_LABEL_DOT_RE.sub(_replace, line)
+        out.append(line)
+
+    return "\n".join(out)
 

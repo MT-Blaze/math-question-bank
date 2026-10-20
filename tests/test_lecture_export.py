@@ -309,10 +309,15 @@ def test_answer_book_entries_carry_lecture_prefix():
 def test_preamble_is_shared_not_copied():
     """讲义导言区必须来自 paper_helper.build_exam_preamble，不得自带第二份宏包清单。"""
     from pathlib import Path
+
+    from mathbank.paper_helper import build_exam_preamble
+
     source = Path(__file__).resolve().parents[1] / "mathbank" / "lecture_export.py"
     text = source.read_text(encoding="utf-8")
     assert "build_exam_preamble" in text
     assert r"\documentclass[fontset=fandol]{exam-zh}" not in text
+    # 统考卷行内公式口径：行内一律 displaystyle，试卷与讲义共用同一条 \everymath。
+    assert r"\everymath{\displaystyle}" in "\n".join(build_exam_preamble())
 
 
 def test_collect_images_resolves_both_reference_forms(tmp_path):

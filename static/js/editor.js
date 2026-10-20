@@ -2575,6 +2575,18 @@ function deleteDraft(id) {
                 return placeholder;
             }
 
+            // 统考卷口径：行内公式一律按 displaystyle 排（行内分式变大、大括号自然撑开）。
+            // 只包 $...$ 与 \(...\)；$$...$$ 与 \[...\] 本来就是独立公式，原样放过。
+            // 已带 \displaystyle 的不再加第二层，保证预处理对「自己的输出」幂等。
+            function saveInlineMathPlaceholder(match) {
+                const usesParen = match.indexOf("\\(") === 0;
+                const opener = usesParen ? "\\(" : "$";
+                const closer = usesParen ? "\\)" : "$";
+                const body = match.slice(opener.length, match.length - closer.length);
+                if (/^\s*\\displaystyle\b/.test(body)) return savePlaceholder(match);
+                return savePlaceholder(opener + "\\displaystyle " + body + closer);
+            }
+
             // 汉字 ↔ 行内公式的间距归一（待办 #15，D 档：维持半角空格口径）。
             // 为什么必须等数学段全部换成 @@MATH_PLACEHOLDER_k@@、且非数学段的 HTML 标签被
             // 剥净之后再改写：此刻字符串只剩「纯文本 + 占位符」，按字符邻接插空格才不会误伤
@@ -2803,25 +2815,68 @@ function deleteDraft(id) {
                 });
                 return ph;
             });
-            tempText = tempText.replace(/\$\$([\s\S]*?)\$\$/g, function(match) {
-                // A $$ block wrapping a tabular is not math: convert it to an
-                // HTML table now and park it outside the math placeholder sweep,
-                // otherwise KaTeX prints the \begin{tabular} source as red text.
-                if (match.indexOf('\\begin{tabular') !== -1) {
-                    const html = convertTabularEnvs(match);
-                    const ph = '@@TABLE_PLACEHOLDER_' + htmlPlaceholders.length + '@@';
-                    htmlPlaceholders.push({ placeholder: ph, html: html });
-                    return ph;
+            // 数学段扫描：与 KaTeX auto-render 同一条「谁先出现谁胜」的定界符规则。
+            // 历史写法是四条正则依次全串替换，`$a$$b$$c$` 里相邻的两个 `$` 会被 `$$`
+            // 那一趟先抢走，把中段当成独立公式、把首尾并进同一段行内公式——注入
+            // \displaystyle 后就成了「只有第一段变大、其余照常缩小」的错字号。
+            // 逐字符扫一遍按真实定界符配对，才能保证每个行内段都被同等处理。
+            tempText = (function (src) {
+                const pieces = [];
+                let cursor = 0;
+                let i = 0;
+                function take(from, to, placeholder) {
+                    pieces.push(src.slice(cursor, from), placeholder);
+                    cursor = to;
+                    return to;
                 }
-                return savePlaceholder(match);
-            })
-                               .replace(/\\\[([\s\S]*?)\\\]/g, savePlaceholder)
-                               .replace(/\\\(([\s\S]*?)\\\)/g, savePlaceholder)
-                               .replace(/\$([^\$]+?)\$/g, savePlaceholder);
+                function closeDisplayMath(block) {
+                    // A $$ block wrapping a tabular is not math: convert it to an
+                    // HTML table now and park it outside the math placeholder sweep,
+                    // otherwise KaTeX prints the \begin{tabular} source as red text.
+                    if (block.indexOf('\\begin{tabular') !== -1) {
+                        const ph = '@@TABLE_PLACEHOLDER_' + htmlPlaceholders.length + '@@';
+                        htmlPlaceholders.push({ placeholder: ph, html: convertTabularEnvs(block) });
+                        return ph;
+                    }
+                    return savePlaceholder(block);
+                }
+                while (i < src.length) {
+                    const ch = src.charAt(i);
+                    if (ch === "$") {
+                        if (src.charAt(i + 1) === "$") {
+                            const end = src.indexOf("$$", i + 2);
+                            if (end >= 0) {
+                                i = take(i, end + 2, closeDisplayMath(src.slice(i, end + 2)));
+                                continue;
+                            }
+                        }
+                        const end = src.indexOf("$", i + 1);
+                        if (end >= 0) {
+                            i = take(i, end + 1, saveInlineMathPlaceholder(src.slice(i, end + 1)));
+                            continue;
+                        }
+                    } else if (ch === "\\" && src.charAt(i + 1) === "[") {
+                        const end = src.indexOf("\\]", i + 2);
+                        if (end >= 0) {
+                            i = take(i, end + 2, savePlaceholder(src.slice(i, end + 2)));
+                            continue;
+                        }
+                    } else if (ch === "\\" && src.charAt(i + 1) === "(") {
+                        const end = src.indexOf("\\)", i + 2);
+                        if (end >= 0) {
+                            i = take(i, end + 2, saveInlineMathPlaceholder(src.slice(i, end + 2)));
+                            continue;
+                        }
+                    }
+                    i += 1;
+                }
+                pieces.push(src.slice(cursor));
+                return pieces.join("");
+            })(tempText);
             
             // Auto-heal exposed LaTeX math environments (e.g. \begin{cases}...\end{cases}) that lack $...$ wrapper
             tempText = tempText.replace(/\\begin\{(cases|aligned|matrix|pmatrix|bmatrix|array|equation|gather)\}([\s\S]*?)\\end\{\1\}/g, function(match) {
-                return savePlaceholder('$' + match.trim() + '$');
+                return saveInlineMathPlaceholder('$' + match.trim() + '$');
             });
             
             // Strip HTML tags from non-math parts

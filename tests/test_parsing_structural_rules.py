@@ -80,8 +80,8 @@ def test_inline_options_after_analysis_stay_in_stem():
     assert "【分析】" not in card["content"], card["content"]
     assert "由题设可得" in card["answer_markdown"], card["answer_markdown"]
     assert r"\begin{choices}" in card["content"], card["content"]
-    # 行内分式统一为 \dfrac（预览与 PDF 同字号），选项内容与顺序不变。
-    for option in (r"$\dfrac{4}{15}$", r"$\dfrac{1}{2}$"):
+    # 入库链不再改写源码：行内分式保持 \frac（displaystyle 由渲染层注入）。
+    for option in (r"$\frac{4}{15}$", r"$\frac{1}{2}$"):
         assert option in card["content"], (option, card["content"])
     assert card["content"].count(r"\item") == 4, card["content"]
 

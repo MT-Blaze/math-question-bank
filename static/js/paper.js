@@ -2027,8 +2027,8 @@
         bodyPx: 14,
         linePx: 17,          // 14×1.2=16.8 → 取 17：估算宁可就高，撑破页面比页底少排一行更糟
         mathLinePx: 21,      // 行内含 KaTeX 的行盒：实测 20~21px
-        fracLinePx: 24,      // 行内含 \frac / \sqrt 的行盒：实测 23~24px
-        bigMathLinePx: 34,   // 行内含 \dfrac / cases / array 的行盒：实测 34~35px
+        fracLinePx: 24,      // 行内含 \sqrt / \stackrel 的行盒：实测 23~24px
+        bigMathLinePx: 34,   // 行内含分式（displaystyle）/ cases / array 的行盒：实测 34~35px
         textPx: 602,         // 版心宽 = 794 - 96×2
         cmPx: 37.8,          // 原留白换算用的是 35px/cm，比真 A4 少 7.4%
         cjkPerLine: 40,      // 版心 602px ÷ 14px ≈ 43 个汉字；按 40 折算留出公式余量
@@ -2053,9 +2053,24 @@
     // 半角单位宽（1 单位 = bodyPx / 2 ≈ 7px）
     const PAPER_UNIT_PX = 7;
     // 数学段放大系数：KaTeX 自带算符间距、数学斜体比源码宽。无头浏览器在真 A4 版心上
-    // 对 86 个内联式实测「预测/真实」中位数 0.77，对 51 个选项单元（含 A. 标号）实测
-    // 中位数 1.05 —— 取 1.3 让估高落在安全侧（宁可不排满，也不能把页面撑破）。
+    // 用**已加载字体的 KaTeX**逐式实测 23 个行内式（14px 字号），「真实宽 / 单位宽×7」的
+    // 中位数是 1.32 —— 取 1.3 让全局系数正好居中。displaystyle 带来的增宽不在全局系数里，
+    // 而是逐项落在分式/根号/定界符自己的补偿上（见 PAPER_TEX_FRAC_OVERHEAD 等），
+    // 否则会把 x^2、区间这类根本不涨宽的式子一起放大，白白多占版面。
     const PAPER_MATH_WIDTH_SCALE = 1.3;
+    // 分式与根号的**实测**补偿（半角单位，1 单位 = 7px）：
+    //   根号牌面实测恒为 +14.11px（\sqrt{x} 23.81 vs x 9.7，\sqrt{a+b} 与 \sqrt{2} 同增量）
+    //   = 2.0 单位，旧值 0.9 会让每个带根号的行少算约 8px。
+    //   分式的横线与上下留白实测约 +2.5px，加上 displaystyle 让分子分母涨到全字号
+    //   （中位 +14%、最坏 +68%），旧值 0.7 撑不住、而 \dfrac 独享的 +0.5 又把存量
+    //   \dfrac 高估 60%（实测 12.55px 宽却估 20px），会让选项无故掉列。
+    // 行内统一 displaystyle 后 \frac / \dfrac / \cfrac / \tfrac 走同一档，不再按名字加码。
+    const PAPER_TEX_FRAC_OVERHEAD = 0.9;
+    const PAPER_TEX_SQRT_OVERHEAD = 2.0;
+    // \left\(...\right\)\frac{}{} 这类「撑高定界符」实测再宽约 8px（\left(\frac12\right)^2
+    // 显示态 44.27px，逐件相加只有 36px）：成对定界符包着高分式/环境时补一档。
+    const PAPER_TEX_DELIM_TALL_EXTRA = 0.9;
+    const PAPER_TALL_MATH_BODY_RE = /\\[dc]?frac|\\begin\{(?:cases|array|aligned|matrix|subarray)\}/;
     // \command → 半角单位宽（关系符/二元运算符含 KaTeX 前后空白）
     const PAPER_TEX_OP_UNITS = {
         in: 1.8, notin: 2.4, neq: 2.1, ne: 2.1, leq: 1.7, le: 1.7, geq: 1.7, ge: 1.7,
@@ -2143,8 +2158,7 @@
                 if (name === "frac" || name === "dfrac" || name === "tfrac" || name === "cfrac") {
                     const num = paperReadTexGroup(source, i); i = num[1];
                     const den = paperReadTexGroup(source, i); i = den[1];
-                    total += Math.max(paperTexHalfUnits(num[0], level + 1), paperTexHalfUnits(den[0], level + 1)) + 0.7;
-                    if (name === "dfrac") total += 0.5;
+                    total += Math.max(paperTexHalfUnits(num[0], level + 1), paperTexHalfUnits(den[0], level + 1)) + PAPER_TEX_FRAC_OVERHEAD;
                 } else if (name === "sqrt") {
                     if (source[i] === "[") {
                         const close = source.indexOf("]", i);
@@ -2152,10 +2166,10 @@
                     }
                     if (source[i] === "{") {
                         const body = paperReadTexGroup(source, i);
-                        total += paperTexHalfUnits(body[0], level + 1) + 0.9;
+                        total += paperTexHalfUnits(body[0], level + 1) + PAPER_TEX_SQRT_OVERHEAD;
                         i = body[1];
                     } else {
-                        total += paperTexHalfUnits(source.slice(i, i + 1), level + 1) + 0.9;
+                        total += paperTexHalfUnits(source.slice(i, i + 1), level + 1) + PAPER_TEX_SQRT_OVERHEAD;
                         i += 1;
                     }
                 } else if (name === "begin" || name === "end") {
@@ -2173,6 +2187,13 @@
                 } else if (PAPER_TEX_DELIMS[name] !== undefined) {
                     total += PAPER_TEX_DELIMS[name];
                     if (name === "left" || name === "right") {
+                        // 撑高定界符只可能由 \left 先看到：向后找到配对的 \right，
+                        // 中间夹着分式/环境时这一对括号会被拉高、实测再宽约 8px。
+                        if (name === "left") {
+                            const closeAt = source.indexOf("\\right", i);
+                            const span = closeAt < 0 ? source.slice(i) : source.slice(i, closeAt);
+                            if (PAPER_TALL_MATH_BODY_RE.test(span)) total += PAPER_TEX_DELIM_TALL_EXTRA;
+                        }
                         const next = source.slice(i, i + 2);
                         if (next === "\\{") i += 2;
                         else if (next === "\\}") i += 2;
@@ -2253,12 +2274,13 @@
         return px;
     }
 
-    // 行盒高度：纯文字 17px；含 KaTeX 的实测 20~21px；含 \frac/\sqrt 23~24px；
-    // 含 \dfrac / cases / array 这类真正拉高的式子 34~35px。
+    // 行盒高度：纯文字 17px；含 KaTeX 的实测 20~21px；含 \sqrt 23~24px；
+    // 行内公式统一 displaystyle 后 \frac 与 \dfrac 同高（实测 12.55px 宽、行盒 25~41px），
+    // 所以含分式或 cases/array 的行一律按真正拉高的 34~35px 估。
     function paperBlockLinePx(text) {
         const source = String(text || "");
-        if (/\\dfrac|\\begin\{(?:cases|array|aligned|matrix)\}|\\substack/.test(source)) return A4_PAGE.bigMathLinePx;
-        if (/\\(?:frac|tfrac|sqrt|stackrel)\{/.test(source)) return A4_PAGE.fracLinePx;
+        if (/\\[dtc]?frac|\\begin\{(?:cases|array|aligned|matrix)\}|\\substack/.test(source)) return A4_PAGE.bigMathLinePx;
+        if (/\\(?:sqrt|stackrel)\{/.test(source)) return A4_PAGE.fracLinePx;
         // 只要这行里真出现了公式就按 mathLinePx：像 $[0,2)$ 这种不带命令的区间式，
         // KaTeX 仍把行盒撑到 20px（实测），只查 \\command 会漏判成 17px。
         if (/\\[a-zA-Z]+|\$[^$]+\$|\\\(|\\\[/.test(source)) return A4_PAGE.mathLinePx;
