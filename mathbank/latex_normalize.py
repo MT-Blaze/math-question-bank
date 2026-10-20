@@ -27,7 +27,9 @@ from mathbank.latex_preflight import (
     repair_complement_glyphs,
     wrap_bare_math_variables,
 )
+from mathbank.fraction_style import normalize_fraction_style
 from mathbank.math_markdown import (
+    _replace_delimited_math,
     compact_solution_markdown,
     normalize_fillin_macro,
     normalize_question_math_markdown,
@@ -749,13 +751,29 @@ def strip_empty_solution_choices(text: str) -> str:
 # 「三、填空题（每小题 5 分，共 20 分）」这种行只可能属于**卷面结构**，不可能是本题解析
 # 的内容：MinerU 按版面块切题，上一题解析末尾没有题号/「故选」之类的收束锚点时，下一节
 # 的大标题就被并进了解析尾部（组卷时会在解析里凭空多出一行 section 名）。
-# 判据收紧到「中文数字 + 顿号/句点 + 以『××题』收尾（可带分值括号）」，
+# 判据收紧到「中文数字 + 顿号/句点 + 以『××题』收尾（可带分值/说明尾巴）」，
 # 所以解析正文里「三、由题意可知」这类自述条目不会被误杀。
+# 真实 MinerU 卷面还会把这些标题写成 Markdown 标题（``## 三、填空题：…``），并在题型词
+# 后用冒号接一长串分值/作答说明（「本题共4小题，每小题5分，共20分.」「解答应写出…」），
+# 末尾可能是全角句号也可能是半角句点——全部收进来，否则整段下一节内容会留在解析尾部。
+# 另外「第II卷（非选择题，共90分）」这类卷标与三、四、标题同属下一节版面，一并截断。
 _SECTION_HEADING_RE = re.compile(
-    r"^[ \t]*[一二三四五六七八九十]{1,3}[ \t]*[、.．][ \t]*"
+    r"^[ \t]*(?:#{1,6}[ \t]*)?(?:\*\*[ \t]*)?"
+    r"(?:"
+    r"[一二三四五六七八九十]{1,3}[ \t]*[、.．][ \t]*"
     r"(?:[^\n]{0,12}?)?"
     r"(?:选择题|填空题|单选题|多选题|判断题|解答题|计算题|应用题|证明题|必考题|选考题|综合题)"
-    r"[ \t\r]*(?:[（(][^）)\n]{0,40}[）)])?[ \t\r]*[。．]?[ \t\r]*$"
+    r"[ \t\r]*"
+    r"(?:"
+    r"[（(][^\n]*[）)]"
+    # 冒号尾巴只认带「分」或「题」的说明（分值/题量），避免把正文里的
+    # 「三、解答题：由题意…」这种真实行内说明当成版面标题。
+    r"|[：:](?=[^\n]*(?:分|题))[^\n]*"
+    r")?"
+    r"|第[ \t]*(?:[一二三四五六七八九十]+|[0-9]+|[IVXⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩⅪⅫ]+)[ \t]*卷"
+    r"[ \t]*(?:[（(][^\n]*[）)])?"
+    r")"
+    r"[ \t]*[。．.]?[ \t]*(?:\*\*)?[ \t]*$"
 )
 
 
@@ -769,7 +787,9 @@ def truncate_solution_at_section_heading(text: str) -> str:
         return ""
     lines = text.split("\n")
     for index in range(1, len(lines)):
-        if _SECTION_HEADING_RE.match(lines[index]):
+        # 真实卷面是 CRLF：``split("\n")`` 后行尾还挂着 ``\r``，而正则的 ``$`` 不接受它，
+        # 「第II卷（非选择题，共90分）」这类带括号尾巴的卷标会整行漏判。
+        if _SECTION_HEADING_RE.match(lines[index].rstrip("\r")):
             return "\n".join(lines[:index]).rstrip()
     return text
 
@@ -835,6 +855,179 @@ def flatten_solution_headings(text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# 解析外层标题兜底：扁平化之后必须仍有且只有一个【解析】
+# ---------------------------------------------------------------------------
+# 退化形态来自「上一轮已经扁平化过」的卡片：源文里的【分析】/【详解】这时已经是
+# ``**分析：**`` 或 ``\textbf{分析：}``，flatten 认不出方括号标题，于是整篇解析没有
+# 最外层【解析】，导出后只剩一串加粗小标题。这里在 flatten 之前补一层外壳：
+#   - 已有方括号外层标题（解析/详解/解答/分析…）→ 交给 flatten 升级，绝不重复插；
+#   - 只有加粗小标题或裸正文 → 在【答案】块之后插一个【解析】；
+#   - 只有【答案】、没有解析正文 → 不插（空解析是真实信号，不能靠加标题掩盖）。
+_ANSWER_BLOCK_LINE_RE = re.compile(
+    r"(?m)^[ \t]*【(?:参考答案|答案|答案解析|答案与解析)】"
+)
+# 已扁平化的外层标题（markdown / 结构层两种加粗写法），含冒号与闭合定界符。
+_BOLD_SOLUTION_HEADING_RE = re.compile(
+    r"(?:\*\*[ \t]*|\\textbf\{[ \t]*)"
+    r"(?P<label>解析与详解|详解与解析|解析|详解|解答|分析|点拨)"
+    r"[ \t]*[：:][ \t]*(?:\*\*|\})"
+)
+# 裸文本外层标题（「解析：」「详解：」），同样是合法外壳，不重复插。
+_PLAIN_SOLUTION_HEADING_RE = re.compile(
+    r"(?m)^[ \t]*(?:解析与详解|详解与解析|解析|详解|解答|分析)[ \t]*[：:]"
+)
+# 空【答案】后面紧跟的纯字母答案行（``【答案】\nA``）属于答案块，不是解析正文。
+_ANSWER_LETTER_LINE_RE = re.compile(
+    r"^[ \t]*[A-H](?:[ \t、,，/|]*[A-H])*[ \t]*[。.]?[ \t]*$"
+)
+
+
+def ensure_outer_solution_heading(text: str) -> str:
+    r"""解析必须有统一的外层 ``【解析】``：缺失时在【答案】块之后补一个。
+
+    只补标题、不动正文；幂等（第二次调用必然命中已有的 ``【解析】``）。
+    """
+    if not text or not text.strip():
+        return text
+    stripped = text.strip()
+    # 整条解析就是一行越界章节标题：那是「本题没解析」的真实信号，留给人工核对。
+    if "\n" not in stripped and _SECTION_HEADING_RE.match(stripped):
+        return text
+
+    flags = math_region_flags(text)
+    for match in _SOLUTION_HEADING_RE.finditer(text):
+        if flags[match.start()]:
+            continue
+        if match.group(1).strip() in _OUTER_SOLUTION_LABELS:
+            return text
+
+    # 退化到加粗的「解析：」就是外层标题本身，原位升级成方括号形态。
+    has_bold_solution_heading = False
+    for match in _BOLD_SOLUTION_HEADING_RE.finditer(text):
+        if flags[match.start()]:
+            continue
+        if match.group("label") == "解析":
+            return text[:match.start()] + "【解析】" + text[match.end():]
+        has_bold_solution_heading = True
+        break
+
+    if _PLAIN_SOLUTION_HEADING_RE.search(text):
+        return text
+
+    marker = _ANSWER_BLOCK_LINE_RE.search(text)
+    if marker is None:
+        # 纯文字答案（``见解析`` / ``A`` / 单段结论）不是解析正文，补一个【解析】
+        # 会把答案本身变成标题下的正文；只有确实存在退化后的加粗解析小标题时才补壳。
+        if not has_bold_solution_heading:
+            return text
+        return "【解析】\n\n" + text.lstrip("\n")
+
+    cursor = marker.end()
+    size = len(text)
+    while True:
+        newline = text.find("\n", cursor)
+        if newline < 0:
+            return text
+        probe = newline + 1
+        while probe < size and text[probe] in " \t\r\n":
+            probe += 1
+        if probe >= size:
+            return text
+        if _ANSWER_BLOCK_LINE_RE.match(text, probe):
+            cursor = probe
+            continue
+        next_newline = text.find("\n", probe)
+        line = text[probe:next_newline if next_newline >= 0 else size]
+        if _ANSWER_LETTER_LINE_RE.match(line):
+            if next_newline < 0:
+                return text
+            cursor = next_newline
+            continue
+        return text[:probe] + "【解析】\n\n" + text[probe:]
+
+
+# ---------------------------------------------------------------------------
+# 解析配图去重：同一张图只保留最后一处引用
+# ---------------------------------------------------------------------------
+# 一张解析配图在【分析】与【详解】里各出现一次时，前端会渲染两张一模一样的图。
+# MinerU 会把同一张图写进两个版面块，搬图规则又按**整串 URL** 判重（同一文件的
+# ``images/a.jpg`` 与 ``/static/uploads/mineru_a.jpg`` 不同形），于是旧引用删不掉。
+# 这里按**文件名**收口：只保留最后一处。整行只有图片时连行删，嵌在句子里时只摘
+# 图片语法、正文一字不动。
+_ANSWER_IMAGE_REF_RE = re.compile(
+    r"!\[[^\]]*\]\((?P<markdown>[^)]+)\)"
+    r"|\\includegraphics(?:\[[^\]]*\])?\{(?P<latex>[^}]+)\}"
+)
+
+
+def _image_reference_basename(ref: str) -> str:
+    name = (ref or "").strip().strip("\"'")
+    name = name.split("?", 1)[0].split("#", 1)[0].replace("\\", "/")
+    return name.rsplit("/", 1)[-1].strip()
+
+
+def dedupe_answer_image_references(text: str) -> tuple[str, list]:
+    """同一张图在解析里出现多次时只保留最后一处；返回 ``(清理后文本, 重复文件名)``。"""
+    if not text or ("![" not in text and "\\includegraphics" not in text):
+        return text, []
+    groups: dict = {}
+    for match in _ANSWER_IMAGE_REF_RE.finditer(text):
+        name = _image_reference_basename(match.group("markdown") or match.group("latex") or "")
+        if name:
+            groups.setdefault(name, []).append(match)
+    duplicates = sorted(name for name, matches in groups.items() if len(matches) > 1)
+    if not duplicates:
+        return text, []
+
+    cuts: list = []
+    for name in duplicates:
+        for match in groups[name][:-1]:
+            line_start = text.rfind("\n", 0, match.start()) + 1
+            line_end = text.find("\n", match.start())
+            if line_end < 0:
+                line_end = len(text)
+            line = text[line_start:line_end]
+            if not _ANSWER_IMAGE_REF_RE.sub("", line).strip():
+                cuts.append((line_start, line_end + 1 if line_end < len(text) else line_end))
+            else:
+                cuts.append((match.start(), match.end()))
+
+    pieces: list = []
+    cursor = 0
+    for start, end in sorted(cuts):
+        if start < cursor:
+            continue
+        pieces.append(text[cursor:start])
+        cursor = end
+    pieces.append(text[cursor:])
+    cleaned = "".join(pieces)
+    cleaned = re.sub(r"[ \t]+\n", "\n", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    return cleaned, duplicates
+
+
+# ---------------------------------------------------------------------------
+# 行内分式：网页与 PDF 同一字号
+# ---------------------------------------------------------------------------
+# KaTeX 在行内 ``$...$`` 里默认用 textstyle，``\frac`` 的分子分母会被压成脚注大小，
+# 而 exam-zh/XeLaTeX 导出的 PDF 在同样的行内公式里看起来更大——预览与成品不一致。
+# 只处理行内定界符（``$...$`` 与 ``\(...\)``），显示公式（``$$...$$`` / ``\[...\]``）
+# 原样放过；分式内部与上标仍由 :func:`normalize_fraction_style` 降回 ``\frac``，
+# 未知宏、代码块、TikZ、``\text{}`` 内的内容一律不动。
+def normalize_inline_fraction_style(text: str) -> str:
+    if not isinstance(text, str) or "\\frac" not in text:
+        return text
+
+    def _normalize(span: str) -> str:
+        if span.startswith("$$") or span.startswith(r"\["):
+            return span
+        return normalize_fraction_style(span)
+
+    return _replace_delimited_math(text, _normalize)
+
+
+
+# ---------------------------------------------------------------------------
 # 分段函数 / 方程组排版标准化：只允许 cases
 # ---------------------------------------------------------------------------
 # 「``\left\{ \begin{aligned} … \end{aligned} \right.``」是 MinerU 与公式编辑器对
@@ -896,12 +1089,17 @@ def normalize_for_storage(value: str, question_type: str = "", is_answer: bool =
        整行会被包成 ``$| a | b |$``，结构层就再也认不出这是表格行（表格丢行）。
        字符层认识 tabular/choices/includegraphics 并整体保护它们。
     4. ``$$..$$`` 降级与多余空行压缩只属于解析；题干的独立公式是合理的。
-    5. **解析侧的文本级清洗（越界截断、板块标题扁平化）必须走在结构层之前**：扁平化
-       产出的是 markdown 加粗 ``**点睛：**``，正要靠结构层的 ``latexify_bold`` 归一成
-       库内唯一加粗写法 ``\textbf{点睛：}``；放在之后会把 ``**`` 直接落进库里，
-       与「库里没有双星号」这条既有不变量冲突。
+    5. **解析侧的文本级清洗（越界截断、配图去重、外层标题兜底、板块标题扁平化）
+       必须走在结构层之前**：越界截断先做，配图去重必须基于截断后的正文（否则最后一处
+       落在越界区时会把整题配图删空）；外层标题兜底必须先于扁平化（退化到
+       ``**分析：**`` 的旧卡片认不出方括号标题）；扁平化产出的是 markdown 加粗
+       ``**点睛：**``，正要靠结构层的 ``latexify_bold`` 归一成库内唯一加粗写法
+       ``\textbf{点睛：}``；放在之后会把 ``**`` 直接落进库里，与「库里没有双星号」
+       这条既有不变量冲突。
     6. ``cases`` 归一（分段函数 / 方程组 / 不等式组）排在字符层之前：它只认
        ``\\left\\{`` + 行式环境这一种纯数学形态，与表格、定界符互不干扰。
+    7. 行内分式 ``\\frac``→``\\dfrac`` 必须排在字符层之后：只有那时数学片段才有完整
+       定界符；它只动 ``$...$`` / ``\\(...\\)``，显示公式与 ``\\text{}`` 内部统放过。
 
     ⚠️ 本函数必须**只在真正要落地的时候跑**（``post_process`` 末段与写库边界），
     任何录入路径都不许在它之前单独跑其中的某一步：这条链只对「自己的输出」幂等
@@ -925,11 +1123,19 @@ def normalize_for_storage(value: str, question_type: str = "", is_answer: bool =
         # 越界标题必须先截：吞进来的「三、填空题」不是板块标题，扁平化会把它们
         # 降级成一堆加粗噪声，反而把越界藏起来。
         value = truncate_solution_at_section_heading(value)
+        # 重复配图去重必须在截断之后：最后一处引用若落在越界区里，先删前一处的做法
+        # 会让界内那张被删、界外那张又被截掉，整题配图凭空消失。
+        value = dedupe_answer_image_references(value)[0]
+        # 外层【解析】兜底必须早于扁平化：退化到 ``**分析：**`` 的旧卡片认不出方括号标题。
+        value = ensure_outer_solution_heading(value)
         # 层级扁平化：最外层只留一个【解析】，其余【XX】降级为加粗短语（正文一字不删）。
         value = flatten_solution_headings(value)
     value = normalize_fillin_macro(value)
     value = normalize_content_for_latex_storage(value, question_type)
     value = normalize_question_math_markdown(value)
+    # 行内分式统一 \\dfrac（预览与 PDF 同字号），必须排在字符层之后：那时所有数学
+    # 片段才有完整定界符；显示公式与 \\text{} 内部由 fraction_style 自己放过。
+    value = normalize_inline_fraction_style(value)
     # 变量语义包裹（R10）必须排在字符层之后：字符层已经包好的 ``$p$`` 这里会因为
     # 紧邻 ``$`` 被否决，天然幂等；反过来先包再跑字符层，裸字母会被并入 ASCII run 处理。
     value = wrap_bare_math_variables(value)[0]

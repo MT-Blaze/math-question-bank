@@ -97,22 +97,30 @@ from mathbank.latex_normalize import (
     normalize_for_storage,
     normalize_stem_for_storage,
 )
+from mathbank.question_types import enforce_multi_choice_from_answer
 
 router = APIRouter()
 
 
 def _normalize_pair_for_db(content: str, answer_markdown: str, question_type: str,
-                           paper_question_no: str) -> tuple[str, str, str]:
+                           paper_question_no: str) -> tuple[str, str, str, str]:
     """写库边界统一归一化：题干/解析走同一条链，题干里残留的原卷题号回填到 paper_question_no。
 
     A4 预览与 exam-zh 导出都会自行编号，题干自带题号会排成「1. 1. …」，所以在这里剥离；
     已经填了原题号的（拆卷卡片、手填）保留用户自己的值不覆盖。
+
+    题型兜底（答案 ≥2 个独立字母 → multi_choice）必须**先于**归一化：结构层的选项
+    包装器带「非选择题不包 choices」的防误伤闸门，题型晚改一步，纯文本选项目前仍是
+    选项区形态，包装就会被跳过——等下一趟保存才改对，同一题两次入库得到两种源码。
     """
+    question_type = enforce_multi_choice_from_answer(
+        question_type, content, answer_markdown
+    )
     lead_no, new_content = normalize_stem_for_storage(content, question_type)
     new_answer = normalize_for_storage(answer_markdown, is_answer=True)
     if lead_no and not (paper_question_no or "").strip():
         paper_question_no = lead_no
-    return new_content, new_answer, paper_question_no
+    return new_content, new_answer, question_type, paper_question_no
 
 
 def _parse_int_or_none(value):
@@ -1392,7 +1400,7 @@ def create_question(
         # （build_question_fingerprint 内部会再归一化做哈希；图片可见性判定也依赖原文）。
         content_for_options = content
         answer_markdown_raw = answer_markdown
-        content, answer_markdown, paper_question_no = _normalize_pair_for_db(
+        content, answer_markdown, question_type, paper_question_no = _normalize_pair_for_db(
             content, answer_markdown, question_type, paper_question_no
         )
         # 选择题末尾的作答空括号统一成 \paren。**必须放在 _normalize_pair_for_db
@@ -1672,7 +1680,7 @@ def update_question(
         # （build_question_fingerprint 内部会再归一化做哈希；图片可见性判定也依赖原文）。
         content_for_options = content
         answer_markdown_raw = answer_markdown
-        content, answer_markdown, paper_question_no = _normalize_pair_for_db(
+        content, answer_markdown, question_type, paper_question_no = _normalize_pair_for_db(
             content, answer_markdown, question_type, paper_question_no
         )
         # 选择题末尾的作答空括号统一成 \paren。**必须放在 _normalize_pair_for_db

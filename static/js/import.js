@@ -23,17 +23,38 @@
                 };
             }
 
+            // 解析里的配图：同时认 Markdown ![]() 与入库后的 \includegraphics{basename}。
+            // 只认 Markdown 时，入库题（正文已是 LaTeX 形态）的解答图不会被判成「解答图」，
+            // 于是又在题干配图条里渲染一次——同一张图在页面上出现两遍。
             window.collectAnswerImagePaths = function(markdown) {
                 markdown = String(markdown || '');
-                const foundImages = [];
+                const rawRefs = [];
                 const imagePattern = /!\[.*?\]\(([^)]+)\)/g;
+                const latexImagePattern = /\\includegraphics(?:\[[^\]]*\])?\{([^}]+)\}/g;
                 let match;
                 while ((match = imagePattern.exec(markdown)) !== null) {
-                    const safePath = window.MathBankSafe.safeImageUrl(match[1]);
+                    rawRefs.push(match[1]);
+                }
+                while ((match = latexImagePattern.exec(markdown)) !== null) {
+                    rawRefs.push(match[1]);
+                }
+                const foundImages = [];
+                rawRefs.forEach(ref => {
+                    let raw = String(ref || '').trim();
+                    if (!raw) return;
+                    const withoutQuery = raw.split(/[?#]/)[0];
+                    if (!/[\\/]/.test(withoutQuery) && !/^https?:/i.test(raw)) {
+                        // \includegraphics 只写 basename：先查全局真实地址表，查不到
+                        // （例如草稿载入时图片表尚未登记）再退回上传根目录。
+                        const base = withoutQuery.split('/').pop();
+                        raw = (window.__mathbankImgByBase && window.__mathbankImgByBase[base])
+                            || ('/static/uploads/' + base);
+                    }
+                    const safePath = window.MathBankSafe.safeImageUrl(raw);
                     if (safePath && !foundImages.includes(safePath)) {
                         foundImages.push(safePath);
                     }
-                }
+                });
                 return foundImages;
             };
 

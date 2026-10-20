@@ -887,6 +887,46 @@ def test_section_truncation_does_not_eat_real_solution_lines():
     assert normalize_for_storage(only_heading, is_answer=True) != "", only_heading
 
 
+def test_section_truncation_handles_crlf_and_paper_volume_marker():
+    r"""真实卷面是 CRLF，卷标与下一节标题连排时两行都要截掉。
+
+    原文取自库中 2024 年试卷：``第II卷（非选择题，共90分）`` 后面紧跟
+    ``三、填空题：本题共3小题，每小题5分，共20分.``。``split("\n")`` 留下的
+    行尾 ``\r`` 会让带括号尾巴的卷标漏判，只剩下一节标题被截。
+    """
+    answer = (
+        "【答案】ACD\r\n\r\n【解析】\r\n\r\n【分析】判断各选项。\r\n\r\n"
+        "【详解】$g(x)$ 在 $(0,+\\infty)$ 单调递减，对.故选：ACD\r\n\r\n"
+        "第II卷（非选择题，共90分）\r\n\r\n"
+        "三、填空题：本题共3小题，每小题5分，共20分.\r\n\r\n"
+        "13. 已知函数 $f(x)=x+1$，则 $f(0)=$ \\fillin."
+    )
+    out = normalize_for_storage(answer, is_answer=True)
+    assert "第II卷" not in out, out
+    assert "三、填空题" not in out, out
+    assert "13. 已知函数" not in out, out
+    assert out.endswith("故选：ACD"), out
+
+
+def test_plain_answers_without_solution_structure_are_not_given_a_heading():
+    r"""纯文字答案不是解析正文：不能凭空补【解析】把答案本身变成标题下的正文。"""
+    for answer in ("答案解析内容", "见解析", "A"):
+        assert normalize_for_storage(answer, is_answer=True) == answer
+
+
+def test_already_flattened_bold_solution_gets_outer_jiexi():
+    r"""上一轮已扁平化的卡片只剩 ``\textbf{分析：}``，这一轮必须在【答案】后补回【解析】。"""
+    answer = (
+        "【答案】B\n\n"
+        "\\textbf{分析：}由题意得 $a=1$。\n\n"
+        "\\textbf{详解：}代入验证。"
+    )
+    out = normalize_for_storage(answer, is_answer=True)
+    assert out.count("【解析】") == 1, out
+    assert out.startswith("【答案】B"), out
+    assert "【解析】" in out.split(r"\textbf{分析：}")[0], out
+
+
 def test_solution_headings_flattened_to_a_single_outer_jiexi():
     r"""【分析】/【详解】/【点睛】降级为加粗短语，最外层只留一个【解析】，正文一字不删（Bug 3）。"""
     answer = (
@@ -971,6 +1011,28 @@ def test_bare_set_letter_wrapped_at_storage_time():
     assert "点 $P$ 在圆 $O$ 上" in out, out
     for acronym in ("PDF", "AI"):
         assert "$%s$" % acronym not in out, out
+
+
+def test_bare_set_letter_runs_from_the_real_bank_are_wrapped():
+    r"""存量真实形态：``集合 A, B`` / ``集合A，B；`` / ``全集U，集合M，N``。
+
+    大写分支为防「一半斜体一半正体」会放行枚举，但集合语境里每一枚都是数学对象；
+    新增判据只锚定集合类关键词，选项枚举 ``判断A、C、D`` 与 ``集合 A = {1,2}`` 不动。
+    """
+    for raw, expected in (
+        ("集合 A, B", "集合 $A$, $B$"),
+        ("集合A，B；", "集合$A$，$B$；"),
+        ("全集U，集合M，N满足条件", "全集$U$，集合$M$，$N$满足条件"),
+        ("集合 A、B、C 中", "集合 $A$、$B$、$C$ 中"),
+    ):
+        out = normalize_for_storage(raw, "detailed_answer")
+        assert expected in out, (raw, out)
+        assert normalize_for_storage(out, "detailed_answer") == out, "二次入库走形"
+
+    for untouched in ("元素与集合的关系判断A、C、D", "集合AB", "故选：C."):
+        assert normalize_for_storage(untouched, "detailed_answer") == untouched, untouched
+    # ``集合 A = {1,2}`` 走字符层的整式包裹（``$A = {1,2}$``），不是本规则的逐字母包裹。
+    assert "集合 $A$ =" not in normalize_for_storage("集合 A = {1,2}", "detailed_answer")
 
     answer = "【答案】D\n\n【解析】故选：D"
     out = normalize_for_storage(answer, is_answer=True)

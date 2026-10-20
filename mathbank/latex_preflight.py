@@ -560,6 +560,18 @@ _UPPER_TAG_CONTEXT_RE = re.compile(
     r"(?:题目|题|试卷|卷|插图|图|表格|表|类型|型|选项|项|编号|号|小组|组|级别|级|档次|档|"
     r"份|故选|应选|答案为|答案|选择|选|填)$"
 )
+# 集合名成串出现：「集合 A, B」「求集合A，B；」「全集U，集合M，N」。
+# 逐字母的大写分支为了不把枚举包成「一半斜体一半正体」，对「跳过分隔符后仍是 ASCII
+# 字母」的整串放行；但集合语境里整串**每一枚都是数学对象**。这里只在集合类关键词
+# 紧邻处补一条判据：「元素与集合的关系判断A、C、D」前面隔着「判断」，不在此列。
+# 只收单字母，``PDF``/``AI`` 这类连续缩写天然不匹配。
+_SET_KEYWORD = r"(?:集合|全集|子集|补集|交集|并集|空集|数集|点集)"
+_SET_LETTER_RUN_RE = re.compile(
+    r"(?P<kw>" + _SET_KEYWORD + r")[ \t]*(?:分别)?(?:为|是)?[ \t]*"
+    r"(?P<letters>[A-Z](?:[ \t]*(?:[、,，/|]|和|与|及)[ \t]*[A-Z])*)"
+)
+# 集合串里 ``、`` 是列表分隔符而不是选项标号，所以这条判据不含 ``、``。
+_SET_LETTER_BAD_PUNCT = set(".．:：)）】")
 
 
 # 数学区定界符与行式数学环境：R10 用它判断字母是否已经在数学态里。
@@ -700,6 +712,31 @@ def _bare_upper_is_math_letter(text: str, start: int, end: int, flags) -> bool:
     return True
 
 
+def _set_letter_run_spans(text: str, flags) -> list[tuple[int, int]]:
+    r"""集合类关键词紧邻的裸大写字母逐枚给出待包裹区间。
+
+    与 :func:`_bare_upper_is_math_letter` 的唯一区别在「枚举」这条否决上：集合语境
+    允许 ``集合 A、B`` 这种以 ``、``/逗号/「和」分隔的字母串**逐枚**包裹，但绝不把
+    分隔符一起包进同一个 ``$...$``。连续缩写（``PDF``）不匹配；字母串末尾紧跟 ASCII
+    （``集合 A = …``、``集合AB``）时整串放行，交给别的规则。
+    """
+    spans: list[tuple[int, int]] = []
+    for match in _SET_LETTER_RUN_RE.finditer(text):
+        if flags[match.start("kw")]:
+            continue
+        base = match.start("letters")
+        positions = [base + m.start() for m in re.finditer(r"[A-Z]", match.group("letters"))]
+        if any(flags[pos] for pos in positions):
+            continue
+        if any(text[pos + 1:pos + 2] in _SET_LETTER_BAD_PUNCT for pos in positions):
+            continue
+        tail = _next_skipping(text, positions[-1] + 1, " \t")
+        if tail and tail.isascii() and tail not in "\n\r":
+            continue
+        spans.extend((pos, pos + 1) for pos in positions)
+    return spans
+
+
 def wrap_bare_math_variables(text: str) -> tuple[str, int, list[str]]:
     r"""给中文语境里单独成词的裸数学字母补上 $ 定界符（R10）。
 
@@ -737,6 +774,8 @@ def wrap_bare_math_variables(text: str) -> tuple[str, int, list[str]]:
     for match in _BARE_UPPER_RE.finditer(text):
         if _bare_upper_is_math_letter(text, match.start(), match.end(), flags):
             spans.append((match.start(), match.end()))
+    # 集合语境里的字母串：逐枚补包，覆盖 ``集合 A, B`` 这种被「枚举」否决挡下的形态。
+    spans.extend(_set_letter_run_spans(text, flags))
     if not spans:
         return text, 0, []
     pieces: list = []

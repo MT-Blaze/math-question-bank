@@ -25,10 +25,15 @@ from main import (
 
 from mathbank.latex_normalize import (
     _extract_inline_choice_run,
+    dedupe_answer_image_references,
     normalize_choice_paren_macro,
     normalize_for_storage,
     normalize_stem_for_storage,
     truncate_solution_at_section_heading,
+)
+from mathbank.question_types import (
+    answer_choice_letters,
+    enforce_multi_choice_from_answer,
 )
 from mathbank.figure_repair import repair_parsed_questions
 from mathbank.kaoxiang_tree import align_parsed_classification
@@ -1013,33 +1018,17 @@ _STEM_OPTION_LINE_RE = re.compile(
 
 # 【答案】段落首行：答案字母的唯一归属地（多小问答案与「见解析」都不在此列）。
 _ANSWER_BLOCK_RE = re.compile(r"【(?:参考答案|答案)】[ \t]*[：:]?[ \t]*([^\n]*)")
-
-# 答案段里允许出现的分隔噪声：除了字母与这些字符，别的一律说明那不是纯选项答案。
-_ANSWER_LETTER_NOISE_RE = re.compile(
-    r"[A-H\s，、。;；:：/|（）()\[\]{}\-—~或和与]*"
-)
 _TEXTBF_OPEN_RE = re.compile(r"\\textbf\{")
 
 
 def _answer_letters_from_markdown(answer: str) -> str:
-    r"""从解析的 ``【答案】`` 段取**独立**的选项字母串（如 ``ACD``），取不到返回空串。
+    r"""从解析里取**独立**的选项字母串（如 ``ACD``），取不到返回空串。
 
     判据是「整段除了字母和分隔符什么都没有」：``（1）A（2）B`` 这种多小问答案、
     ``见解析`` 这种文字答案、``$[-1,1]$`` 这种区间答案一律返回空串，绝不参与题型判定。
+    没有 ``【答案】`` 块的卡片（真实拆卷常见）再看收束句 ``故选：AD``。
     """
-    if not answer:
-        return ""
-    match = _ANSWER_BLOCK_RE.search(answer)
-    if not match:
-        return ""
-    line = match.group(1).strip()
-    if not line or _ANSWER_LETTER_NOISE_RE.sub("", line):
-        return ""
-    letters = re.findall(r"[A-H]", line)
-    if not letters:
-        return ""
-    # 去重保序：「A、A」这种重复字母不构成第二个答案。
-    return "".join(dict.fromkeys(letters))
+    return answer_choice_letters(answer)
 
 
 def _stem_option_letters(content: str) -> list:
@@ -1218,26 +1207,18 @@ def _enforce_multi_choice_from_answer(q: dict) -> bool:
     r"""答案里有 ≥2 个独立选项字母 → 强制 ``multi_choice``（防「ACD 配单选题」）。
 
     必须在归一化**之后**跑：判据之一「题干里有选项区」看的是 ``\begin{choices}``，
-    而那正是结构层的产物。题干没有选项区时坚决不改：填空题答案写成 ``A、B``
-    被改成多选题，比漏改危害大得多。
+    而那正是结构层的产物。题干没有选择题语境时坚决不改：填空题答案写成 ``A、B``
+    被改成多选题，比漏改危害大得多。答案字母的提取与判定统一在
+    :func:`mathbank.question_types.enforce_multi_choice_from_answer`，写库边界复用同一份。
     """
-    if q.get("question_type") == "multi_choice":
+    before = q.get("question_type") or ""
+    after = enforce_multi_choice_from_answer(
+        before, q.get("content") or "", q.get("answer_markdown") or ""
+    )
+    if after == before:
         return False
-    if len(_answer_letters_from_markdown(q.get("answer_markdown") or "")) < 2:
-        return False
-    if r"\begin{choices}" not in (q.get("content") or ""):
-        return False
-    q["question_type"] = "multi_choice"
+    q["question_type"] = after
     return True
-
-
-def _image_ref_name(ref: str) -> str:
-    """图片引用的**文件名**：同一张图在正文里可能有三种 URL 形态，只有文件名同源。"""
-    match = re.match(r"!\[[^\]]*\]\(([^)]*)\)", ref)
-    if match is None:
-        match = re.match(r"\\includegraphics(?:\[[^\]]*\])?\{([^}]*)\}", ref)
-    url = (match.group(1) if match else "") or ""
-    return os.path.basename(url.split("?")[0].split("#")[0].replace("\\", "/").split("/")[-1])
 
 
 def _dedupe_answer_image_refs(q: dict) -> list:
@@ -1247,49 +1228,21 @@ def _dedupe_answer_image_refs(q: dict) -> list:
     凭空多出一张图。源头有两处会造重复：MinerU 把同一张图写进两个版面块，
     以及搬图规则按**整串 URL** 判重（同一文件的 ``images/a.jpg`` 与
     ``/static/uploads/mineru_a.jpg`` 不同形，删不掉旧的那条又补一条新的）。
-    这里按文件名收口，做入库前的最后一道保证。
+    这里按文件名收口，做入库前的最后一道保证；判据与清洗动作统一在
+    :func:`mathbank.latex_normalize.dedupe_answer_image_references`（入库链同源）。
 
     只保留最后出现的那一处：卷面顺序是【答案】→ 分析 → 详解，配图讲的是详解里的东西，
     前面的那次引用是重复。整行只有图片时连行一起删；图片嵌在句子里时只摘图片语法、
     正文一个字不动。
     """
     answer = q.get("answer_markdown")
-    if not isinstance(answer, str) or not answer or "[" not in answer:
+    if not isinstance(answer, str) or not answer:
         return []
-    groups: dict = {}
-    for match in _IMAGE_REF_RE.finditer(answer):
-        name = _image_ref_name(match.group(0))
-        if name:
-            groups.setdefault(name, []).append(match)
-    duplicates = {name for name, group in groups.items() if len(group) > 1}
+    cleaned, duplicates = dedupe_answer_image_references(answer)
     if not duplicates:
         return []
-    cuts: list = []
-    for name in duplicates:
-        for match in groups[name][:-1]:
-            line_start = answer.rfind("\n", 0, match.start()) + 1
-            line_end = answer.find("\n", match.start())
-            if line_end < 0:
-                line_end = len(answer)
-            line = answer[line_start:line_end]
-            if not _IMAGE_SYNTAX_RE.sub("", line).strip():
-                # 整行只有图片：连行带换行一起删，别留空洞。
-                cuts.append((line_start, line_end + 1 if line_end < len(answer) else line_end))
-            else:
-                cuts.append((match.start(), match.end()))
-    pieces: list = []
-    cursor = 0
-    for start, end in sorted(cuts):
-        if start < cursor:
-            continue
-        pieces.append(answer[cursor:start])
-        cursor = end
-    pieces.append(answer[cursor:])
-    cleaned = "".join(pieces)
-    cleaned = re.sub(r"[ \t]+\n", "\n", cleaned)
-    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
     q["answer_markdown"] = cleaned
-    return sorted(duplicates)
+    return duplicates
 
 
 def _clean_question_structures(parsed_questions: list) -> None:

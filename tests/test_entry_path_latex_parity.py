@@ -527,7 +527,7 @@ def test_non_ascii_command_argument_is_never_split_by_a_dollar(source):
 @pytest.mark.parametrize(
     "source, expected",
     [
-        (r"x=\frac{1}{2}", r"$x=\frac{1}{2}$"),
+        (r"x=\frac{1}{2}", r"$x=\dfrac{1}{2}$"),
         (r"\sqrt{x}+1", r"$\sqrt{x}+1$"),
         (r"集合 \complement_{U}A", r"集合 $\complement_{U}A$"),
         (r"点 \overrightarrow{AB}=3", r"点 $\overrightarrow{AB}=3$"),
@@ -536,16 +536,16 @@ def test_non_ascii_command_argument_is_never_split_by_a_dollar(source):
     ],
 )
 def test_ascii_math_runs_keep_their_existing_wrapping(source, expected):
-    r"""纯 ASCII 与中英混排的正常补 $ 行为一字不变（回归护栏）。"""
+    r"""纯 ASCII 与中英混排的正常补 $ 行为不变；行内分式按新规统一成 ``\dfrac``。"""
     assert normalize_for_storage(source, "fill_in_blank") == expected
 
 
 def test_trim_keeps_every_original_character():
-    r"""裁剪只决定 $ 落在哪，绝不允许吞掉任何原字符。"""
+    r"""裁剪只决定 $ 落在哪，绝不允许吞掉任何原字符（行内分式统一 dfrac 是唯一改写）。"""
     for source in (
         r"求 \underline{重点内容} 的值",
         r"a^{2}+b^{2}=c^{2} 且 x>0",
         r"则 \frac{a}{b} 为最大值",
     ):
         out = normalize_for_storage(source, "fill_in_blank")
-        assert out.replace("$", "") == source.replace("$", ""), (source, out)
+        assert out.replace("$", "").replace("\\dfrac", "\\frac") == source.replace("$", ""), (source, out)
