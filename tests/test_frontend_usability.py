@@ -805,7 +805,13 @@ return {
     paperInlineWidthPx: paperInlineWidthPx,
     paperTableRowCount: paperTableRowCount,
     paperTextHeightPx: paperTextHeightPx,
+    paperTexHalfUnits: paperTexHalfUnits,
     estimateA4HeaderHeight: estimateA4HeaderHeight,
+    PAPER_UNIT_PX: PAPER_UNIT_PX,
+    PAPER_MATH_WIDTH_SCALE: PAPER_MATH_WIDTH_SCALE,
+    PAPER_TEXT_WIDTH_SCALE: PAPER_TEXT_WIDTH_SCALE,
+    PAPER_MATH_INLINE_GAP_UNITS: PAPER_MATH_INLINE_GAP_UNITS,
+    PAPER_MATH_ENV_WIDTH_SCALE: PAPER_MATH_ENV_WIDTH_SCALE,
 };
 })(typeof window === 'undefined' ? {} : window);
 
@@ -816,7 +822,8 @@ function fail(msg) { throw new Error(msg); }
 if (A4.widthPx !== 794 || A4.heightPx !== 1123 || A4.marginPx !== 96) fail('A4 页面几何漂移');
 if (A4.contentPx !== 931 || A4.textPx !== 602) fail('版心/正文高漂移');
 if (A4.bodyPx !== 14 || A4.linePx !== 17 || A4.cmPx !== 37.8) fail('字号/行高/cm 口径漂移');
-if (A4.mathLinePx !== 21 || A4.fracLinePx !== 24 || A4.bigMathLinePx !== 34) fail('公式行盒口径漂移');
+if (A4.mathLinePx !== 23 || A4.sqrtLinePx !== 25 || A4.fracLinePx !== 41) fail('公式行盒口径漂移');
+if (A4.bigMathLinePx !== 51 || A4.envRowPx !== 25 || A4.envFracRowPx !== 36) fail('多行环境行盒口径漂移');
 if (A4.tableRowPx !== 30 || A4.choiceColGapPx !== 14) fail('表格行/选项间距口径漂移');
 
 // 1) 插图必须整块计高，且尊重 \includegraphics 自带的 max height
@@ -840,11 +847,29 @@ const shortH = api.estimateQuestionBlockHeight('single_choice', stem + '\n' + sh
 const longH = api.estimateQuestionBlockHeight('single_choice', stem + '\n' + longItems, 0, 'right', 0);
 if (longH <= shortH) fail('选项折列没有抬高整题估高：' + shortH + ' vs ' + longH);
 
-// 3) 行盒口径：光有 $[0,2)$ 这种不带命令的公式也要按公式行高（回归：曾漏判成 17px）
+// 3) 行盒口径：全部按「行内 \displaystyle」在真 A4 版心上逐档实测（无头 Chromium）
+//    纯文字 16.8 / 普通行内式 22.3 / 根号 21.5~24.9 / 顶层分式 34~42.6 /
+//    两行 cases 50.8、两行带分式 cases 71.1、三行 73.2、\sum 49.6、\int 41.9
 if (api.paperBlockLinePx('$[0,2)$') !== A4.mathLinePx) fail('无命令内联式行高漏判');
-if (api.paperBlockLinePx('\\dfrac{1}{a}>\\dfrac{1}{b}') !== A4.bigMathLinePx) fail('dfrac 行高口径漂移');
-if (api.paperBlockLinePx('\\frac{1}{a}>\\frac{1}{b}') !== A4.bigMathLinePx) fail('行内 frac 已是 displaystyle，行高口径漂移');
-if (api.paperBlockLinePx('\\sqrt{x}+1') !== A4.fracLinePx) fail('sqrt 行高口径漂移');
+if (api.paperBlockLinePx('\\dfrac{1}{a}>\\dfrac{1}{b}') !== A4.fracLinePx) fail('dfrac 行高口径漂移');
+if (api.paperBlockLinePx('\\frac{1}{a}>\\frac{1}{b}') !== A4.fracLinePx) fail('行内 frac 已是 displaystyle，行高口径漂移');
+// 只出现在上下标里的分式会被降成 scriptstyle（实测 22.3px），绝不能按展示分式撑到 41
+if (api.paperBlockLinePx('$a^{\\frac{1}{2}}$') !== A4.mathLinePx) fail('角标内的分式不该按展示分式计高');
+if (api.paperBlockLinePx('\\sqrt{x}+1') !== A4.sqrtLinePx) fail('sqrt 行高口径漂移');
+// 大算符的上下限在 displaystyle 下真的堆到算符上下方。判据不能写 \\b：
+// \sum_{ 里 m 与 _ 同为词字符，\b 不成立，实测 49.6px 的行会被漏判成 23px。
+if (api.paperBlockLinePx('$\\sum_{i=1}^{n}a_i$') !== A4.bigMathLinePx) fail('\\sum 上下限漏判（\\b 在 _ 前不成立）');
+if (api.paperBlockLinePx('$\\int_{0}^{1}x^2dx$') !== A4.bigMathLinePx) fail('\\int 上下限漏判');
+// 多行环境按行数走：两行 cases 实测 50.8，两行且格内含分式实测最高 71.1
+const casesTwo = '$f(x)=\\begin{cases}x,&x>0\\\\-x,&x\\le 0\\end{cases}$';
+if (api.paperBlockLinePx(casesTwo) !== A4.bigMathLinePx) fail('两行 cases 应为下限档：' + api.paperBlockLinePx(casesTwo));
+const casesTwoFrac = '$f(x)=\\begin{cases}\\dfrac{1}{2},&x>0\\\\\\dfrac{1}{3},&x\\le 0\\end{cases}$';
+if (api.paperBlockLinePx(casesTwoFrac) !== 2 * A4.envFracRowPx) fail('格内含分式的两行 cases 必须按 36/行计：' + api.paperBlockLinePx(casesTwoFrac));
+const casesThree = '$\\begin{cases}a,&b\\\\c,&d\\\\e,&f\\end{cases}$';
+if (api.paperBlockLinePx(casesThree) !== 3 * A4.envRowPx) fail('三行 cases 应按 25/行：' + api.paperBlockLinePx(casesThree));
+// tabular 的高由 tableRowPx 单独计，行盒不能再按环境档抬一次
+const tabularStem = '\\begin{tabular}{|c|c|}\\hline x & 1 \\\\ \\hline\\end{tabular}';
+if (api.paperBlockLinePx(tabularStem) !== A4.mathLinePx) fail('tabular 行被环境档重复抬高');
 
 // 3b) 宽度补偿口径：全部来自无头浏览器里**已加载字体**的 KaTeX 实测（14px 行内）
 //     \sqrt{x} 23.81 / x 9.70 → 牌面恒为 +14.11px = 2.0 半角单位（旧 0.9 少算约 8px）
@@ -859,6 +884,22 @@ const fracWide = api.paperInlineWidthPx('$\\frac{1}{2}$');
         fail(macro + ' 与 \\frac 已同档渲染，宽度补偿却分叉');
     }
 });
+// 3c) 整行宽的三项实测补偿（全库 119 条真实整行 + 101 条纯文字行最小二乘）：
+//     a=1.028 文字、b=1.346 数学、c≈1 单位/每枚公式的左右呼吸；安全垫取整行覆盖 ~82%。
+const gapPx = api.PAPER_MATH_INLINE_GAP_UNITS * api.PAPER_UNIT_PX;
+if (Math.abs(api.paperInlineWidthPx('$x$')
+    - (api.paperTexHalfUnits('x') * api.PAPER_UNIT_PX * api.PAPER_MATH_WIDTH_SCALE + gapPx)) > 0.01) {
+    fail('行内公式的左右呼吸没有计入（实测每枚约 7px）：' + api.paperInlineWidthPx('$x$'));
+}
+if (Math.abs(api.paperInlineWidthPx('汉字')
+    - 4 * api.PAPER_UNIT_PX * api.PAPER_TEXT_WIDTH_SCALE) > 0.01) {
+    fail('纯文字宽度补偿漂移：' + api.paperInlineWidthPx('汉字'));
+}
+// 多行/多栏结构（& 与 \\）单独降档：旧口径把它按普通行内式算，cases 行宽被估到实测的 1.55 倍
+if (api.paperInlineWidthPx('$a&b$') >= api.paperInlineWidthPx('$azb$')) {
+    fail('分栏/换行的数学结构没有走降档系数');
+}
+if (api.PAPER_MATH_ENV_WIDTH_SCALE >= api.PAPER_MATH_WIDTH_SCALE) fail('环境降档系数必须低于普通行内式');
 if (api.paperBlockLinePx('纯文字没有公式') !== A4.linePx) fail('纯文字行高不该被抬高');
 
 // 4) 段间空行在预览里渲染成 <br><br>，实测多占一个行高

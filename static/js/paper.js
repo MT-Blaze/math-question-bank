@@ -2026,9 +2026,12 @@
         marginPx: 96,
         bodyPx: 14,
         linePx: 17,          // 14×1.2=16.8 → 取 17：估算宁可就高，撑破页面比页底少排一行更糟
-        mathLinePx: 21,      // 行内含 KaTeX 的行盒：实测 20~21px
-        fracLinePx: 24,      // 行内含 \sqrt / \stackrel 的行盒：实测 23~24px
-        bigMathLinePx: 34,   // 行内含分式（displaystyle）/ cases / array 的行盒：实测 34~35px
+        mathLinePx: 23,      // 行内含普通式（变量/区间/向量/\text、上标里的分式）：实测 20.3~22.4px
+        sqrtLinePx: 25,      // 行内含 \sqrt / \stackrel：实测 21.5~24.9px
+        fracLinePx: 41,      // 顶层行内分式（displaystyle，\frac 与 \dfrac 同高）：实测中位 36.9、p75/p90 40.6、max 42.6
+        bigMathLinePx: 51,   // 多行环境与带上下限的大算符：两行 cases 实测 50.8、\sum 49.6、\int 41.9、array 40.6
+        envRowPx: 25,        // 环境每多一行实测 +24~26px（三行 cases 实测 73.2）
+        envFracRowPx: 36,    // 环境里带分式时单元格也涨到展示尺寸（两行 cases 实测最高 71.1 ≈ 35.6/行）
         textPx: 602,         // 版心宽 = 794 - 96×2
         cmPx: 37.8,          // 原留白换算用的是 35px/cm，比真 A4 少 7.4%
         cjkPerLine: 40,      // 版心 602px ÷ 14px ≈ 43 个汉字；按 40 折算留出公式余量
@@ -2052,12 +2055,29 @@
     const PAPER_FIGURE_TOKEN_RE = /!\[[^\]]*\]\([^)]*\)|\\includegraphics(?:\[[^\]]*\])?\{[^}]*\}|<img[^>]*>/gi;
     // 半角单位宽（1 单位 = bodyPx / 2 ≈ 7px）
     const PAPER_UNIT_PX = 7;
-    // 数学段放大系数：KaTeX 自带算符间距、数学斜体比源码宽。无头浏览器在真 A4 版心上
-    // 用**已加载字体的 KaTeX**逐式实测 23 个行内式（14px 字号），「真实宽 / 单位宽×7」的
-    // 中位数是 1.32 —— 取 1.3 让全局系数正好居中。displaystyle 带来的增宽不在全局系数里，
-    // 而是逐项落在分式/根号/定界符自己的补偿上（见 PAPER_TEX_FRAC_OVERHEAD 等），
-    // 否则会把 x^2、区间这类根本不涨宽的式子一起放大，白白多占版面。
-    const PAPER_MATH_WIDTH_SCALE = 1.3;
+    // 「单位宽 → 印刷宽」的三项换算，全部来自无头 Chromium 在真 A4 版心（794px /
+    // padding 96 / 14px / line-height 1.2 / Times+宋体）上的实测：语料取全库 418 题的
+    // 119 条真实整行 + 101 条纯文字行 + 200 枚行内式，渲染走页面自己的
+    // parseMarkdownWithMath（已注入 \displaystyle）→ auto-render 这条真链，
+    // 再对整行做最小二乘。口径与 tests/test_frontend_usability.py 的 A4 守卫一致。
+    //  · 数学段：整行解出 b=1.346。displaystyle 带来的增宽不在此处重复加码，
+    //    而是逐项落在分式/根号/定界符自己的补偿上（见 PAPER_TEX_FRAC_OVERHEAD 等），
+    //    否则会把 x^2、区间这类根本不涨宽的式子一起放大，白白多占版面。
+    const PAPER_MATH_WIDTH_SCALE = 1.42;
+    //  · 文字段：纯汉字/数字行实测恒为预测的 1.028 倍，旧口径完全没有这一项，
+    //    101 条纯文字行**全部**被估短（整行因此跟着估短约 8%）。
+    //    取 1.10 = 拟合值 + 安全垫，让「估短」只剩一成以内的尾部。
+    const PAPER_TEXT_WIDTH_SCALE = 1.1;
+    //  · 每枚行内式的左右呼吸：preprocessFormulaForKaTeX 会在汉字与公式相邻处补一个
+    //    半角空格（待办 #15 的间距归一），估高模型过去完全没算它。实测摊到每枚 ≈7px，
+    //    正好一个半角单位。
+    const PAPER_MATH_INLINE_GAP_UNITS = 1;
+    // 多行/多栏数学结构（cases/array/aligned/matrix 等）单独一档：单位模型把每行的
+    // `&` 与 `\\` 都按满宽计入，实测只需普通行内式的八成（真题 cases 行宽被估到实测的
+    // 1.55 倍，白占半页余量）。判据不能用 \begin{cases} 本身——stripPaperEstimateNoise
+    // 先把环境名剥掉了，剩下的是「& 分栏 + \\ 换行」这对结构指纹。
+    const PAPER_MATH_ENV_WIDTH_SCALE = 0.95;
+    const PAPER_MATH_ENV_SEGMENT_RE = /&|\\\\|\\begin\{(?:cases|array|aligned|alignedat|gathered|matrix|smallmatrix|subarray)\}/;
     // 分式与根号的**实测**补偿（半角单位，1 单位 = 7px）：
     //   根号牌面实测恒为 +14.11px（\sqrt{x} 23.81 vs x 9.7，\sqrt{a+b} 与 \sqrt{2} 同增量）
     //   = 2.0 单位，旧值 0.9 会让每个带根号的行少算约 8px。
@@ -2266,23 +2286,87 @@
         let cursor = 0;
         let matched;
         while ((matched = scanner.exec(source))) {
-            px += paperTexHalfUnits(source.slice(cursor, matched.index)) * PAPER_UNIT_PX;
-            px += paperTexHalfUnits(paperMathBody(matched[0])) * PAPER_UNIT_PX * PAPER_MATH_WIDTH_SCALE;
+            px += paperTexHalfUnits(source.slice(cursor, matched.index)) * PAPER_UNIT_PX * PAPER_TEXT_WIDTH_SCALE;
+            const body = paperMathBody(matched[0]);
+            const scale = PAPER_MATH_ENV_SEGMENT_RE.test(body)
+                ? PAPER_MATH_ENV_WIDTH_SCALE
+                : PAPER_MATH_WIDTH_SCALE;
+            px += paperTexHalfUnits(body) * PAPER_UNIT_PX * scale;
+            // 每枚公式左右各插一个半角空格（汉字↔公式间距归一），实测就是真实卷面宽的一部分
+            px += PAPER_MATH_INLINE_GAP_UNITS * PAPER_UNIT_PX;
             cursor = matched.index + matched[0].length;
         }
-        px += paperTexHalfUnits(source.slice(cursor)) * PAPER_UNIT_PX;
+        px += paperTexHalfUnits(source.slice(cursor)) * PAPER_UNIT_PX * PAPER_TEXT_WIDTH_SCALE;
         return px;
     }
 
-    // 行盒高度：纯文字 17px；含 KaTeX 的实测 20~21px；含 \sqrt 23~24px；
-    // 行内公式统一 displaystyle 后 \frac 与 \dfrac 同高（实测 12.55px 宽、行盒 25~41px），
-    // 所以含分式或 cases/array 的行一律按真正拉高的 34~35px 估。
+    // 多行环境（cases/array/aligned/matrix 等）的行数：一个 \\ 收一行，末行不带 \\。
+    // 环境内部才算，正文里的普通换行不参与（题干的 \\\\ 不是环境行）。
+    const PAPER_MATH_ENV_RE = /\\begin\{(?:cases|array|aligned|alignedat|gathered|matrix|smallmatrix|subarray)\}(?:\s*\{[^{}]*\})?([\s\S]*?)\\end\{[^{}]*\}/;
+
+    function paperEnvGeometry(text) {
+        const source = String(text || "");
+        const scanner = new RegExp(PAPER_MATH_ENV_RE.source, "g");
+        let rows = 0;
+        let hasFraction = false;
+        let matched;
+        while ((matched = scanner.exec(source))) {
+            const body = String(matched[1] || "");
+            const cells = body.split("\\\\").filter(function (row) {
+                return row.trim();
+            });
+            rows = Math.max(rows, Math.max(1, cells.length));
+            if (!hasFraction && paperHasTopLevelFraction(body)) hasFraction = true;
+        }
+        return { rows: rows, hasFraction: hasFraction };
+    }
+
+    // 「顶层分式」判定：a^{\frac{1}{2}} 这种只出现在上下标里的分式会被降成 scriptstyle
+    // （KaTeX 与 LaTeX 同语义），实测行盒只有 22.3px，绝不能按 41px 的展示分式估。
+    // 因此按花括号层级记账：每层标注它是不是由 ^ / _ 引入，栈里出现过 true 就不算顶层。
+    function paperHasTopLevelFraction(text) {
+        const source = String(text || "");
+        const scriptStack = [];
+        let scriptNext = false;
+        for (let i = 0; i < source.length; i++) {
+            const ch = source.charAt(i);
+            if (ch === "{") { scriptStack.push(scriptNext); scriptNext = false; continue; }
+            if (ch === "}") { scriptStack.pop(); scriptNext = false; continue; }
+            if (ch === "^" || ch === "_") { scriptNext = true; continue; }
+            scriptNext = false;      // 上下标只吃紧跟的那一个字符或那一组
+            if (ch !== "\\") continue;
+            const matched = /^\\([a-zA-Z]+)/.exec(source.slice(i));
+            if (!matched) { i += 1; continue; }   // \\ 换行、\{ \} 这类单字符命令
+            // \tfrac 是显式小号分式，本来就不拉高行盒
+            if (/^(?:d?frac|cfrac)$/.test(matched[1]) && scriptStack.indexOf(true) < 0) return true;
+            i += matched[0].length - 1;
+        }
+        return false;
+    }
+
+    // 行盒高度分档（真机实测，行内公式一律 displaystyle 口径）：
+    //  · 多行环境按行数走：两行 cases 实测 50.8px、三行 73.2px ≈ 每行 26px，下限 bigMathLinePx；
+    //  · 带上下限的大算符（\sum/\int/…）与 \substack：实测 41.9~49.6px → bigMathLinePx；
+    //  · 顶层行内分式：\frac 与 \dfrac 同高，实测中位 36.9、p75/p90 40.6、max 42.6 → fracLinePx；
+    //  · \sqrt / \stackrel：实测 21.5~24.9px → sqrtLinePx；
+    //  · 其余含公式的行：实测 20.3~22.4px → mathLinePx。像 $[0,2)$ 这种不带命令的区间式，
+    //    KaTeX 仍把行盒撑到 20px（实测），只查 \\command 会漏判成 17px；
+    //  · 纯文字：linePx。
     function paperBlockLinePx(text) {
         const source = String(text || "");
-        if (/\\[dtc]?frac|\\begin\{(?:cases|array|aligned|matrix)\}|\\substack/.test(source)) return A4_PAGE.bigMathLinePx;
-        if (/\\(?:sqrt|stackrel)\{/.test(source)) return A4_PAGE.fracLinePx;
-        // 只要这行里真出现了公式就按 mathLinePx：像 $[0,2)$ 这种不带命令的区间式，
-        // KaTeX 仍把行盒撑到 20px（实测），只查 \\command 会漏判成 17px。
+        const env = paperEnvGeometry(source);
+        if (env.rows > 1) {
+            return Math.max(A4_PAGE.bigMathLinePx,
+                env.rows * (env.hasFraction ? A4_PAGE.envFracRowPx : A4_PAGE.envRowPx));
+        }
+        // 大算符的上下限在 displaystyle 里会真的堆到算符上下方（实测 \sum 49.6px、
+        // \int 41.9px）。判据不能写 \b：\sum_{ 里 m 与 _ 都是词字符，\b 根本不成立。
+        if (/\\(?:sum|prod|coprod|bigcup|bigcap|int|iint|iiint|oint)(?![A-Za-z])|\\substack/.test(source)) return A4_PAGE.bigMathLinePx;
+        // 只认「会把行盒撑起来」的数学环境；tabular 的高由 tableRowPx 单独计，
+        // 在这里也认会让表格题每行白涨 30px。
+        if (/\\begin\{(?:cases|array|aligned|alignedat|gathered|matrix|smallmatrix|subarray)\}/.test(source)) return A4_PAGE.bigMathLinePx;
+        if (paperHasTopLevelFraction(source)) return A4_PAGE.fracLinePx;
+        if (/\\(?:sqrt|stackrel)\{/.test(source)) return A4_PAGE.sqrtLinePx;
         if (/\\[a-zA-Z]+|\$[^$]+\$|\\\(|\\\[/.test(source)) return A4_PAGE.mathLinePx;
         return A4_PAGE.linePx;
     }
