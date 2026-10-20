@@ -33,13 +33,25 @@ def split_image_anchors(content: str) -> tuple[str, str]:
 
     从最后一张图往前扫：一旦某张图后面还有正文，或者它还在表格/choices 环境里面，
     题末图簇就到此为止。选项拼图因此不会被搬走，卷面也不会出现两份同一个图。
+
+    ⚠️ 关键修正：`\begin{choices}...\end{choices}` **不算正文**——如果图在 choices
+    之前，它必须留在题干里，不能被摘到题末，否则选项会被挤到下面。
     """
 
     source = str(content or "")
     end = len(source)
     for match in reversed(list(IMAGE_RE.finditer(source))):
-        if source[match.end():end].strip():
+        after_img = source[match.end():end]
+        # 剥掉 choices 环境，看是否还有其它内容
+        stripped_after = re.sub(r'\\begin\{choices\}.*?\\end\{choices\}', '', after_img, flags=re.DOTALL).strip()
+        
+        # 关键修正：如果图后面只剩 choices（或空），说明这是"题干与选项之间的插图"，
+        # 不是"题末图簇"，必须留在原地，不能被摘到题末。
+        has_choices_after = bool(re.search(r'\\begin\{choices\}', after_img))
+        if stripped_after or (not stripped_after and has_choices_after):
+            # 有真正正文，或只有 choices → 都不算题末图簇，停止往前扫
             break
+        
         stack = []
         for env in ENV_RE.finditer(source[: match.start()]):
             if env[1] == "begin":
