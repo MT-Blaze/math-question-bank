@@ -72,7 +72,7 @@ def parse_sources_payload(raw: str) -> Optional[list]:
 
 
 def _validated_source_item(item) -> Optional[dict]:
-    """校验单条来源：四字段至少一项、年份为数字、长度上限。非法返回 None。"""
+    """校验单条来源：年份/地区/考试类型至少一项、字符串长度上限、枚举合法。非法返回 None。"""
     if not isinstance(item, dict):
         return None
     year = str(item.get("year") or "").strip()
@@ -83,6 +83,7 @@ def _validated_source_item(item) -> Optional[dict]:
     semester = str(item.get("semester") or "").strip()
     exam_type = str(item.get("exam_type") or "").strip()
     paper_title = str(item.get("paper_title") or "").strip()
+    question_no = str(item.get("question_no") or "").strip()
     if not (year or region or exam_type or province or city):
         return None
     if year and (len(year) > 20 or not year.isdigit()):
@@ -101,6 +102,8 @@ def _validated_source_item(item) -> Optional[dict]:
         return None
     if len(paper_title) > 200:
         return None
+    if len(question_no) > 50:
+        return None
     return {
         "year": year,
         "region": region,
@@ -110,6 +113,7 @@ def _validated_source_item(item) -> Optional[dict]:
         "semester": semester,
         "exam_type": exam_type,
         "paper_title": paper_title,
+        "question_no": question_no,
     }
 
 
@@ -130,7 +134,8 @@ def sync_question_sources(db: Session, question_id: int, raw_sources) -> Optiona
 
     - raw_sources 为 None 或非法 JSON → 不动来源，返回 None（兼容旧客户端）。
     - 合法数组（可为空）→ 删旧插新；空数组表示清空。
-    - 回填 questions.source 为主来源文本（列表非空时）。
+    - 回填 questions.source 为主来源文本（列表非空时）；主来源带 question_no 时
+      同步镜像到 questions.paper_question_no。
     """
     from mathbank.database import QuestionSource, Question, format_source_text
 
@@ -156,6 +161,7 @@ def sync_question_sources(db: Session, question_id: int, raw_sources) -> Optiona
             semester=item["semester"],
             exam_type=item["exam_type"],
             paper_title=item["paper_title"],
+            question_no=item["question_no"],
             sort_order=idx,
         ))
     db.flush()
@@ -175,4 +181,8 @@ def sync_question_sources(db: Session, question_id: int, raw_sources) -> Optiona
         db_question = db.query(Question).filter(Question.id == question_id).first()
         if db_question is not None:
             db_question.source = main_text
+            # 主表字段只是主来源的镜像。原卷题号属于「题 × 卷」关系：换卷后
+            # 各来源编号互不相同，全局身份永远是 questions.id。
+            if str(main_row.question_no or "").strip():
+                db_question.paper_question_no = str(main_row.question_no).strip()
     return main_text

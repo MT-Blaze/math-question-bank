@@ -500,6 +500,7 @@ class QuestionSource(Base):
     semester = Column(String(10), default="")  # 学期：上/下
     exam_type = Column(String(50), default="")  # 考试类型显示名：三模、期末、高考、月考…
     paper_title = Column(String(200), default="")  # 整卷出处（试卷标题）
+    question_no = Column(String(50), default="")  # 该题在这份原卷中的题号
     school_id = Column(String(20))  # 学校词库 ID（sch_xxx；可空=手输地区/未建档）
     sort_order = Column(Integer, default=0)
     created_at = Column(DateTime, default=_utcnow_naive)
@@ -518,6 +519,7 @@ class QuestionSource(Base):
             "semester": self.semester or "",
             "exam_type": self.exam_type or "",
             "paper_title": self.paper_title or "",
+            "question_no": self.question_no or "",
             "text": format_source_text(
                 self.year, region_display, self.exam_type,
                 province=self.province, city=self.city,

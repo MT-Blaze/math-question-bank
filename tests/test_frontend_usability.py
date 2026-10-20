@@ -5408,8 +5408,8 @@ def test_related_question_dropdown_never_fetches_the_whole_bank():
         "关联下拉基础选项必须走 lean 分页"
     assert "/api/paper/questions?ids=" in body, "选中题不在最新一页时必须走定向水合而不是整库回退"
 
-    assert "mode=lean&q=${encodeURIComponent('#' + seqVal)}" in import_source, \
-        "题号反查必须走 q=#题号 的 lean 单页"
+    assert "mode=lean&q=${encodeURIComponent('#' + idVal)}" in import_source, \
+        "ID 反查必须走 q=#ID 的 lean 单页"
 
 
 def test_pdf_fast_path_diagnostics_reach_the_import_log():

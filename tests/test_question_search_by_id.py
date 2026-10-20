@@ -2,7 +2,7 @@
 
 用户可见行为：
   * ``#61`` 只看内部 ID 61，绝不退回全文模糊，也不被侧栏筛选条件挡掉；
-  * 纯数字 ``61`` 先置顶内部 ID 命中，未命中才用历史题号映射兜底，最后才全文模糊；
+  * 纯数字 ``61`` 先置顶内部 ID 命中，未命中直接走全文模糊（不存在伪排名兜底）；
   * 普通文字搜索保持原样。
 """
 
@@ -77,8 +77,26 @@ def test_plain_number_pins_internal_id_first_then_keeps_fuzzy_results(client, db
     assert {item["id"] for item in payload["items"]} == {target.id, fuzzy.id}
 
 
-def test_plain_number_falls_back_to_display_sequence_when_internal_id_is_gone(client, db_session):
-    first = _add_question(db_session, "甲")
+def test_hash_id_still_hits_the_exact_question_after_id_holes(client, db_session):
+    """删过题后物理 ID 出现空洞：``#id`` 仍须精确命中该题，不能被排名顶替。"""
+    _add_question(db_session, "甲")
+    removed = _add_question(db_session, "乙")
+    tail = _add_question(db_session, "丙")
+    db_session.delete(removed)
+    db_session.commit()
+
+    response = client.get("/api/questions", params={"q": f"#{tail.id}", "page": 1})
+
+    payload = response.json()
+    assert payload["total"] == 1
+    assert [item["id"] for item in payload["items"]] == [tail.id]
+    assert payload["search"]["mode"] == "id_exact"
+    assert payload["search"]["exact_match"]["id"] == tail.id
+
+
+def test_plain_gap_number_never_falls_back_to_another_questions_rank(client, db_session):
+    """纯数字命中已删除的 ID 时只走全文模糊，绝不按物理排名改指另一道题。"""
+    _add_question(db_session, "甲")
     removed = _add_question(db_session, "乙")
     third = _add_question(db_session, "丙")
     db_session.delete(removed)
@@ -87,10 +105,10 @@ def test_plain_number_falls_back_to_display_sequence_when_internal_id_is_gone(cl
     response = client.get("/api/questions", params={"q": str(removed.id), "page": 1})
 
     payload = response.json()
-    assert payload["items"][0]["id"] == third.id
-    assert payload["search"]["mode"] == "number_first"
-    assert payload["search"]["exact_match"]["kind"] == "seq_num"
-    assert payload["search"]["exact_match"]["id"] == third.id
+    assert payload["items"] == []
+    assert payload["search"]["mode"] == "fulltext"
+    assert payload["search"]["exact_match"] is None
+    assert third.id != removed.id
 
 
 def test_plain_number_without_id_or_sequence_match_uses_fulltext(client, db_session):

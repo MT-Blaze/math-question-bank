@@ -377,8 +377,8 @@ window.topicName = function(t) {
         // Duplicate-hit auto tagging. All three entry points (plain editor save,
         // single parsed-card import and batch import) must share this wording so a
         // question never ends up with two different "suspected duplicate" tags.
-        // exact / probable -> 疑似重复#<seq>, possible_variant -> 疑似变式#<seq>,
-        // always quoting the highest-level candidate's question number.
+        // exact / probable -> 疑似重复#<id>, possible_variant -> 疑似变式#<id>,
+        // always quoting the highest-level candidate's internal ID.
         function duplicateLevelRank(level) {
             const normalized = String(level || '').toLowerCase();
             if (normalized.indexOf('exact') !== -1) return 3;
@@ -403,10 +403,10 @@ window.topicName = function(t) {
                 if (!item) return;
                 const rank = duplicateLevelRank(item.level);
                 if (rank <= 0) return;
-                // In-batch matches only carry the sibling card index, so they are
-                // reported with the same 1-based numbering the cards display.
-                const seq = (item.seq_num !== null && item.seq_num !== undefined && item.seq_num !== '')
-                    ? Number(item.seq_num)
+                // Library candidates carry the internal ID. In-batch matches have no
+                // database ID yet, so they keep the 1-based sibling card index.
+                const seq = (item.id !== null && item.id !== undefined && item.id !== '')
+                    ? Number(item.id)
                     : (item.other_index !== null && item.other_index !== undefined
                         ? Number(item.other_index) + 1
                         : null);
@@ -582,7 +582,6 @@ window.topicName = function(t) {
         const EditorState = (() => {
             const state = {
                 questionId: null,
-                seqNum: null,
                 createdAt: null,
                 draftId: null,
                 mode: 'new',
@@ -599,7 +598,6 @@ window.topicName = function(t) {
             const reset = () => {
                 invalidateAsyncWork();
                 state.questionId = null;
-                state.seqNum = null;
                 state.createdAt = null;
                 state.draftId = null;
                 state.mode = 'new';
@@ -608,7 +606,6 @@ window.topicName = function(t) {
             const useQuestion = (question) => {
                 invalidateAsyncWork();
                 state.questionId = question && question.id != null ? question.id : null;
-                state.seqNum = question && question.seq_num != null ? question.seq_num : null;
                 state.createdAt = question && question.created_at ? question.created_at : null;
                 state.draftId = null;
                 state.mode = state.questionId == null ? 'new' : 'question';
@@ -617,7 +614,6 @@ window.topicName = function(t) {
             const useDraft = (draft) => {
                 invalidateAsyncWork();
                 state.questionId = null;
-                state.seqNum = null;
                 state.createdAt = null;
                 state.draftId = draft && draft.id != null ? draft.id : null;
                 state.mode = state.draftId == null ? 'new' : 'draft';
@@ -648,7 +644,6 @@ window.topicName = function(t) {
 
             return Object.freeze({
                 get questionId() { return state.questionId; },
-                get seqNum() { return state.seqNum; },
                 get createdAt() { return state.createdAt; },
                 get draftId() { return state.draftId; },
                 get mode() { return state.mode; },

@@ -648,28 +648,6 @@ PDF_OCR_SEMAPHORE = threading.BoundedSemaphore(4)
 MAX_PDF_TASK_PAGES = 80
 
 
-def get_seq_mapping(db: Session, question_ids=None):
-    """Map physical ID order to the user-facing contiguous sequence number."""
-
-    if question_ids is None:
-        all_q = db.query(Question.id).order_by(Question.id.asc()).all()
-        return {q_id: idx + 1 for idx, (q_id,) in enumerate(all_q)}
-
-    normalized_ids = {int(question_id) for question_id in question_ids}
-    if not normalized_ids:
-        return {}
-    from sqlalchemy import func
-
-    ranked = db.query(
-        Question.id.label("question_id"),
-        func.row_number().over(order_by=Question.id.asc()).label("seq_num"),
-    ).subquery()
-    rows = db.query(ranked.c.question_id, ranked.c.seq_num).filter(
-        ranked.c.question_id.in_(normalized_ids)
-    ).all()
-    return {question_id: int(seq_num) for question_id, seq_num in rows}
-
-
 @app.get("/healthz", include_in_schema=False)
 def healthz():
     report = readiness_report(engine)

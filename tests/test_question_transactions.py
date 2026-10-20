@@ -408,12 +408,11 @@ def test_update_succeeds_when_post_commit_export_scheduling_fails(
 
 
 @pytest.mark.parametrize("operation", ["create", "update"])
-@pytest.mark.parametrize("failure_stage", ["refresh", "sequence", "serialize"])
+@pytest.mark.parametrize("failure_stage", ["refresh", "serialize"])
 def test_committed_question_write_returns_minimal_success_when_response_fails(
     client, db_session, monkeypatch, operation, failure_stage
 ):
     import main
-    import mathbank.routes_questions as routes_questions
 
     question_id = None
     if operation == "update":
@@ -427,8 +426,6 @@ def test_committed_question_write_returns_minimal_success_when_response_fails(
 
     if failure_stage == "refresh":
         monkeypatch.setattr(db_session, "refresh", fail)
-    elif failure_stage == "sequence":
-        monkeypatch.setattr(routes_questions, "get_seq_mapping", fail)
     else:
         monkeypatch.setattr(Question, "to_dict", fail)
 

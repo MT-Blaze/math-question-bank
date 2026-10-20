@@ -146,7 +146,7 @@ def test_explicit_settings_refresh_preserves_dirty_editor_in_real_js():
 
     script = f"""
 const window = {{}};
-const EditorState = {{ questionId: 17, seqNum: 4, createdAt: '2026-01-01' }};
+const EditorState = {{ questionId: 17, createdAt: '2026-01-01' }};
 let dirty = true;
 let selections = 0;
 const toasts = [];
@@ -230,7 +230,7 @@ if (!isAiSolveRequestCurrent(oldSequence, oldController, oldSnapshot)) {{
   throw new Error('new AI request was not current');
 }}
 
-EditorState.useQuestion({{ id: 22, seq_num: 3 }});
+EditorState.useQuestion({{ id: 22 }});
 if (!oldController.signal.aborted) throw new Error('question switch did not abort AI request');
 if (isAiSolveRequestCurrent(oldSequence, oldController, oldSnapshot)) {{
   throw new Error('old AI request survived editor generation change');

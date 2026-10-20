@@ -183,6 +183,57 @@ def test_question_sources_crud(client, db_session):
     assert r.json()["sources"] == []
 
 
+def test_question_sources_question_no_is_stored_and_mirrored(client, db_session):
+    """原卷题号属于来源关系：写入来源后，主表字段只镜像主来源。"""
+    ids = [q.id for q in _seed(db_session)]
+    qid = ids[0]
+
+    r = client.post(f"/api/questions/{qid}/sources", headers=_headers(), json={
+        "year": "2026", "region": "哈三中", "exam_type": "三模",
+        "paper_title": "2026届哈三中高三三模", "question_no": "18",
+    })
+    assert r.status_code == 200
+    assert r.json()["source"]["question_no"] == "18"
+
+    db_session.expire_all()
+    assert db_session.get(Question, qid).paper_question_no == "18"
+    detail = client.get(f"/api/questions/{qid}").json()
+    assert detail["paper_question_no"] == "18"
+    assert detail["sources"][0]["question_no"] == "18"
+
+
+def test_question_source_rejects_overlong_question_no(client, db_session):
+    ids = [q.id for q in _seed(db_session)]
+    r = client.post(f"/api/questions/{ids[0]}/sources", headers=_headers(), json={
+        "year": "2026", "region": "哈三中", "exam_type": "三模", "question_no": "x" * 51,
+    })
+    assert r.status_code == 400
+
+
+def test_sync_question_sources_round_trips_question_no_and_mirrors_primary(db_session):
+    from mathbank.sources_helper import sync_question_sources
+
+    question = Question(content="来源题号往返", question_type="detailed_answer")
+    db_session.add(question)
+    db_session.commit()
+
+    sync_question_sources(db_session, question.id, [
+        {"year": "2025", "region": "省实验", "exam_type": "期末", "question_no": "7"},
+        {"year": "2026", "region": "哈三中", "exam_type": "三模", "question_no": "18"},
+    ])
+    db_session.commit()
+    db_session.expire_all()
+
+    assert db_session.get(Question, question.id).paper_question_no == "18", (
+        "主表镜像必须取排序后的主来源（三模优先于期末）"
+    )
+    from mathbank.database import QuestionSource
+    rows = db_session.query(QuestionSource).filter_by(question_id=question.id).all()
+    assert sorted((row.region, row.question_no) for row in rows) == [
+        ("哈三中", "18"), ("省实验", "7"),
+    ]
+
+
 def test_question_sources_sorting(client, db_session):
     """排序：高考 > 模考 > 联考 > 校考；同优先级年份新在前。"""
     ids = [q.id for q in _seed(db_session)]
@@ -245,6 +296,7 @@ def test_lecture_preview_includes_sources(client, db_session):
         "semester": "",
         "exam_type": "三模",
         "paper_title": "2026届哈三中高三三模",
+        "question_no": "",
         "text": "2026年哈三中三模",
         "school_id": "",
         "sort_order": 1,

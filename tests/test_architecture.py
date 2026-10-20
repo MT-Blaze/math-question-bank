@@ -606,7 +606,6 @@ def test_routes_questions_imports_helpers_from_source_modules():
         "TMP_UPLOAD_DIR",
         "UPLOAD_DIR",
         "UPLOAD_DIR_REL",
-        "get_seq_mapping",
         "normalize_fillin_macro",
     }
     assert main_imports == allowed_from_main, (

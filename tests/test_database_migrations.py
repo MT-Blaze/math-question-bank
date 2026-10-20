@@ -161,6 +161,89 @@ def _create_version_seven_database(path):
     )
 
 
+def _create_version_twenty_six_database(path):
+    """构造 v26 库：question_sources 还没有 question_no 列。"""
+    engine = create_engine(f"sqlite:///{path}")
+    database_module.Base.metadata.create_all(bind=engine)
+    engine.dispose()
+    with _sqlite_connection(path) as connection:
+        connection.execute("DROP TABLE question_sources")
+        connection.executescript(
+            """
+            CREATE TABLE question_sources (
+                id INTEGER NOT NULL PRIMARY KEY,
+                question_id INTEGER NOT NULL,
+                year VARCHAR(20) NOT NULL DEFAULT '',
+                region VARCHAR(100) NOT NULL DEFAULT '',
+                province VARCHAR(50) NOT NULL DEFAULT '',
+                city VARCHAR(50) NOT NULL DEFAULT '',
+                grade VARCHAR(10) NOT NULL DEFAULT '',
+                semester VARCHAR(10) NOT NULL DEFAULT '',
+                exam_type VARCHAR(50) NOT NULL DEFAULT '',
+                paper_title VARCHAR(200) NOT NULL DEFAULT '',
+                school_id VARCHAR(20),
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            INSERT INTO questions (id, content, paper_question_no)
+                VALUES (1, '有两条来源的题', '18');
+            INSERT INTO questions (id, content, paper_question_no)
+                VALUES (2, '没有来源的题', '9');
+            INSERT INTO questions (id, content, paper_question_no)
+                VALUES (3, '主表没有题号但有来源', '');
+            INSERT INTO question_sources
+                (id, question_id, year, region, exam_type, sort_order)
+                VALUES (1, 1, '2026', '哈三中', '三模', 1);
+            INSERT INTO question_sources
+                (id, question_id, year, region, exam_type, sort_order)
+                VALUES (2, 1, '2025', '省实验', '期末', 2);
+            INSERT INTO question_sources
+                (id, question_id, year, region, exam_type, sort_order)
+                VALUES (3, 3, '2026', '师大附中', '月考', 1);
+            PRAGMA user_version=26;
+            """
+        )
+
+
+def test_version_twenty_six_backfills_only_the_primary_source_question_no(
+    tmp_path, monkeypatch
+):
+    database_path = tmp_path / "version-26.db"
+    _create_version_twenty_six_database(database_path)
+    monkeypatch.setattr(
+        db_migrations, "SCHEMA_SNAPSHOT_DIR", tmp_path / "schema_snapshots"
+    )
+    engine = create_engine(f"sqlite:///{database_path}")
+
+    result = db_migrations.migrate_database(engine)
+
+    assert result["from_version"] == 26
+    assert result["to_version"] == db_migrations.LATEST_SCHEMA_VERSION
+    assert result["added_source_question_no"] == 1
+    assert result["backfilled_source_question_no"] == 1
+    with _sqlite_connection(database_path) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == (
+            db_migrations.LATEST_SCHEMA_VERSION
+        )
+        columns = {
+            row[1]
+            for row in connection.execute('PRAGMA table_info("question_sources")')
+        }
+        assert "question_no" in columns
+        assert connection.execute(
+            "SELECT id, question_no FROM question_sources ORDER BY id"
+        ).fetchall() == [(1, "18"), (2, ""), (3, "")]
+        assert connection.execute(
+            "SELECT paper_question_no FROM questions WHERE id = 2"
+        ).fetchone()[0] == "9", "没有来源的题不该被凭空造出一条来源"
+
+    again = db_migrations._upgrade_v26_source_question_no(engine)
+    assert again.get("added_source_question_no", 0) == 0
+    assert again.get("backfilled_source_question_no", 0) == 0, (
+        "重复执行必须是空操作；把 '' 再写一遍也算改动会让统计永远非零"
+    )
+
+
 def test_migration_repairs_legacy_relationships_and_adds_constraints(tmp_path, monkeypatch):
     database_path = tmp_path / "legacy.db"
     backup_dir = tmp_path / "backups"

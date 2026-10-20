@@ -747,7 +747,7 @@ function deleteDraft(id) {
             const header = document.createElement('div');
             header.className = 'flex items-center justify-between gap-2 flex-wrap';
             header.innerHTML = '<div class="flex items-center gap-2">' +
-                '<span class="font-mono text-xs font-bold text-slate-700 dark:text-slate-200">#' + (group.seq_num != null ? group.seq_num : group.question_id) + '</span>' +
+                '<span class="font-mono text-xs font-bold text-slate-700 dark:text-slate-200">#' + group.question_id + '</span>' +
                 scanDupLevelBadge(bestLevel) +
                 '</div>';
             row.appendChild(header);
@@ -769,7 +769,7 @@ function deleteDraft(id) {
                 const candHeader = document.createElement('div');
                 candHeader.className = 'flex items-center justify-between gap-2 flex-wrap';
                 candHeader.innerHTML = '<div class="flex items-center gap-2">' +
-                    '<span class="font-mono text-xs font-bold text-slate-600 dark:text-slate-300">#' + (cand.seq_num != null ? cand.seq_num : cand.id) + '</span>' +
+                    '<span class="font-mono text-xs font-bold text-slate-600 dark:text-slate-300">#' + cand.id + '</span>' +
                     scanDupLevelBadge(cand.level) +
                     '<span class="text-[10px] text-slate-400">' + scoreText + '</span>' +
                     (cand.needs_visual_review ? '<span class="text-[10px] text-amber-600">配图待核对</span>' : '') +
@@ -778,7 +778,7 @@ function deleteDraft(id) {
                 candActions.className = 'flex items-center gap-2';
                 const tagBtn = document.createElement('button');
                 tagBtn.type = 'button';
-                const targetTag = (String(cand.level || '').toLowerCase().indexOf('variant') !== -1 ? '疑似变式#' : '疑似重复#') + (group.seq_num != null ? group.seq_num : group.question_id);
+                const targetTag = (String(cand.level || '').toLowerCase().indexOf('variant') !== -1 ? '疑似变式#' : '疑似重复#') + group.question_id;
                 tagBtn.className = 'text-[10px] font-semibold px-2 py-1 rounded-lg border border-rose-200 text-rose-600 hover:bg-rose-50 dark:border-rose-500/40 dark:text-rose-300 dark:hover:bg-rose-500/15 transition-all';
                 tagBtn.textContent = '加标签「' + targetTag + '」';
                 tagBtn.addEventListener('click', () => applyScanDupTag(cand.id, targetTag, tagBtn, candKey));
@@ -1757,9 +1757,9 @@ function deleteDraft(id) {
                 return;
             }
 
-            const seqBadge = EditorState.seqNum != null
-                ? `<span class="text-[10px] font-bold px-2 py-0.5 rounded-md bg-slate-100 text-slate-700">编号：#${escapeEditorMetaText(EditorState.seqNum)}</span>`
-                : '<span class="text-[10px] font-bold px-2 py-0.5 rounded-md bg-slate-200 text-slate-500">编号：新题目</span>';
+            const idBadge = EditorState.questionId != null
+                ? `<span class="text-[10px] font-bold px-2 py-0.5 rounded-md bg-slate-100 text-slate-700">ID：#${escapeEditorMetaText(EditorState.questionId)}</span>`
+                : '<span class="text-[10px] font-bold px-2 py-0.5 rounded-md bg-slate-200 text-slate-500">ID：新题目</span>';
 
             const createdAtBadge = EditorState.createdAt
                 ? `<span class="text-[10px] font-bold px-2 py-0.5 rounded-md bg-emerald-50 text-emerald-700 inline-flex items-center"><i class="fa-regular fa-clock mr-1"></i>录入于：${escapeEditorMetaText(formatChineseDate(EditorState.createdAt))}</span>`
@@ -1779,7 +1779,7 @@ function deleteDraft(id) {
                 : 'bg-indigo-50 text-indigo-700';
 
             badges.innerHTML = `
-                ${seqBadge}
+                ${idBadge}
                 <span class="text-[10px] font-bold px-2 py-0.5 rounded-md bg-brand-50 text-brand-700">题型：${escapeEditorMetaText(getTypeText(editQType.value))}</span>
                 <span class="text-[10px] font-bold px-2 py-0.5 rounded-md ${diffColor}">难度：${escapeEditorMetaText(getDifficultyText(editDifficulty.value))}</span>
                 ${createdAtBadge}
@@ -3334,13 +3334,10 @@ function deleteDraft(id) {
             icon.className = 'fa-solid fa-crosshairs mt-0.5';
             icon.setAttribute('aria-hidden', 'true');
             const text = document.createElement('span');
-            const seq = exactMatch.seq_num == null ? '—' : exactMatch.seq_num;
-            if (exactMatch.kind === 'seq_num') {
-                text.textContent = `精准匹配 · 题号 #${seq}（内部 ID #${exactMatch.id}）`;
-            } else if (exactOnly) {
+            if (exactOnly) {
                 text.textContent = `ID 精确查找 · 内部 ID #${exactMatch.id}（已忽略筛选条件）`;
             } else {
-                text.textContent = `精准匹配 · 内部 ID #${exactMatch.id}（题号 #${seq}）`;
+                text.textContent = `精准匹配 · 内部 ID #${exactMatch.id}`;
             }
             box.appendChild(icon);
             box.appendChild(text);
@@ -3528,7 +3525,7 @@ function deleteDraft(id) {
                                     ${exactMatch && exactMatch.id === item.id
                                         ? '<span class="text-[9px] font-extrabold px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-600 border border-emerald-200 shrink-0">精准匹配</span>'
                                         : ''}
-                                    <span class="text-[10px] font-extrabold px-1.5 py-0.5 rounded bg-brand-50 text-brand-600 shadow-sm">#${window.MathBankSafe.escapeText(item.seq_num)}</span>
+                                    <span class="text-[10px] font-extrabold px-1.5 py-0.5 rounded bg-brand-50 text-brand-600 shadow-sm">#${window.MathBankSafe.escapeText(item.id)}</span>
                                 </div>
                             </div>
                             <!-- Delete Button -->

@@ -1,0 +1,1145 @@
+{
+  "database": "E:\\math-question-bank-main\\math_question_bank.db",
+  "generated_at": "2026-10-20 15:11:32",
+  "fingerprint_version": 3,
+  "total_questions": 431,
+  "fingerprint_rows": 431,
+  "missing_fingerprints": 0,
+  "groups": [
+    {
+      "tier": "answer_mismatch",
+      "signature_kind": "exact_hash",
+      "signature": "4d99403dd958a71f5bc201850b79fc8e0906d200028e59750aeeabb3aa14d58f",
+      "exact_hash": "4d99403dd958a71f5bc201850b79fc8e0906d200028e59750aeeabb3aa14d58f",
+      "size": 2,
+      "recommended_keeper": 101,
+      "instances": [
+        {
+          "id": 101,
+          "seq_num": 91,
+          "created_at": "2026-09-24 13:15:48.914364",
+          "question_type": "single_choice",
+          "has_answer": true,
+          "answer_chars": 161,
+          "source": "2023年哈师大附中高一上学期10月月考",
+          "tags": "",
+          "category": "必修一 / 1. 集合与常用逻辑用语 / 1.2 集合间的基本关系",
+          "preview": "政治书上讲，“有使用价值的东西不一定有价值，有价值的东西一定有使用价值”，如果把有使用价值的东西看作集合 $A$，把有价值的东西看作集合 $B$，那么它们的关系是 \\paren \\begin{cho…",
+          "references": [
+            "试卷#7"
+          ]
+        },
+        {
+          "id": 435,
+          "seq_num": 395,
+          "created_at": "2026-09-25 12:39:32.662555",
+          "question_type": "single_choice",
+          "has_answer": false,
+          "answer_chars": 0,
+          "source": "2023年哈师大附中高一上学期10月月考",
+          "tags": "疑似重复#92",
+          "category": "必修一 / 1. 集合与常用逻辑用语 / 1.2 集合间的基本关系",
+          "preview": "政治书上讲，“有使用价值的东西不一定有价值，有价值的东西一定有使用价值”，如果把有使用价值的东西看作集合 $A$，把有价值的东西看作集合 $B$，那么它们的关系是 \\paren \\begin{cho…",
+          "references": [
+            "试卷#4",
+            "试卷#8"
+          ]
+        }
+      ],
+      "plans": {
+        "A": {
+          "scheme": "A",
+          "label": "保留最早录入",
+          "keeper": {
+            "id": 101,
+            "seq_num": 91,
+            "created_at": "2026-09-24 13:15:48.914364",
+            "has_answer": true
+          },
+          "remove": [
+            {
+              "id": 435,
+              "seq_num": 395,
+              "created_at": "2026-09-25 12:39:32.662555",
+              "has_answer": false,
+              "references": [
+                "试卷#4",
+                "试卷#8"
+              ]
+            }
+          ],
+          "warnings": []
+        },
+        "B": {
+          "scheme": "B",
+          "label": "保留最新录入",
+          "keeper": {
+            "id": 435,
+            "seq_num": 395,
+            "created_at": "2026-09-25 12:39:32.662555",
+            "has_answer": false
+          },
+          "remove": [
+            {
+              "id": 101,
+              "seq_num": 91,
+              "created_at": "2026-09-24 13:15:48.914364",
+              "has_answer": true,
+              "references": [
+                "试卷#7"
+              ]
+            }
+          ],
+          "warnings": [
+            "保留项没有解析，但将被隔离的 #101 有解析；直接执行会丢失解析。"
+          ]
+        }
+      }
+    },
+    {
+      "tier": "answer_mismatch",
+      "signature_kind": "exact_hash",
+      "signature": "c5cbb47e104cc228d8b70a2394a92fd496b1d4d842afc6ee5914493ccb6fe427",
+      "exact_hash": "c5cbb47e104cc228d8b70a2394a92fd496b1d4d842afc6ee5914493ccb6fe427",
+      "size": 2,
+      "recommended_keeper": 102,
+      "instances": [
+        {
+          "id": 102,
+          "seq_num": 92,
+          "created_at": "2026-09-24 13:15:49.061152",
+          "question_type": "single_choice",
+          "has_answer": true,
+          "answer_chars": 420,
+          "source": "2023年哈师大附中高一上学期10月月考",
+          "tags": "",
+          "category": "必修一 / 2. 一元二次函数、方程和不等式 / 2.2 基本不等式",
+          "preview": "现设计一个两邻边的长度分别为 $a, b$ 的矩形广告牌，其面积为 $S$，且 $S = a - b + 5$，则当该广告牌的周长最小时，$S =$ \\paren \\begin{choices} \\…",
+          "references": [
+            "试卷#4",
+            "试卷#8"
+          ]
+        },
+        {
+          "id": 436,
+          "seq_num": 396,
+          "created_at": "2026-09-25 12:39:32.727927",
+          "question_type": "single_choice",
+          "has_answer": false,
+          "answer_chars": 0,
+          "source": "2023年哈师大附中高一上学期10月月考",
+          "tags": "疑似变式#93",
+          "category": "必修一 / 2. 一元二次函数、方程和不等式 / 2.2 基本不等式",
+          "preview": "现设计一个两邻边的长度分别为 $a, b$ 的矩形广告牌，其面积为 $S$，且 $S = a - b + 5$，则当该广告牌的周长最小时，$S =$ \\paren \\begin{choices} \\…",
+          "references": [
+            "试卷#5"
+          ]
+        }
+      ],
+      "plans": {
+        "A": {
+          "scheme": "A",
+          "label": "保留最早录入",
+          "keeper": {
+            "id": 102,
+            "seq_num": 92,
+            "created_at": "2026-09-24 13:15:49.061152",
+            "has_answer": true
+          },
+          "remove": [
+            {
+              "id": 436,
+              "seq_num": 396,
+              "created_at": "2026-09-25 12:39:32.727927",
+              "has_answer": false,
+              "references": [
+                "试卷#5"
+              ]
+            }
+          ],
+          "warnings": []
+        },
+        "B": {
+          "scheme": "B",
+          "label": "保留最新录入",
+          "keeper": {
+            "id": 436,
+            "seq_num": 396,
+            "created_at": "2026-09-25 12:39:32.727927",
+            "has_answer": false
+          },
+          "remove": [
+            {
+              "id": 102,
+              "seq_num": 92,
+              "created_at": "2026-09-24 13:15:49.061152",
+              "has_answer": true,
+              "references": [
+                "试卷#4",
+                "试卷#8"
+              ]
+            }
+          ],
+          "warnings": [
+            "保留项没有解析，但将被隔离的 #102 有解析；直接执行会丢失解析。"
+          ]
+        }
+      }
+    },
+    {
+      "tier": "answer_mismatch",
+      "signature_kind": "exact_hash",
+      "signature": "a3d0cb1ec7d1cca1424e0500a457435a0953f7101d5d5a1637568312bb242658",
+      "exact_hash": "a3d0cb1ec7d1cca1424e0500a457435a0953f7101d5d5a1637568312bb242658",
+      "size": 2,
+      "recommended_keeper": 106,
+      "instances": [
+        {
+          "id": 106,
+          "seq_num": 96,
+          "created_at": "2026-09-24 13:15:49.736594",
+          "question_type": "multi_choice",
+          "has_answer": true,
+          "answer_chars": 1110,
+          "source": "2023年哈师大附中高一上学期10月月考",
+          "tags": "",
+          "category": "必修一 / 2. 一元二次函数、方程和不等式 / 2.2 基本不等式",
+          "preview": "若 $a > 0, b > 0$，且 $a + b = 4$，则下列不等式恒成立的是 \\paren \\begin{choices} \\item $a^2 + b^2 \\geq 8$ \\item $\\…",
+          "references": [
+            "试卷#6"
+          ]
+        },
+        {
+          "id": 440,
+          "seq_num": 400,
+          "created_at": "2026-09-25 12:39:33.093532",
+          "question_type": "multi_choice",
+          "has_answer": false,
+          "answer_chars": 0,
+          "source": "2023年哈师大附中高一上学期10月月考",
+          "tags": "疑似重复#97",
+          "category": "必修一 / 2. 一元二次函数、方程和不等式 / 2.2 基本不等式",
+          "preview": "若 $a > 0$，$b > 0$，且 $a + b = 4$，则下列不等式恒成立的是 \\paren \\begin{choices} \\item $a^2+b^2 \\ge 8$ \\item $\\df…",
+          "references": [
+            "试卷#7"
+          ]
+        }
+      ],
+      "plans": {
+        "A": {
+          "scheme": "A",
+          "label": "保留最早录入",
+          "keeper": {
+            "id": 106,
+            "seq_num": 96,
+            "created_at": "2026-09-24 13:15:49.736594",
+            "has_answer": true
+          },
+          "remove": [
+            {
+              "id": 440,
+              "seq_num": 400,
+              "created_at": "2026-09-25 12:39:33.093532",
+              "has_answer": false,
+              "references": [
+                "试卷#7"
+              ]
+            }
+          ],
+          "warnings": []
+        },
+        "B": {
+          "scheme": "B",
+          "label": "保留最新录入",
+          "keeper": {
+            "id": 440,
+            "seq_num": 400,
+            "created_at": "2026-09-25 12:39:33.093532",
+            "has_answer": false
+          },
+          "remove": [
+            {
+              "id": 106,
+              "seq_num": 96,
+              "created_at": "2026-09-24 13:15:49.736594",
+              "has_answer": true,
+              "references": [
+                "试卷#6"
+              ]
+            }
+          ],
+          "warnings": [
+            "保留项没有解析，但将被隔离的 #106 有解析；直接执行会丢失解析。"
+          ]
+        }
+      }
+    },
+    {
+      "tier": "answer_mismatch",
+      "signature_kind": "exact_hash",
+      "signature": "9cad84407cfaf6c21db577940f05f13b4ce99cef9208f7222652a4d636522868",
+      "exact_hash": "9cad84407cfaf6c21db577940f05f13b4ce99cef9208f7222652a4d636522868",
+      "size": 2,
+      "recommended_keeper": 346,
+      "instances": [
+        {
+          "id": 346,
+          "seq_num": 311,
+          "created_at": "2026-09-25 04:33:57.555265",
+          "question_type": "multi_choice",
+          "has_answer": true,
+          "answer_chars": 494,
+          "source": "2026年哈九中高三上学期9月月考",
+          "tags": "",
+          "category": "必修二 / 6. 平面向量及其应用 / 6.2 平面向量的运算",
+          "preview": "已知平面向量 $\\vec{a}$，$\\vec{b}$ 满足 $|\\vec{a}|=|\\vec{b}|=2$，且 $\\vec{a}\\cdot\\vec{b}=0$．设实数 $t\\in(0,1)$，$\\v…",
+          "references": []
+        },
+        {
+          "id": 362,
+          "seq_num": 322,
+          "created_at": "2026-09-25 04:36:31.284296",
+          "question_type": "multi_choice",
+          "has_answer": false,
+          "answer_chars": 0,
+          "source": "2026年哈九中高三上学期9月月考",
+          "tags": "疑似重复#340",
+          "category": "必修二 / 6. 平面向量及其应用 / 6.2 平面向量的运算",
+          "preview": "已知平面向量 $\\vec{a}$，$\\vec{b}$ 满足 $|\\vec{a}|=|\\vec{b}|=2$，且 $\\vec{a}\\cdot\\vec{b}=0$.设实数 $t\\in(0,1)$，$\\v…",
+          "references": []
+        }
+      ],
+      "plans": {
+        "A": {
+          "scheme": "A",
+          "label": "保留最早录入",
+          "keeper": {
+            "id": 346,
+            "seq_num": 311,
+            "created_at": "2026-09-25 04:33:57.555265",
+            "has_answer": true
+          },
+          "remove": [
+            {
+              "id": 362,
+              "seq_num": 322,
+              "created_at": "2026-09-25 04:36:31.284296",
+              "has_answer": false,
+              "references": []
+            }
+          ],
+          "warnings": []
+        },
+        "B": {
+          "scheme": "B",
+          "label": "保留最新录入",
+          "keeper": {
+            "id": 362,
+            "seq_num": 322,
+            "created_at": "2026-09-25 04:36:31.284296",
+            "has_answer": false
+          },
+          "remove": [
+            {
+              "id": 346,
+              "seq_num": 311,
+              "created_at": "2026-09-25 04:33:57.555265",
+              "has_answer": true,
+              "references": []
+            }
+          ],
+          "warnings": [
+            "保留项没有解析，但将被隔离的 #346 有解析；直接执行会丢失解析。"
+          ]
+        }
+      }
+    },
+    {
+      "tier": "answer_mismatch",
+      "signature_kind": "exact_hash",
+      "signature": "6f6c9cdf65148b06d1b8f25349807201dc7d71236235f604f42ac29dce325ea7",
+      "exact_hash": "6f6c9cdf65148b06d1b8f25349807201dc7d71236235f604f42ac29dce325ea7",
+      "size": 2,
+      "recommended_keeper": 348,
+      "instances": [
+        {
+          "id": 348,
+          "seq_num": 313,
+          "created_at": "2026-09-25 04:33:57.940449",
+          "question_type": "fill_in_blank",
+          "has_answer": true,
+          "answer_chars": 294,
+          "source": "2026年哈九中高三上学期9月月考",
+          "tags": "",
+          "category": "必修二 / 6. 平面向量及其应用 / 6.3 平面向量基本定理及坐标表示",
+          "preview": "设平面向量 $\\vec{a}=(\\sin\\theta,1)$，$\\vec{b}=(\\cos\\theta,\\sqrt{3})$，且 $\\vec{a}\\parallel\\vec{b}$，则 $\\tan\\…",
+          "references": []
+        },
+        {
+          "id": 364,
+          "seq_num": 324,
+          "created_at": "2026-09-25 04:36:31.535576",
+          "question_type": "fill_in_blank",
+          "has_answer": false,
+          "answer_chars": 0,
+          "source": "2026年哈九中高三上学期9月月考",
+          "tags": "疑似重复#342",
+          "category": "必修二 / 6. 平面向量及其应用 / 6.3 平面向量基本定理及坐标表示",
+          "preview": "设平面向量 $\\vec{a}=(\\sin\\theta,1)$，$\\vec{b}=(\\cos\\theta,\\sqrt{3})$，且 $\\vec{a}\\parallel\\vec{b}$，则 $\\tan\\…",
+          "references": []
+        }
+      ],
+      "plans": {
+        "A": {
+          "scheme": "A",
+          "label": "保留最早录入",
+          "keeper": {
+            "id": 348,
+            "seq_num": 313,
+            "created_at": "2026-09-25 04:33:57.940449",
+            "has_answer": true
+          },
+          "remove": [
+            {
+              "id": 364,
+              "seq_num": 324,
+              "created_at": "2026-09-25 04:36:31.535576",
+              "has_answer": false,
+              "references": []
+            }
+          ],
+          "warnings": []
+        },
+        "B": {
+          "scheme": "B",
+          "label": "保留最新录入",
+          "keeper": {
+            "id": 364,
+            "seq_num": 324,
+            "created_at": "2026-09-25 04:36:31.535576",
+            "has_answer": false
+          },
+          "remove": [
+            {
+              "id": 348,
+              "seq_num": 313,
+              "created_at": "2026-09-25 04:33:57.940449",
+              "has_answer": true,
+              "references": []
+            }
+          ],
+          "warnings": [
+            "保留项没有解析，但将被隔离的 #348 有解析；直接执行会丢失解析。"
+          ]
+        }
+      }
+    },
+    {
+      "tier": "layout_variant",
+      "signature_kind": "critical_math_hash",
+      "signature": "9691790eda100ef591247b9858f6d675ff857f644c93d3b16d4c15b5de1d3fb3",
+      "exact_hash": "9901fdcd66d1b329ce1cd1d8bb5e771a4976127c4f8a5669602046c6bb1defef",
+      "size": 2,
+      "recommended_keeper": 97,
+      "instances": [
+        {
+          "id": 97,
+          "seq_num": 88,
+          "created_at": "2026-09-24 13:15:48.262839",
+          "question_type": "single_choice",
+          "has_answer": true,
+          "answer_chars": 493,
+          "source": "2023年哈师大附中高一上学期10月月考",
+          "tags": "",
+          "category": "必修一 / 2. 一元二次函数、方程和不等式 / 2.2 基本不等式",
+          "preview": "一家商店使用一架两臂不等长的天平称黄金。一位顾客到店里购买 $10\\mathrm{g}$ 黄金，售货员先将 $5\\mathrm{g}$ 的砝码放在天平左盘中, 取出一些黄金放在天平右盘中使天平平衡;…",
+          "references": [
+            "试卷#5"
+          ]
+        },
+        {
+          "id": 430,
+          "seq_num": 390,
+          "created_at": "2026-09-25 12:39:32.123401",
+          "question_type": "single_choice",
+          "has_answer": false,
+          "answer_chars": 0,
+          "source": "2023年哈师大附中高一上学期10月月考",
+          "tags": "疑似重复#89",
+          "category": "必修一 / 2. 一元二次函数、方程和不等式 / 2.2 基本不等式",
+          "preview": "一家商店使用一架两臂不等长的天平称黄金. 一位顾客到店里购买 $10 \\mathrm{~g}$ 黄金，售货员先将 $5 \\mathrm{~g}$ 的砝码放在天平左盘中，取出一些黄金放在天平右盘中使天…",
+          "references": [
+            "试卷#6"
+          ]
+        }
+      ],
+      "plans": {
+        "A": {
+          "scheme": "A",
+          "label": "保留最早录入",
+          "keeper": {
+            "id": 97,
+            "seq_num": 88,
+            "created_at": "2026-09-24 13:15:48.262839",
+            "has_answer": true
+          },
+          "remove": [
+            {
+              "id": 430,
+              "seq_num": 390,
+              "created_at": "2026-09-25 12:39:32.123401",
+              "has_answer": false,
+              "references": [
+                "试卷#6"
+              ]
+            }
+          ],
+          "warnings": []
+        },
+        "B": {
+          "scheme": "B",
+          "label": "保留最新录入",
+          "keeper": {
+            "id": 430,
+            "seq_num": 390,
+            "created_at": "2026-09-25 12:39:32.123401",
+            "has_answer": false
+          },
+          "remove": [
+            {
+              "id": 97,
+              "seq_num": 88,
+              "created_at": "2026-09-24 13:15:48.262839",
+              "has_answer": true,
+              "references": [
+                "试卷#5"
+              ]
+            }
+          ],
+          "warnings": [
+            "保留项没有解析，但将被隔离的 #97 有解析；直接执行会丢失解析。"
+          ]
+        }
+      }
+    },
+    {
+      "tier": "layout_variant",
+      "signature_kind": "critical_math_hash",
+      "signature": "17a5eb69821dab0b21db8a6dce019441ff3e4da270faab0b426520cbce51472d",
+      "exact_hash": "cc53e08c92588bd4fae3e800c4875c2aff5ce5d3a495beb7fd6507347044202e",
+      "size": 2,
+      "recommended_keeper": 99,
+      "instances": [
+        {
+          "id": 99,
+          "seq_num": 89,
+          "created_at": "2026-09-24 13:15:48.605354",
+          "question_type": "single_choice",
+          "has_answer": true,
+          "answer_chars": 464,
+          "source": "2023年哈师大附中高一上学期10月月考",
+          "tags": "",
+          "category": "必修一 / 2. 一元二次函数、方程和不等式 / 2.2 基本不等式",
+          "preview": "已知 $x \\in (0,1)$，则 $\\dfrac{1}{x} + \\dfrac{2}{1 - x}$ 的最小值为 \\paren \\begin{choices} \\item 6 \\item $3 …",
+          "references": [
+            "试卷#6"
+          ]
+        },
+        {
+          "id": 433,
+          "seq_num": 393,
+          "created_at": "2026-09-25 12:39:32.377757",
+          "question_type": "single_choice",
+          "has_answer": false,
+          "answer_chars": 0,
+          "source": "2023年哈师大附中高一上学期10月月考",
+          "tags": "疑似重复#90",
+          "category": "必修一 / 2. 一元二次函数、方程和不等式 / 2.2 基本不等式",
+          "preview": "已知 $x \\in(0,1)$，则 $\\dfrac{1}{x}+\\dfrac{2}{1-x}$ 的最小值为 \\paren \\begin{choices} \\item 6 \\item $3+2 \\sq…",
+          "references": [
+            "试卷#2"
+          ]
+        }
+      ],
+      "plans": {
+        "A": {
+          "scheme": "A",
+          "label": "保留最早录入",
+          "keeper": {
+            "id": 99,
+            "seq_num": 89,
+            "created_at": "2026-09-24 13:15:48.605354",
+            "has_answer": true
+          },
+          "remove": [
+            {
+              "id": 433,
+              "seq_num": 393,
+              "created_at": "2026-09-25 12:39:32.377757",
+              "has_answer": false,
+              "references": [
+                "试卷#2"
+              ]
+            }
+          ],
+          "warnings": []
+        },
+        "B": {
+          "scheme": "B",
+          "label": "保留最新录入",
+          "keeper": {
+            "id": 433,
+            "seq_num": 393,
+            "created_at": "2026-09-25 12:39:32.377757",
+            "has_answer": false
+          },
+          "remove": [
+            {
+              "id": 99,
+              "seq_num": 89,
+              "created_at": "2026-09-24 13:15:48.605354",
+              "has_answer": true,
+              "references": [
+                "试卷#6"
+              ]
+            }
+          ],
+          "warnings": [
+            "保留项没有解析，但将被隔离的 #99 有解析；直接执行会丢失解析。"
+          ]
+        }
+      }
+    },
+    {
+      "tier": "layout_variant",
+      "signature_kind": "critical_math_hash",
+      "signature": "0f2081616a832658f91cf3362b0f75be0a494829e4d35de0a489c4b1e1093100",
+      "exact_hash": "30e750bbfe869afdc4d3de450db775c1fe96e1c365d8858c71d2228e4724ee21",
+      "size": 2,
+      "recommended_keeper": 100,
+      "instances": [
+        {
+          "id": 100,
+          "seq_num": 90,
+          "created_at": "2026-09-24 13:15:48.765268",
+          "question_type": "single_choice",
+          "has_answer": true,
+          "answer_chars": 381,
+          "source": "2023年哈师大附中高一上学期10月月考",
+          "tags": "",
+          "category": "必修一 / 2. 一元二次函数、方程和不等式 / 2.2 基本不等式",
+          "preview": "如图在北京召开的第 24 届国际数学家大会的会标，会标是根据中国古代数学家赵爽的弦图设计的，颜色的明暗使它看上去像一个风车，代表中国人民热情好客。我们教材中利用该图作为一个说法的一个几何解释，这个说…",
+          "references": [
+            "试卷#2"
+          ]
+        },
+        {
+          "id": 434,
+          "seq_num": 394,
+          "created_at": "2026-09-25 12:39:32.549976",
+          "question_type": "single_choice",
+          "has_answer": false,
+          "answer_chars": 0,
+          "source": "2023年哈师大附中高一上学期10月月考",
+          "tags": "疑似重复#91",
+          "category": "必修一 / 2. 一元二次函数、方程和不等式 / 2.2 基本不等式",
+          "preview": "如图在北京召开的第 24 届国际数学家大会的会标，会标是根据中国古代数学家赵爽的弦图设计的，颜色的明暗使它看上去像一个风车，代表中国人民热情好客. 我们教材中利用该图作为一个说法的一个几何解释，这个…",
+          "references": [
+            "试卷#7"
+          ]
+        }
+      ],
+      "plans": {
+        "A": {
+          "scheme": "A",
+          "label": "保留最早录入",
+          "keeper": {
+            "id": 100,
+            "seq_num": 90,
+            "created_at": "2026-09-24 13:15:48.765268",
+            "has_answer": true
+          },
+          "remove": [
+            {
+              "id": 434,
+              "seq_num": 394,
+              "created_at": "2026-09-25 12:39:32.549976",
+              "has_answer": false,
+              "references": [
+                "试卷#7"
+              ]
+            }
+          ],
+          "warnings": []
+        },
+        "B": {
+          "scheme": "B",
+          "label": "保留最新录入",
+          "keeper": {
+            "id": 434,
+            "seq_num": 394,
+            "created_at": "2026-09-25 12:39:32.549976",
+            "has_answer": false
+          },
+          "remove": [
+            {
+              "id": 100,
+              "seq_num": 90,
+              "created_at": "2026-09-24 13:15:48.765268",
+              "has_answer": true,
+              "references": [
+                "试卷#2"
+              ]
+            }
+          ],
+          "warnings": [
+            "保留项没有解析，但将被隔离的 #100 有解析；直接执行会丢失解析。"
+          ]
+        }
+      }
+    },
+    {
+      "tier": "layout_variant",
+      "signature_kind": "critical_math_hash",
+      "signature": "cae5184bb6e7baff02f8da46a427c5eb93b60c8a05e5d5a1249709347428842d",
+      "exact_hash": "c8a205fc917b110be28423dd3c6cb611b322d06740ecff516bc43d1f25973ffe",
+      "size": 2,
+      "recommended_keeper": 103,
+      "instances": [
+        {
+          "id": 103,
+          "seq_num": 93,
+          "created_at": "2026-09-24 13:15:49.243128",
+          "question_type": "multi_choice",
+          "has_answer": true,
+          "answer_chars": 860,
+          "source": "2023年哈师大附中高一上学期10月月考",
+          "tags": "",
+          "category": "必修一 / 2. 一元二次函数、方程和不等式 / 2.1 等式性质与不等式性质",
+          "preview": "下列命题为真命题的是 \\paren \\begin{choices} \\item 若 $a > b$，且 $\\dfrac{1}{a} > \\dfrac{1}{b}$，则 $ab < 0$ \\item …",
+          "references": [
+            "试卷#2"
+          ]
+        },
+        {
+          "id": 437,
+          "seq_num": 397,
+          "created_at": "2026-09-25 12:39:32.817531",
+          "question_type": "multi_choice",
+          "has_answer": false,
+          "answer_chars": 0,
+          "source": "2023年哈师大附中高一上学期10月月考",
+          "tags": "疑似重复#94",
+          "category": "必修一 / 2. 一元二次函数、方程和不等式 / 2.1 等式性质与不等式性质",
+          "preview": "下列命题为真命题的是 \\paren \\begin{choices} \\item 若 $a > b$，且 $\\dfrac{1}{a} > \\dfrac{1}{b}$，则 $ab < 0$ \\item …",
+          "references": [
+            "试卷#7"
+          ]
+        }
+      ],
+      "plans": {
+        "A": {
+          "scheme": "A",
+          "label": "保留最早录入",
+          "keeper": {
+            "id": 103,
+            "seq_num": 93,
+            "created_at": "2026-09-24 13:15:49.243128",
+            "has_answer": true
+          },
+          "remove": [
+            {
+              "id": 437,
+              "seq_num": 397,
+              "created_at": "2026-09-25 12:39:32.817531",
+              "has_answer": false,
+              "references": [
+                "试卷#7"
+              ]
+            }
+          ],
+          "warnings": []
+        },
+        "B": {
+          "scheme": "B",
+          "label": "保留最新录入",
+          "keeper": {
+            "id": 437,
+            "seq_num": 397,
+            "created_at": "2026-09-25 12:39:32.817531",
+            "has_answer": false
+          },
+          "remove": [
+            {
+              "id": 103,
+              "seq_num": 93,
+              "created_at": "2026-09-24 13:15:49.243128",
+              "has_answer": true,
+              "references": [
+                "试卷#2"
+              ]
+            }
+          ],
+          "warnings": [
+            "保留项没有解析，但将被隔离的 #103 有解析；直接执行会丢失解析。"
+          ]
+        }
+      }
+    },
+    {
+      "tier": "layout_variant",
+      "signature_kind": "critical_math_hash",
+      "signature": "0e6cf8fd8582c19d73bcb9f76c975c8b3799997a1dafb27babc56064f132acb4",
+      "exact_hash": "a2d8386668e9a2d0d5fbf60f76447bac1146ac73a1c40326b867305954e89eda",
+      "size": 2,
+      "recommended_keeper": 109,
+      "instances": [
+        {
+          "id": 109,
+          "seq_num": 99,
+          "created_at": "2026-09-24 13:15:50.248289",
+          "question_type": "fill_in_blank",
+          "has_answer": true,
+          "answer_chars": 565,
+          "source": "2023年哈师大附中高一上学期10月月考",
+          "tags": "",
+          "category": "必修一 / 2. 一元二次函数、方程和不等式 / 2.1 等式性质与不等式性质",
+          "preview": "已知 $1 \\leq a + b \\leq 4$，$-1 \\leq a - b \\leq 2$，则 $3a + 2b$ 的取值范围是 \\fillin.",
+          "references": [
+            "试卷#4",
+            "试卷#8"
+          ]
+        },
+        {
+          "id": 443,
+          "seq_num": 403,
+          "created_at": "2026-09-25 12:39:33.356090",
+          "question_type": "fill_in_blank",
+          "has_answer": false,
+          "answer_chars": 0,
+          "source": "2023年哈师大附中高一上学期10月月考",
+          "tags": "疑似重复#100",
+          "category": "必修一 / 2. 一元二次函数、方程和不等式 / 2.1 等式性质与不等式性质",
+          "preview": "已知 $1 \\le a+b \\le 4$, $-1 \\le a-b \\le 2$, 则 $3a+2b$ 的取值范围是\\fillin.",
+          "references": [
+            "试卷#5"
+          ]
+        }
+      ],
+      "plans": {
+        "A": {
+          "scheme": "A",
+          "label": "保留最早录入",
+          "keeper": {
+            "id": 109,
+            "seq_num": 99,
+            "created_at": "2026-09-24 13:15:50.248289",
+            "has_answer": true
+          },
+          "remove": [
+            {
+              "id": 443,
+              "seq_num": 403,
+              "created_at": "2026-09-25 12:39:33.356090",
+              "has_answer": false,
+              "references": [
+                "试卷#5"
+              ]
+            }
+          ],
+          "warnings": []
+        },
+        "B": {
+          "scheme": "B",
+          "label": "保留最新录入",
+          "keeper": {
+            "id": 443,
+            "seq_num": 403,
+            "created_at": "2026-09-25 12:39:33.356090",
+            "has_answer": false
+          },
+          "remove": [
+            {
+              "id": 109,
+              "seq_num": 99,
+              "created_at": "2026-09-24 13:15:50.248289",
+              "has_answer": true,
+              "references": [
+                "试卷#4",
+                "试卷#8"
+              ]
+            }
+          ],
+          "warnings": [
+            "保留项没有解析，但将被隔离的 #109 有解析；直接执行会丢失解析。"
+          ]
+        }
+      }
+    },
+    {
+      "tier": "layout_variant",
+      "signature_kind": "critical_math_hash",
+      "signature": "c13c04aa255614af353633349ac0170bcc0c5f82ccae2064bb6e5477236d8596",
+      "exact_hash": "6fdb1d4350f5de9a99dff2f99cb6717f7cfb33ae8a66f9a11ca6c8c3bb441127",
+      "size": 2,
+      "recommended_keeper": 110,
+      "instances": [
+        {
+          "id": 110,
+          "seq_num": 100,
+          "created_at": "2026-09-24 13:15:50.390615",
+          "question_type": "fill_in_blank",
+          "has_answer": true,
+          "answer_chars": 296,
+          "source": "2023年哈师大附中高一上学期10月月考",
+          "tags": "",
+          "category": "必修一 / 2. 一元二次函数、方程和不等式 / 2.2 基本不等式",
+          "preview": "中国宋代的数学家秦九韶曾提出“三斜求积术”，即假设在平面内有一个三角形，边长分别为 $a, b, c$，三角形的面积 $S$ 可由公式 $S = \\sqrt{p(p - a)(p - b)(p - …",
+          "references": [
+            "试卷#5"
+          ]
+        },
+        {
+          "id": 444,
+          "seq_num": 404,
+          "created_at": "2026-09-25 12:39:33.450349",
+          "question_type": "fill_in_blank",
+          "has_answer": false,
+          "answer_chars": 0,
+          "source": "2023年哈师大附中高一上学期10月月考",
+          "tags": "疑似重复#101",
+          "category": "必修一 / 2. 一元二次函数、方程和不等式 / 2.2 基本不等式",
+          "preview": "中国宋代的数学家秦九韶曾提出“三斜求积术”，即假设在平面内有一个三角形，边长分别为 $a$, $b$, $c$, 三角形的面积 $S$ 可由公式 $S=\\sqrt{p(p-a)(p-b)(p-c)}…",
+          "references": [
+            "试卷#6"
+          ]
+        }
+      ],
+      "plans": {
+        "A": {
+          "scheme": "A",
+          "label": "保留最早录入",
+          "keeper": {
+            "id": 110,
+            "seq_num": 100,
+            "created_at": "2026-09-24 13:15:50.390615",
+            "has_answer": true
+          },
+          "remove": [
+            {
+              "id": 444,
+              "seq_num": 404,
+              "created_at": "2026-09-25 12:39:33.450349",
+              "has_answer": false,
+              "references": [
+                "试卷#6"
+              ]
+            }
+          ],
+          "warnings": []
+        },
+        "B": {
+          "scheme": "B",
+          "label": "保留最新录入",
+          "keeper": {
+            "id": 444,
+            "seq_num": 404,
+            "created_at": "2026-09-25 12:39:33.450349",
+            "has_answer": false
+          },
+          "remove": [
+            {
+              "id": 110,
+              "seq_num": 100,
+              "created_at": "2026-09-24 13:15:50.390615",
+              "has_answer": true,
+              "references": [
+                "试卷#5"
+              ]
+            }
+          ],
+          "warnings": [
+            "保留项没有解析，但将被隔离的 #110 有解析；直接执行会丢失解析。"
+          ]
+        }
+      }
+    },
+    {
+      "tier": "layout_variant",
+      "signature_kind": "critical_math_hash",
+      "signature": "d0a5571c2178867348a839b23a22a5f675fee585aeb0cef8aa56356e2038cc0d",
+      "exact_hash": "7ebe00e414d4bd6a8acf57a1570f0d4e5b2bf333387104b52c2b686540218c98",
+      "size": 2,
+      "recommended_keeper": 351,
+      "instances": [
+        {
+          "id": 351,
+          "seq_num": 316,
+          "created_at": "2026-09-25 04:33:58.657182",
+          "question_type": "detailed_answer",
+          "has_answer": true,
+          "answer_chars": 596,
+          "source": "2026年哈九中高三上学期9月月考",
+          "tags": "",
+          "category": "选修二 / 4. 数列 / 4.1 数列的概念",
+          "preview": "已知数列 $\\{a_n\\}$ 满足 $a_n=4a_{n-1}+3(n\\geq 2,n\\in N^*)$，且 $a_1=3$ （1） 求数列 $\\{a_n\\}$ 的通项公式 （2） 若 $b_n=n…",
+          "references": []
+        },
+        {
+          "id": 367,
+          "seq_num": 327,
+          "created_at": "2026-09-25 04:36:32.073110",
+          "question_type": "detailed_answer",
+          "has_answer": false,
+          "answer_chars": 0,
+          "source": "2026年哈九中高三上学期9月月考",
+          "tags": "疑似重复#345",
+          "category": "选修二 / 4. 数列 / 4.1 数列的概念",
+          "preview": "已知数列 $\\{a_n\\}$ 满足 $a_n = 4a_{n-1} + 3 (n \\geq 2, n \\in N^*)$，且 $a_1 = 3$ （1） 求数列 $\\{a_n\\}$ 的通项公式 （2…",
+          "references": []
+        }
+      ],
+      "plans": {
+        "A": {
+          "scheme": "A",
+          "label": "保留最早录入",
+          "keeper": {
+            "id": 351,
+            "seq_num": 316,
+            "created_at": "2026-09-25 04:33:58.657182",
+            "has_answer": true
+          },
+          "remove": [
+            {
+              "id": 367,
+              "seq_num": 327,
+              "created_at": "2026-09-25 04:36:32.073110",
+              "has_answer": false,
+              "references": []
+            }
+          ],
+          "warnings": []
+        },
+        "B": {
+          "scheme": "B",
+          "label": "保留最新录入",
+          "keeper": {
+            "id": 367,
+            "seq_num": 327,
+            "created_at": "2026-09-25 04:36:32.073110",
+            "has_answer": false
+          },
+          "remove": [
+            {
+              "id": 351,
+              "seq_num": 316,
+              "created_at": "2026-09-25 04:33:58.657182",
+              "has_answer": true,
+              "references": []
+            }
+          ],
+          "warnings": [
+            "保留项没有解析，但将被隔离的 #351 有解析；直接执行会丢失解析。"
+          ]
+        }
+      }
+    },
+    {
+      "tier": "layout_variant",
+      "signature_kind": "critical_math_hash",
+      "signature": "249e7e4e84d0db08f34bf7c24addbbce80343d73154b748a578a2fcde1462d2e",
+      "exact_hash": "2f6797271979bf87023f53bfbf8c737fd16b9d904eea67ae5fd59009da435869",
+      "size": 2,
+      "recommended_keeper": 353,
+      "instances": [
+        {
+          "id": 353,
+          "seq_num": 318,
+          "created_at": "2026-09-25 04:33:59.131034",
+          "question_type": "detailed_answer",
+          "has_answer": true,
+          "answer_chars": 848,
+          "source": "2026年哈九中高三上学期9月月考",
+          "tags": "",
+          "category": "选修二 / 5. 一元函数的导数及其应用 / 5.1 导数的概念及其意义",
+          "preview": "牛顿在《流数法》一书中，利用迭代思想给出了一种求高次代数方程近似解的方法：牛顿法.具体步骤如下：设 $r$ 是函数 $y=f(x)$ 的一个零点，任意选取 $x_0$ 作为 $r$ 的初始近似值，曲…",
+          "references": []
+        },
+        {
+          "id": 369,
+          "seq_num": 329,
+          "created_at": "2026-09-25 04:36:32.464692",
+          "question_type": "detailed_answer",
+          "has_answer": false,
+          "answer_chars": 0,
+          "source": "2026年哈九中高三上学期9月月考",
+          "tags": "疑似重复#347",
+          "category": "选修二 / 5. 一元函数的导数及其应用 / 5.1 导数的概念及其意义",
+          "preview": "牛顿在《流数法》一书中，利用迭代思想给出了一种求高次代数方程近似解的方法：牛顿法. 具体步骤如下：设 $r$ 是函数 $y = f(x)$ 的一个零点，任意选取 $x_0$ 作为 $r$ 的初始近似…",
+          "references": []
+        }
+      ],
+      "plans": {
+        "A": {
+          "scheme": "A",
+          "label": "保留最早录入",
+          "keeper": {
+            "id": 353,
+            "seq_num": 318,
+            "created_at": "2026-09-25 04:33:59.131034",
+            "has_answer": true
+          },
+          "remove": [
+            {
+              "id": 369,
+              "seq_num": 329,
+              "created_at": "2026-09-25 04:36:32.464692",
+              "has_answer": false,
+              "references": []
+            }
+          ],
+          "warnings": []
+        },
+        "B": {
+          "scheme": "B",
+          "label": "保留最新录入",
+          "keeper": {
+            "id": 369,
+            "seq_num": 329,
+            "created_at": "2026-09-25 04:36:32.464692",
+            "has_answer": false
+          },
+          "remove": [
+            {
+              "id": 353,
+              "seq_num": 318,
+              "created_at": "2026-09-25 04:33:59.131034",
+              "has_answer": true,
+              "references": []
+            }
+          ],
+          "warnings": [
+            "保留项没有解析，但将被隔离的 #353 有解析；直接执行会丢失解析。"
+          ]
+        }
+      }
+    }
+  ],
+  "stats": {
+    "strict_groups": 0,
+    "strict_affected": 0,
+    "strict_redundant": 0,
+    "answer_mismatch_groups": 5,
+    "answer_mismatch_affected": 10,
+    "answer_mismatch_redundant": 5,
+    "image_mismatch_groups": 0,
+    "image_mismatch_affected": 0,
+    "image_mismatch_redundant": 0,
+    "layout_variant_groups": 8,
+    "layout_variant_affected": 16,
+    "layout_variant_redundant": 8,
+    "total_groups": 13,
+    "total_affected": 26,
+    "total_redundant": 13
+  }
+}

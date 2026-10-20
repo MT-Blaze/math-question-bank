@@ -675,8 +675,7 @@ def ai_select_paper(payload: dict, db: Session = Depends(get_db)):
                                 break
                         db_selected = db.query(Question).filter(Question.id.in_(selected_ids)).all()
                         id_map = {q.id: q for q in db_selected}
-                        seq_map = _main.get_seq_mapping(db, selected_ids)
-                        final_questions = [{**_decorate_topic_field(id_map[qid].to_dict()), "seq_num": seq_map.get(qid)} for qid in selected_ids if qid in id_map]
+                        final_questions = [{**_decorate_topic_field(id_map[qid].to_dict())} for qid in selected_ids if qid in id_map]
 
                         if final_questions:
                             return {
@@ -717,8 +716,7 @@ def ai_select_paper(payload: dict, db: Session = Depends(get_db)):
                     break
 
         selected_fallback = fallback_questions[:limit]
-        seq_map = _main.get_seq_mapping(db, [q.id for q in selected_fallback])
-        result = [{**_decorate_topic_field(q.to_dict()), "seq_num": seq_map.get(q.id)} for q in selected_fallback]
+        result = [{**_decorate_topic_field(q.to_dict())} for q in selected_fallback]
         
         topic_str = "、".join(extracted_topics) if extracted_topics else "通用知识点"
         err_banner = f"⚠️ 【AI 解题模型调用未成功】: {api_error_detail}\n系统已为您自动启动本地教研算法，根据意图（{topic_str}）在本地题库中筛选并组合了 {len(result)} 道精选题目。" if api_error_detail else f"【本地智能筛选分析】已为您自动识别意图（{topic_str}），从题库中精准挑选并组合了鲜活试题。"
@@ -2101,12 +2099,8 @@ def get_paper_questions(ids: str = "", db: Session = Depends(get_db)):
             return {"status": "success", "data": []}
         questions = db.query(Question).filter(Question.id.in_(id_list)).all()
         q_map = {q.id: _decorate_topic_field(q.to_dict()) for q in questions}
-        # seq_num 是题目卡与 A4 卷面显示的「用户口径题号」，不是物理主键。
-        # 组卷流改成分页 + 按需水合以后，购物车里的题不再顺带从列表里拿到 seq_num，
-        # 必须由这个批量端点补上，否则刷新后已选题目的题号整片空白。
-        seq_map = _main.get_seq_mapping(db, id_list)
         result = [
-            {**q_map[qid], "seq_num": seq_map.get(qid)}
+            q_map[qid]
             for qid in id_list
             if qid in q_map
         ]

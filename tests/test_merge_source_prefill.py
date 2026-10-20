@@ -70,8 +70,15 @@ class El {
   getAttribute(k) { return k in this.attrs ? this.attrs[k] : null; }
   setAttribute(k, v) { this.attrs[k] = String(v); if (k === 'id') this.id = this.attrs[k]; }
   hasAttribute(k) { return k in this.attrs; }
+  removeAttribute(k) { delete this.attrs[k]; }
   addEventListener(type, fn) { (this.__listeners || (this.__listeners = {}))[type] = fn; }
   appendChild(c) { c.parent = this; this.children.push(c); return c; }
+  removeChild(c) {
+    const i = this.children.indexOf(c);
+    if (i >= 0) this.children.splice(i, 1);
+    c.parent = null;
+    return c;
+  }
   get parentNode() { return this.parent; }
   get parentElement() { return this.parent; }
   all() {
@@ -135,6 +142,7 @@ const win = {
   localStorage: { getItem: () => '' }
 };
 global.window = win;
+global.showToast = win.showToast;
 __MODAL_STUB__
 global.localStorage = win.localStorage;
 global.escapeHtml = value => String(value);
@@ -168,7 +176,7 @@ function makePage(fields) {
     global.document.body.appendChild(el);
   });
   const modalInputs = {};
-  ['mergeSrcYear', 'mergeSrcRegion', 'mergeSrcExamType', 'mergeSrcPaperTitle'].forEach(id => {
+  ['mergeSrcYear', 'mergeSrcRegion', 'mergeSrcExamType', 'mergeSrcPaperTitle', 'mergeSrcQuestionNo'].forEach(id => {
     const el = new El('input');
     el.setAttribute('id', id);
     modalInputs[id] = el;
@@ -247,7 +255,7 @@ const inputs = makePage({
   importSrcExamType: '三模'
 });
 parsedQuestionsData.length = 0;
-parsedQuestionsData[7] = { source: '2026届哈三中高三三模数学试卷' };
+parsedQuestionsData[7] = { source: '2026届哈三中高三三模数学试卷', paper_question_no: '18' };
 openParsedDuplicateReviewEntryMerge(
   { label: '拆解结果第 8 题', index: 7, result: {} },
   { id: 89, seq_num: 89 }, false, null
@@ -262,10 +270,11 @@ expect('mergeSrcYear', '2026');
 expect('mergeSrcRegion', '哈三中');
 expect('mergeSrcExamType', '三模');
 expect('mergeSrcPaperTitle', '2026届哈三中高三三模数学试卷');
+expect('mergeSrcQuestionNo', '18');
 const p = capturedPreset || {};
 console.log('PRESET=' + JSON.stringify(p));
 if (p.year !== '2026' || p.region !== '哈三中' || p.exam_type !== '三模'
-    || p.paper_title !== '2026届哈三中高三三模数学试卷') {
+    || p.paper_title !== '2026届哈三中高三三模数学试卷' || p.question_no !== '18') {
   failures.push('preset 未按要求透传：' + JSON.stringify(p));
 }
 if (failures.length) { console.log('FAILED:\\n - ' + failures.join('\\n - ')); process.exit(1); }
@@ -279,7 +288,7 @@ openParsedDuplicateReviewEntryMerge(
   { label: '拆解结果第 1 题', index: 0, result: {} },
   { id: 5, seq_num: 5 }, false, null
 );
-const vals = ['mergeSrcYear', 'mergeSrcRegion', 'mergeSrcExamType', 'mergeSrcPaperTitle']
+const vals = ['mergeSrcYear', 'mergeSrcRegion', 'mergeSrcExamType', 'mergeSrcPaperTitle', 'mergeSrcQuestionNo']
   .map(id => JSON.stringify(inputs[id].value));
 console.log('VALUES=' + vals.join(','));
 if (vals.some(v => v !== '""')) { console.log('SHOULD_BE_EMPTY'); process.exit(1); }
@@ -308,6 +317,7 @@ expect('mergeSrcYear', '2025');
 expect('mergeSrcRegion', '省实验');
 expect('mergeSrcExamType', '期末');
 expect('mergeSrcPaperTitle', '');
+expect('mergeSrcQuestionNo', '');
 if (failures.length) { console.log('FAILED:\\n - ' + failures.join('\\n - ')); process.exit(1); }
 console.log('PANEL_ONLY_OK');
 """
@@ -334,6 +344,47 @@ console.log('NO_INJECTION');
 """
 
 
+_ASSERT_SUBMIT = r"""
+global.fetch = function (url, opts) {
+  global.__posted = { url: url, body: JSON.parse(opts.body) };
+  return Promise.resolve({
+    ok: true,
+    json: function () { return Promise.resolve({ status: 'success', sources: [] }); }
+  });
+};
+const inputs = makePage({
+  importSrcYear: '2026',
+  importSrcRegion: '哈三中',
+  importSrcExamType: '三模'
+});
+parsedQuestionsData.length = 0;
+parsedQuestionsData[0] = { source: '2026届哈三中高三三模数学试卷', paper_question_no: '18' };
+openParsedDuplicateReviewEntryMerge(
+  { label: '拆解结果第 1 题', index: 0, result: {} },
+  { id: 89 }, false, null
+);
+if (inputs.mergeSrcQuestionNo.value !== '18') {
+  console.log('PREFILL_FAILED=' + JSON.stringify(inputs.mergeSrcQuestionNo.value));
+  process.exit(1);
+}
+inputs.mergeSrcSubmit.onclick();
+(async function () {
+  await new Promise(resolve => setImmediate(resolve));
+  await new Promise(resolve => setImmediate(resolve));
+  const posted = global.__posted;
+  console.log('POSTED=' + JSON.stringify(posted));
+  if (!posted || !/\/api\/questions\/89\/sources$/.test(posted.url)) {
+    console.log('SUBMIT_URL_WRONG'); process.exit(1);
+  }
+  if (posted.body.question_no !== '18') { console.log('QUESTION_NO_NOT_SENT'); process.exit(1); }
+  if (posted.body.year !== '2026' || posted.body.region !== '哈三中' || posted.body.exam_type !== '三模') {
+    console.log('SOURCE_FIELDS_LOST'); process.exit(1);
+  }
+  console.log('SUBMIT_OK');
+})();
+"""
+
+
 def _assert(result, needle):
     assert result.returncode == 0, result.stdout + result.stderr
     assert needle in result.stdout, result.stdout + result.stderr
@@ -357,3 +408,8 @@ def test_merge_source_modal_prefills_structured_fields_without_card_source():
 def test_merge_source_modal_prefill_never_interpolates_into_html():
     """预填只能走 .value 赋值；用户可控内容不得变成 HTML 节点。"""
     _assert(_run(_ASSERT_NO_INJECTION), "NO_INJECTION")
+
+
+def test_merge_source_submits_the_parsed_cards_paper_question_no():
+    """并入已有题时，必须把当前拆解卡片的原卷题号随来源一起提交。"""
+    _assert(_run(_ASSERT_SUBMIT), "SUBMIT_OK")

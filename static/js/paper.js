@@ -250,8 +250,7 @@
             }
             window.PaperStore.cart.push({ id: qid, score: parseInt(score, 10) || 5 });
             saveCartToStorage();
-            const seqNum = (q && q.seq_num !== undefined) ? q.seq_num : qid;
-            if (window.showToast) window.showToast(`已将题目 #${seqNum} 加入试卷`, 'success');
+            if (window.showToast) window.showToast(`已将题目 #${qid} 加入试卷`, 'success');
             
             if (window.PaperStore.activeWorkspace === 'paper') {
                 renderPart3QuestionStream();
@@ -268,9 +267,7 @@
             renderPart3QuestionStream();
             window.renderPaperCanvas();
         }
-        const q = window.PaperStore.questionsMap[qid];
-        const seqNum = (q && q.seq_num !== undefined) ? q.seq_num : qid;
-        if (window.showToast) window.showToast(`已将题目 #${seqNum} 移出试卷`, 'info');
+        if (window.showToast) window.showToast(`已将题目 #${qid} 移出试卷`, 'info');
     };
 
     window.clearCart = function () {
@@ -1639,7 +1636,7 @@
                     <!-- Card Top Controls Bar -->
                     <div class="flex flex-col gap-3 pb-3 mb-3 border-b border-slate-100 sm:flex-row sm:items-center sm:justify-between dark:border-slate-700/60">
                         <div class="flex w-full items-center space-x-2 flex-wrap gap-y-1 sm:w-auto">
-                            <span class="font-bold text-slate-800 dark:text-slate-100 text-sm">#${escapeHtml(q.seq_num !== undefined ? q.seq_num : q.id)}</span>
+                            <span class="font-bold text-slate-800 dark:text-slate-100 text-sm">#${escapeHtml(q.id)}</span>
                             <span class="px-2 py-0.5 rounded-lg text-xs font-semibold bg-brand-50 text-brand-600 border border-brand-200/50 dark:bg-brand-900/30 dark:text-brand-200 dark:border-brand-900/50">${escapeHtml(qTypeLabel)}</span>
                             ${diffTag}
                             ${q.category_compulsory ? `<span class="px-2 py-0.5 rounded-lg text-xs font-medium bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300">${escapeHtml(q.category_compulsory)}</span>` : ''}
@@ -1710,7 +1707,7 @@
                         <section id="paper-q-answer-${q.id}"
                             data-answer-block="true"
                             role="region"
-                            aria-label="题目 #${escapeHtml(q.seq_num !== undefined ? q.seq_num : q.id)} 的参考答案与解析"
+                            aria-label="题目 #${escapeHtml(q.id)} 的参考答案与解析"
                             class="mt-4 pt-4 border-t border-dashed border-brand-200/80 dark:border-brand-900/70">
                             <div class="mb-2 flex items-center gap-2 text-xs font-bold text-brand-700 dark:text-brand-200">
                                 <i class="fa-solid fa-signature"></i>
@@ -3129,9 +3126,7 @@
         saveCartToStorage();
         window.renderPaperCanvas();
         restoreSolutionSpaceControlViewport(qid, anchorTop, activeDelta);
-        const q = window.PaperStore.questionsMap[qid];
-        const seqNum = (q && q.seq_num !== undefined) ? q.seq_num : qid;
-        if (window.showToast) window.showToast(`题目 #${seqNum} 留白高度设为 ${newSpace.toFixed(1)} cm`, 'info');
+        if (window.showToast) window.showToast(`题目 #${qid} 留白高度设为 ${newSpace.toFixed(1)} cm`, 'info');
     };
 
     window.updateGlobalSolutionSpace = function (val) {
@@ -4234,9 +4229,7 @@
         .then(data => {
             if (data.status === 'success') {
                 const labelMap = { 'right': '题干右侧', 'center': '下方居中', 'bottom_right': '下方居右' };
-                const q = window.PaperStore.questionsMap[qid];
-                const seqNum = (q && q.seq_num !== undefined) ? q.seq_num : qid;
-                if (window.showToast) window.showToast(`已调整题目 #${seqNum} 插图排版为：${labelMap[alignVal] || alignVal}`, 'success');
+                if (window.showToast) window.showToast(`已调整题目 #${qid} 插图排版为：${labelMap[alignVal] || alignVal}`, 'success');
             }
         })
         .catch(err => {
@@ -4268,10 +4261,8 @@
             .then(res => res.json())
             .then(data => {
                 if (data.status === 'success' && window.showToast) {
-                    const q = window.PaperStore.questionsMap[qid] || {};
-                    const seqNum = (q.seq_num !== undefined) ? q.seq_num : qid;
                     const label = name === 'auto' ? '自动' : (PAPER_FIGURE_SIZE_LABELS[name] || name);
-                    window.showToast(`已调整题目 #${seqNum} 插图尺寸为：${label}`, 'success');
+                    window.showToast(`已调整题目 #${qid} 插图尺寸为：${label}`, 'success');
                 }
             })
             .catch(err => {

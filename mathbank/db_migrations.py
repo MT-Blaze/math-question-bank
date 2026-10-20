@@ -18,7 +18,7 @@ from mathbank.paths import SCHEMA_SNAPSHOT_DIR
 from mathbank.runtime_components import _sha256
 
 
-LATEST_SCHEMA_VERSION = 26
+LATEST_SCHEMA_VERSION = 27
 LEGACY_REQUIRED_TABLES = {
     "questions",
     "question_curriculums",
@@ -1646,6 +1646,77 @@ def _upgrade_v25_figure_layouts(engine: Engine) -> dict[str, int]:
     return stats
 
 
+def _ensure_source_question_no_column(connection) -> dict[str, int]:
+    """question_sources.question_no（原卷题号）列自愈，幂等。"""
+    stats: dict[str, int] = {}
+    exists = connection.exec_driver_sql(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='question_sources'"
+    ).first()
+    if not exists:
+        return stats
+    columns = {
+        row[1]
+        for row in connection.exec_driver_sql('PRAGMA table_info("question_sources")').fetchall()
+    }
+    if "question_no" not in columns:
+        connection.exec_driver_sql(
+            "ALTER TABLE question_sources ADD COLUMN question_no VARCHAR(50) NOT NULL DEFAULT ''"
+        )
+        stats["added_source_question_no"] = 1
+    return stats
+
+
+def _backfill_source_question_no(connection) -> dict[str, int]:
+    """把主表 paper_question_no 回填到每道题的主来源（sort_order 最小那条）。
+
+    原卷题号属于「题 × 卷」关系，多来源各题的卷面编号本就不该相同；主表字段
+    只镜像主来源，因此只有主来源能安全继承它。已有值不覆盖，重复执行是空操作。
+    极老的库可能还没 paper_question_no 列（v22 之前），此时没有可回填的数据。
+    """
+    question_columns = {
+        row[1]
+        for row in connection.exec_driver_sql('PRAGMA table_info("questions")').fetchall()
+    }
+    source_columns = {
+        row[1]
+        for row in connection.exec_driver_sql('PRAGMA table_info("question_sources")').fetchall()
+    }
+    if "paper_question_no" not in question_columns or "question_no" not in source_columns:
+        return {}
+    result = connection.exec_driver_sql(
+        """
+        UPDATE question_sources
+           SET question_no = (
+                SELECT q.paper_question_no FROM questions q
+                 WHERE q.id = question_sources.question_id
+           )
+         WHERE (question_no IS NULL OR question_no = '')
+           AND sort_order = (
+                SELECT MIN(s.sort_order) FROM question_sources s
+                 WHERE s.question_id = question_sources.question_id
+           )
+           AND EXISTS (
+                SELECT 1 FROM questions q
+                 WHERE q.id = question_sources.question_id
+                   AND q.paper_question_no IS NOT NULL
+                   AND TRIM(q.paper_question_no) <> ''
+           )
+        """
+    )
+    return {"backfilled_source_question_no": int(result.rowcount or 0)}
+
+
+def _upgrade_v26_source_question_no(engine: Engine) -> dict[str, int]:
+    """v26 -> v27: question_sources 加 question_no（原卷题号），并回填主来源。"""
+
+    stats: dict[str, int] = {}
+    with engine.begin() as connection:
+        stats.update(_ensure_source_question_no_column(connection))
+        stats.update(_backfill_source_question_no(connection))
+        connection.exec_driver_sql(f"PRAGMA user_version={LATEST_SCHEMA_VERSION}")
+    return stats
+
+
 def _upgrade_v24_school_ids(engine: Engine) -> dict[str, int]:
     """v24 -> v25: 学校 ID 化两列（见 _ensure_school_id_columns）。"""
     stats: dict[str, int] = {}
@@ -1671,6 +1742,7 @@ def _ensure_question_sources_table(connection) -> dict[str, int]:
                 region VARCHAR(100) NOT NULL DEFAULT '',
                 exam_type VARCHAR(50) NOT NULL DEFAULT '',
                 paper_title VARCHAR(200) NOT NULL DEFAULT '',
+                question_no VARCHAR(50) NOT NULL DEFAULT '',
                 sort_order INTEGER NOT NULL DEFAULT 0,
                 created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 school_id VARCHAR(20)
@@ -1687,6 +1759,8 @@ def _ensure_question_sources_table(connection) -> dict[str, int]:
         stats["added_question_sources_question_index"] = 1
     # v25：school_id 列与索引统一交给 _ensure_school_id_columns（含老表自愈）
     stats.update(_ensure_school_id_columns(connection))
+    # v27：原卷题号列（老表自愈；回填只在迁移里跑，避免每次启动覆盖用户清空）
+    stats.update(_ensure_source_question_no_column(connection))
     return stats
 
 
@@ -2208,6 +2282,8 @@ def migrate_database(
         stats = _upgrade_v24_school_ids(engine)
     elif current == 25:
         stats = _upgrade_v25_figure_layouts(engine)
+    elif current == 26:
+        stats = _upgrade_v26_source_question_no(engine)
     else:
         stats = _upgrade_derived_schema(engine)
     # Every upgrade path must end with the tables/columns added in later
@@ -2216,6 +2292,11 @@ def migrate_database(
     with engine.begin() as connection:
         for key, value in ensure_late_tables(connection).items():
             stats[key] = int(stats.get(key, 0)) + int(value)
+        # 从 v<26 一步跳到最新版的库不走 v26 分支，主来源题号回填需在这里补一次；
+        # current==26 已由分支完成，不重复统计。
+        if current < 26:
+            for key, value in _backfill_source_question_no(connection).items():
+                stats[key] = int(stats.get(key, 0)) + int(value)
         # 兜底：从 v<23 一步跳到 v24 的库不会进 v23 分支（各 _upgrade_vN 都直接
         # 把 user_version 写成 LATEST），这里补跑一次相同的归一化。放在
         # ensure_late_tables 之后，确保 option_columns 列此时已存在。

@@ -77,7 +77,7 @@ def test_v24_to_v25_adds_school_id_columns_and_index(tmp_path, monkeypatch):
     result = db_migrations.migrate_database(engine)
 
     assert result["from_version"] == 24
-    assert result["to_version"] == db_migrations.LATEST_SCHEMA_VERSION == 26
+    assert result["to_version"] == db_migrations.LATEST_SCHEMA_VERSION
     assert result["added_question_sources_school_id"] == 1
     assert result["added_questions_source_school_id"] == 1
     assert result["added_question_sources_school_index"] == 1

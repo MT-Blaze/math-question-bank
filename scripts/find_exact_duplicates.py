@@ -90,11 +90,6 @@ def _latest_fingerprint_version(conn: sqlite3.Connection) -> int | None:
     return int(row[0]) if row and row[0] is not None else None
 
 
-def _seq_numbers(conn: sqlite3.Connection) -> dict[int, int]:
-    rows = conn.execute("SELECT id FROM questions ORDER BY id ASC").fetchall()
-    return {int(row[0]): index + 1 for index, row in enumerate(rows)}
-
-
 def _answer_present(raw: str | None) -> bool:
     return bool(str(raw or "").strip())
 
@@ -271,7 +266,6 @@ def _recommended_keeper(instances: list[dict]) -> dict:
 def _scheme_payload(
     instances: list[dict],
     scheme: str,
-    seq_map: dict[int, int],
     references: dict[int, set[str]],
 ) -> dict:
     keeper = _keeper(instances, scheme)
@@ -290,14 +284,12 @@ def _scheme_payload(
         "label": "保留最早录入" if scheme == "A" else "保留最新录入",
         "keeper": {
             "id": keeper["id"],
-            "seq_num": seq_map.get(keeper["id"]),
             "created_at": keeper["created_at"],
             "has_answer": keeper["has_answer"],
         },
         "remove": [
             {
                 "id": item["id"],
-                "seq_num": seq_map.get(item["id"]),
                 "created_at": item["created_at"],
                 "has_answer": item["has_answer"],
                 "references": sorted(references.get(item["id"], set())),
@@ -308,7 +300,7 @@ def _scheme_payload(
     }
 
 
-def _build_group(instances: list[dict], tier: str, seq_map, references) -> dict:
+def _build_group(instances: list[dict], tier: str, references) -> dict:
     recommended = _recommended_keeper(instances)
     signature_kind = "critical_math_hash" if tier == "layout_variant" else "exact_hash"
     return {
@@ -321,7 +313,6 @@ def _build_group(instances: list[dict], tier: str, seq_map, references) -> dict:
         "instances": [
             {
                 "id": item["id"],
-                "seq_num": seq_map.get(item["id"]),
                 "created_at": item["created_at"],
                 "question_type": item["question_type"],
                 "has_answer": item["has_answer"],
@@ -337,7 +328,7 @@ def _build_group(instances: list[dict], tier: str, seq_map, references) -> dict:
             for item in sorted(instances, key=lambda value: value["id"])
         ],
         "plans": {
-            scheme: _scheme_payload(instances, scheme, seq_map, references)
+            scheme: _scheme_payload(instances, scheme, references)
             for scheme in ("A", "B")
         },
     }
@@ -376,7 +367,6 @@ def collect_report(db_path: Path = DATABASE_FILE) -> dict:
             }
 
         instances = _load_instances(conn, version)
-        seq_map = _seq_numbers(conn)
         references = _collect_references(conn)
         missing = total_questions - len(instances)
 
@@ -426,13 +416,13 @@ def collect_report(db_path: Path = DATABASE_FILE) -> dict:
 
         groups = []
         for group in strict_groups:
-            groups.append(_build_group(group, "strict", seq_map, references))
+            groups.append(_build_group(group, "strict", references))
         for group in answer_groups:
-            groups.append(_build_group(group, "answer_mismatch", seq_map, references))
+            groups.append(_build_group(group, "answer_mismatch", references))
         for group in image_groups:
-            groups.append(_build_group(group, "image_mismatch", seq_map, references))
+            groups.append(_build_group(group, "image_mismatch", references))
         for group in layout_groups:
-            groups.append(_build_group(group, "layout_variant", seq_map, references))
+            groups.append(_build_group(group, "layout_variant", references))
 
         total_groups = len(groups)
         total_affected = sum(len(group["instances"]) for group in groups)
@@ -539,15 +529,15 @@ def render_markdown(report: dict) -> str:
                     f"### 组 {index} · {signature_label} `{signature[:16]}…` · "
                     f"{group['size']} 题 · 建议保留 #{group['recommended_keeper']}",
                     "",
-                    "| 内部 ID | 题号 | 创建时间 | 解析 | 题型 | 来源 | 引用 | 题干预览 |",
-                    "| --- | --- | --- | --- | --- | --- | --- | --- |",
+                    "| 内部 ID | 创建时间 | 解析 | 题型 | 来源 | 引用 | 题干预览 |",
+                    "| --- | --- | --- | --- | --- | --- | --- |",
                 ]
             )
             for item in group["instances"]:
                 refs = "、".join(item["references"]) or "—"
                 answer = f"{item['answer_chars']} 字" if item["has_answer"] else "缺失"
                 lines.append(
-                    f"| #{item['id']} | #{item['seq_num']} | {item['created_at']} | "
+                    f"| #{item['id']} | {item['created_at']} | "
                     f"{answer} | {item['question_type']} | {item['source'] or '—'} | "
                     f"{refs} | {item['preview'].replace('|', '\\|')} |"
                 )
@@ -556,13 +546,12 @@ def render_markdown(report: dict) -> str:
                 plan = group["plans"][scheme]
                 keeper = plan["keeper"]
                 removed = "、".join(
-                    f"#{item['id']}（题号 #{item['seq_num']}，"
-                    f"{'有解析' if item['has_answer'] else '无解析'}）"
+                    f"#{item['id']}（{'有解析' if item['has_answer'] else '无解析'}）"
                     for item in plan["remove"]
                 )
                 lines.append(
                     f"- **方案 {scheme} · {plan['label']}**：保留 #{keeper['id']}"
-                    f"（题号 #{keeper['seq_num']}）；隔离 {removed}。"
+                    f"；隔离 {removed}。"
                 )
                 for warning in plan["warnings"]:
                     lines.append(f"  - ⚠️ {warning}")
@@ -1162,9 +1151,8 @@ def _run_apply(args) -> int:
         keeper = by_id.get(pair["keeper"], {})
         answer = "有解析" if keeper.get("has_answer") else "无解析"
         print(
-            f"  #{pair['remove']}（题号 {remove.get('seq_num')}，"
-            f"{'有解析' if remove.get('has_answer') else '无解析'}）"
-            f" -> 保留 #{pair['keeper']}（题号 {keeper.get('seq_num')}，{answer}）"
+            f"  #{pair['remove']}（{'有解析' if remove.get('has_answer') else '无解析'}）"
+            f" -> 保留 #{pair['keeper']}（{answer}）"
         )
     expected_total = int(fresh["total_questions"]) - len(pairs)
     print(

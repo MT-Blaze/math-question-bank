@@ -89,7 +89,7 @@ def test_lean_page_returns_previews_without_the_full_body(client, db_session):
         assert item["has_answer"] is True
         assert item["image_count"] == 0
         assert item["has_tikz_assets"] is False
-        assert item["seq_num"] == ids.index(item["id"]) + 1
+        assert "seq_num" not in item, "全局身份只用内部 ID，不再下发伪排名"
 
 
 def test_lean_preview_collapses_figures_and_flags_tikz(client, db_session):
@@ -165,8 +165,8 @@ def test_lean_mode_never_falls_back_to_the_whole_bank(client, db_session):
     assert all("content" in item for item in legacy)
 
 
-def test_paper_batch_endpoint_hydrates_full_body_with_seq_num(client, db_session):
-    """购物车/展开详情的按需水合端点：完整题面 + 用户口径题号，顺序按请求。"""
+def test_paper_batch_endpoint_hydrates_full_body_with_ids(client, db_session):
+    """购物车/展开详情的按需水合端点：完整题面 + 内部 ID，顺序按请求。"""
 
     ids = _seed(db_session, 3)
 
@@ -178,11 +178,9 @@ def test_paper_batch_endpoint_hydrates_full_body_with_seq_num(client, db_session
     assert all(item["content"] and item["answer_markdown"] for item in data), (
         "这是水合端点，必须带完整正文，否则加入试卷后卡片是空的"
     )
-    assert {item["id"]: item["seq_num"] for item in data} == {
-        ids[0]: 1,
-        ids[1]: 2,
-        ids[2]: 3,
-    }, "seq_num 缺位时，刷新后已选题目的题号会整片空白"
+    assert all("seq_num" not in item for item in data), (
+        "题号只认内部 ID；伪排名在删题后会与真实 ID 错位"
+    )
 
 
 def _create_database(path, ddl):

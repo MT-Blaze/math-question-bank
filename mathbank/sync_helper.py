@@ -234,9 +234,6 @@ def generate_markdown_library(questions, filepath: str, topic_translator=None):
         if not structure:
             f.write("*题库空空如也，请先在系统网页端录入题目。*\n")
         else:
-            # 建立有序的序列号映射（按照 ID 升序，从 1 开始）
-            seq_mapping = {q.id: idx for idx, q in enumerate(questions, 1)}
-            
             for comp in sorted(structure.keys()):
                 f.write(f"# 【{comp}】\n\n")
                 for chap in sorted(structure[comp].keys()):
@@ -247,9 +244,8 @@ def generate_markdown_library(questions, filepath: str, topic_translator=None):
                         for q in structure[comp][chap][know]:
                             q_type_display = type_display.get(q.question_type, q.question_type)
                             q_diff_display = difficulty_display.get(q.difficulty, q.difficulty)
-                            seq_num = seq_mapping.get(q.id, q.id)
                             
-                            f.write(f"#### 📌 题目 #{seq_num} (数据库 ID: {q.id})\n")
+                            f.write(f"#### 📌 题目 #{q.id}\n")
                             f.write(f"- **题型**：`{q_type_display}`\n")
                             f.write(f"- **难度级别**：{q_diff_display}\n")
                             if getattr(q, "applicable_grade", None):

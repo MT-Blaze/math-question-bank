@@ -82,7 +82,6 @@ from main import (
     TMP_UPLOAD_DIR,
     UPLOAD_DIR,
     UPLOAD_DIR_REL,
-    get_seq_mapping,
     normalize_fillin_macro,
 )
 from mathbank.question_metadata import (
@@ -223,12 +222,10 @@ def schedule_question_fingerprint_retry(
 def _serialize_question_rows(db: Session, questions, *, lean_mode: bool) -> list[dict]:
     """序列化列表行（lean 摘要或完整摘要），供分页/精确查找两条出口共用。"""
 
-    seq_map = get_seq_mapping(db, [item.id for item in questions])
     if lean_mode:
         return [
             {
                 **_decorate_topic_field(item.to_lean_dict()),
-                "seq_num": seq_map.get(item.id),
                 "school_source_label": resolve_school_label(item.source_school_id) or None,
                 "quality": _quality_level_of(item),
             }
@@ -240,7 +237,6 @@ def _serialize_question_rows(db: Session, questions, *, lean_mode: bool) -> list
     return [
         {
             **_decorate_topic_field(item.to_summary_dict()),
-            "seq_num": seq_map.get(item.id),
             "topics": _decorate_topic_slots(topics_map.get(item.id, [])),
             "school_source_label": resolve_school_label(item.source_school_id) or None,
             "quality": _quality_level_of(item),
@@ -292,7 +288,8 @@ def list_questions(
     query = db.query(Question)
 
     # 搜索语义：`#61` = 内部 ID 精确查找（不参与全文模糊、忽略筛选条件）；
-    # `61` = 内部 ID 命中则置顶，未命中再按历史题号映射兜底，最后才全文模糊。
+    # `61` = 内部 ID 命中则置顶，未命中直接走全文模糊。物理排名不是身份，
+    # 编号空洞（删过题）下按排名回退会指向完全无关的题。
     raw_search = str(search_q or "").strip()
     search_mode = "fulltext"
     pin_id = None
@@ -312,18 +309,6 @@ def list_questions(
             pin_id = numeric
             pin_kind = "id"
             search_mode = "id_first"
-        else:
-            row = (
-                db.query(Question.id)
-                .order_by(Question.id.asc())
-                .offset(numeric - 1)
-                .limit(1)
-                .first()
-            )
-            if row:
-                pin_id = row[0]
-                pin_kind = "seq_num"
-                search_mode = "number_first"
 
     if exact_only:
         questions = db.query(Question).filter(Question.id == pin_id).all()
@@ -342,7 +327,6 @@ def list_questions(
                 "exact_match": (
                     {
                         "id": items[0]["id"],
-                        "seq_num": items[0].get("seq_num"),
                         "kind": pin_kind,
                     }
                     if items
@@ -498,7 +482,6 @@ def list_questions(
                     if item.get("id") == pin_id:
                         exact_match = {
                             "id": pin_id,
-                            "seq_num": item.get("seq_num"),
                             "kind": pin_kind,
                         }
                         break
@@ -817,7 +800,6 @@ def check_question_duplicates(payload: dict, db: Session = Depends(get_db)):
             )
             all_candidate_ids.update(candidate.question.id for candidate in candidates)
             raw_results.append((index, item, candidates))
-        seq_map = get_seq_mapping(db, all_candidate_ids)
         rank = {"exact": 3, "probable": 2, "possible_variant": 1, "none": 0}
         response_items = []
         for index, item, candidates in raw_results:
@@ -836,7 +818,6 @@ def check_question_duplicates(payload: dict, db: Session = Depends(get_db)):
                 candidate_payloads.append(
                     {
                         "id": question.id,
-                        "seq_num": seq_map.get(question.id),
                         "content": content_preview,
                         "content_truncated": len(str(question.content or "")) > 500,
                         "source": question.source or "",
@@ -909,9 +890,7 @@ def get_question(question_id: int, db: Session = Depends(get_db)):
     q = db.query(Question).filter(Question.id == question_id).first()
     if not q:
         raise HTTPException(status_code=404, detail="未找到对应的题目")
-    seq_map = get_seq_mapping(db, [q.id])
     q_dict = _decorate_topic_field(q.to_dict())
-    q_dict["seq_num"] = seq_map.get(q.id)
     q_dict["topics"] = _decorate_topic_slots(load_question_topics(db, q.id, get_active_version_code()))
     q_dict["sources"] = _load_sources_sorted(db, q.id)
     # 主来源学校：按 source_school_id 现查当前简称（词库删校/未建档回落 None，前端用 source 文本）
@@ -939,8 +918,6 @@ def scan_question_duplicates(payload: dict, db: Session = Depends(get_db)):
     min_rank = level_rank[min_level]
 
     questions = db.query(Question).order_by(Question.id).all()
-    all_ids = [q.id for q in questions]
-    seq_map = get_seq_mapping(db, all_ids) if all_ids else {}
     items = []
     scanned = 0
     fingerprint_missing = 0
@@ -973,7 +950,6 @@ def scan_question_duplicates(payload: dict, db: Session = Depends(get_db)):
             qq = cand.question
             matched.append({
                 "id": qq.id,
-                "seq_num": seq_map.get(qq.id),
                 "level": comparison.level,
                 "score": round(comparison.score, 4),
                 "needs_visual_review": comparison.needs_visual_review,
@@ -990,7 +966,6 @@ def scan_question_duplicates(payload: dict, db: Session = Depends(get_db)):
             best = max(matched, key=lambda m: level_rank[m["level"]])
             items.append({
                 "question_id": q.id,
-                "seq_num": seq_map.get(q.id),
                 "level": best["level"],
                 "content": str(q.content or "")[:300],
                 "content_truncated": len(str(q.content or "")) > 300,
@@ -1042,9 +1017,7 @@ def committed_question_response(
 
     try:
         db.refresh(db_question)
-        seq_map = get_seq_mapping(db, [question_id])
         question = _decorate_topic_field(db_question.to_dict())
-        question["seq_num"] = seq_map.get(question_id)
         try:
             question["topics"] = _decorate_topic_slots(load_question_topics(
                 db, question_id, get_active_version_code()
@@ -1334,7 +1307,6 @@ def duplicate_review_required_response(
     code: str = "duplicate_review_required",
 ):
     questions = db.query(Question).filter(Question.id.in_(question_ids)).all()
-    seq_map = get_seq_mapping(db, question_ids)
     return JSONResponse(
         status_code=409,
         content={
@@ -1345,7 +1317,6 @@ def duplicate_review_required_response(
             "candidates": [
                 {
                     "id": question.id,
-                    "seq_num": seq_map.get(question.id),
                     "content": str(question.content or "")[:500],
                     "content_truncated": len(str(question.content or "")) > 500,
                     "source": question.source or "",
@@ -1999,8 +1970,7 @@ def get_associated_questions(question_id: int, db: Session = Depends(get_db)):
         Question.id != question_id
     ).all()
     
-    seq_map = get_seq_mapping(db, [item.id for item in associated])
-    return [{**_decorate_topic_field(item.to_dict()), "seq_num": seq_map.get(item.id)} for item in associated]
+    return [_decorate_topic_field(item.to_dict()) for item in associated]
 
 
 @router.post("/api/questions/{question_id}/associate")
@@ -2365,7 +2335,7 @@ def list_question_sources(question_id: int, db: Session = Depends(get_db)):
 
 @router.post("/api/questions/{question_id}/sources")
 def add_question_source(question_id: int, payload: dict, db: Session = Depends(get_db)):
-    """给某题追加一条来源（年份 + 学校/地区 + 考试类型 + 整卷出处）。"""
+    """给某题追加一条来源（年份 + 学校/地区 + 考试类型 + 整卷出处 + 原卷题号）。"""
     from mathbank.database import QuestionSource
 
     db_question = db.query(Question).filter(Question.id == question_id).first()
@@ -2375,6 +2345,7 @@ def add_question_source(question_id: int, payload: dict, db: Session = Depends(g
     region = str((payload or {}).get("region") or "").strip()
     exam_type = str((payload or {}).get("exam_type") or "").strip()
     paper_title = str((payload or {}).get("paper_title") or "").strip()
+    question_no = str((payload or {}).get("question_no") or "").strip()
     if not (year or region or exam_type):
         raise HTTPException(status_code=400, detail="年份/学校地区/考试类型至少填写一项")
     if year and (len(year) > 20 or not year.isdigit()):
@@ -2385,6 +2356,8 @@ def add_question_source(question_id: int, payload: dict, db: Session = Depends(g
         raise HTTPException(status_code=400, detail="考试类型过长（最多 50 字符）")
     if len(paper_title) > 200:
         raise HTTPException(status_code=400, detail="试卷出处过长（最多 200 字符）")
+    if len(question_no) > 50:
+        raise HTTPException(status_code=400, detail="原卷题号过长（最多 50 字符）")
     last = db.query(QuestionSource).filter(
         QuestionSource.question_id == question_id
     ).order_by(QuestionSource.sort_order.desc()).first()
@@ -2395,6 +2368,7 @@ def add_question_source(question_id: int, payload: dict, db: Session = Depends(g
         region=region,
         exam_type=exam_type,
         paper_title=paper_title,
+        question_no=question_no,
         sort_order=max_order + 1,
     )
     db.add(row)
@@ -2402,7 +2376,7 @@ def add_question_source(question_id: int, payload: dict, db: Session = Depends(g
     db.refresh(row)
     from mathbank.sources_helper import resequence_sources, sort_sources
     resequence_sources(db, question_id)
-    # 主来源字段同步为排序后第一条
+    # 主来源字段同步为排序后第一条；原卷题号同理只做镜像
     rows = db.query(QuestionSource).filter(
         QuestionSource.question_id == question_id
     ).all()
@@ -2412,13 +2386,10 @@ def add_question_source(question_id: int, payload: dict, db: Session = Depends(g
         db_question.source = format_source_text(
             main_row.year, main_row.region, main_row.exam_type
         )
+        main_no = str(main_row.question_no or "").strip()
+        if main_no:
+            db_question.paper_question_no = main_no
     db.commit()
-    # 总文本字段回填：旧字段 questions.source 为空时用主来源文本补上
-    if not (db_question.source or "").strip():
-        from mathbank.database import format_source_text
-
-        db_question.source = format_source_text(year, region, exam_type)
-        db.commit()
     return {
         "status": "success",
         "source": row.to_dict(),
@@ -2452,6 +2423,9 @@ def delete_question_source(question_id: int, source_id: int, db: Session = Depen
             db_question.source = format_source_text(
                 main_row.year, main_row.region, main_row.exam_type
             )
+            main_no = str(main_row.question_no or "").strip()
+            if main_no:
+                db_question.paper_question_no = main_no
     elif db_question is not None:
         db_question.source = ""
     db.commit()

@@ -191,7 +191,7 @@ def test_questions_support_bounded_server_pagination_without_breaking_legacy_arr
     assert data["total_pages"] == 3
     assert len(data["items"]) == 10
     assert [item["id"] for item in data["items"]] == list(range(11, 21))
-    assert [item["seq_num"] for item in data["items"]] == list(range(11, 21))
+    assert all("seq_num" not in item for item in data["items"])
     assert isinstance(legacy.json(), list)
     assert len(legacy.json()) == 25
 

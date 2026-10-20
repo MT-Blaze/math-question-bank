@@ -187,7 +187,7 @@ def test_v25_to_v26_migration_adds_figure_layout_columns(tmp_path, monkeypatch):
         engine.dispose()
 
     assert result["from_version"] == 25
-    assert result["to_version"] == db_migrations.LATEST_SCHEMA_VERSION == 26
+    assert result["to_version"] == db_migrations.LATEST_SCHEMA_VERSION
     assert result["added_questions_image_layouts"] == 1
     assert result["added_questions_figure_size"] == 1
     assert result["added_questions_figure_align_custom"] == 1

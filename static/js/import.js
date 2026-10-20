@@ -329,9 +329,9 @@
 
         // 十万题红线：「关联题目」下拉绝不整库拉取（旧实现每次进页面都裸 GET
         // /api/questions，十万题时一次页面加载就要拖回 139MB 并生成十万个 <option>）。
-        // · 基础选项只取最新 200 题的 lean 摘要（id/seq_num/question_type/preview）；
+        // · 基础选项只取最新 200 题的 lean 摘要（id/question_type/preview）；
         // · selectedId 不在最新 200 里时，走 /api/paper/questions?ids= 只水合那一道；
-        // · 手动输题号用 resolveRelatedQuestionBySeq 的 lean 单页反查（q=#题号）补选项。
+        // · 手动输编号用 resolveRelatedQuestionById 的 lean 单页反查（q=#内部ID）补选项。
         const RELATED_DROPDOWN_LEAN_SIZE = 200;
 
         function readLeanListPayload(payload) {
@@ -353,8 +353,8 @@
             const textSnippet = rawText.replace(/[\$\#\*\_]/g, '').substring(0, 40);
             const option = document.createElement('option');
             option.value = q.id;
-            option.setAttribute('data-seq-num', q.seq_num);
-            option.textContent = `#${q.seq_num} [${getTypeText(q.question_type)}] - ${textSnippet}${rawText.length > 40 ? '...' : ''}`;
+            option.setAttribute('data-question-id', q.id);
+            option.textContent = `#${q.id} [${getTypeText(q.question_type)}] - ${textSnippet}${rawText.length > 40 ? '...' : ''}`;
             return option;
         }
 
@@ -369,7 +369,7 @@
                 .then(payload => {
                     const questions = readLeanListPayload(payload);
                     dropdown.innerHTML = '<option value="">-- 选择要关联的题目 (可选) --</option>';
-                    let foundSelectedSeq = '';
+                    let foundSelectedId = '';
                     questions.forEach(q => {
                         // Exclude the current editing question
                         if (EditorState.questionId && q.id === EditorState.questionId) {
@@ -378,15 +378,15 @@
                         const option = makeRelatedOption(q);
                         if (String(q.id) === String(selectedId)) {
                             option.selected = true;
-                            foundSelectedSeq = q.seq_num;
+                            foundSelectedId = q.id;
                         }
                         dropdown.appendChild(option);
                     });
                     const numInput = document.getElementById('editRelatedQuestionNum');
                     if (numInput) {
-                        numInput.value = foundSelectedSeq;
+                        numInput.value = foundSelectedId;
                     }
-                    if (String(selectedId || '') !== '' && foundSelectedSeq === '') {
+                    if (String(selectedId || '') !== '' && foundSelectedId === '') {
                         // 选中题不在最新 200 里：定向水合这一道，仍然不整库拉取。
                         return fetch(`/api/paper/questions?ids=${encodeURIComponent(selectedId)}`)
                             .then(r => r.json())
@@ -400,7 +400,7 @@
                                     dropdown.appendChild(option);
                                     const numAgain = document.getElementById('editRelatedQuestionNum');
                                     if (numAgain) {
-                                        numAgain.value = q.seq_num;
+                                        numAgain.value = q.id;
                                     }
                                 });
                             });
@@ -412,21 +412,21 @@
                 });
         }
 
-        // 题号输入防抖反查：lean 单页命中后把该题补进下拉；回写前校验输入没变，
+        // 编号输入防抖反查：lean 单页命中后把该题补进下拉；回写前校验输入没变，
         // 防止连点打字时旧响应把新选择盖掉。
-        var relatedSeqResolveTimer = null;
-        function resolveRelatedQuestionBySeq(seqVal) {
-            clearTimeout(relatedSeqResolveTimer);
-            relatedSeqResolveTimer = setTimeout(() => {
-                fetch(`/api/questions?page=1&page_size=20&mode=lean&q=${encodeURIComponent('#' + seqVal)}`)
+        var relatedIdResolveTimer = null;
+        function resolveRelatedQuestionById(idVal) {
+            clearTimeout(relatedIdResolveTimer);
+            relatedIdResolveTimer = setTimeout(() => {
+                fetch(`/api/questions?page=1&page_size=20&mode=lean&q=${encodeURIComponent('#' + idVal)}`)
                     .then(r => r.json())
                     .then(payload => {
                         const hit = readLeanListPayload(payload).find(q =>
-                            String(q.seq_num) === String(seqVal)
+                            String(q.id) === String(idVal)
                             && !(EditorState.questionId && q.id === EditorState.questionId));
                         const dropdown = document.getElementById('editRelatedQuestion');
                         const numInput = document.getElementById('editRelatedQuestionNum');
-                        if (!dropdown || !numInput || String(numInput.value.trim()) !== String(seqVal)) {
+                        if (!dropdown || !numInput || String(numInput.value.trim()) !== String(idVal)) {
                             return;
                         }
                         if (!hit) {
@@ -484,8 +484,8 @@
                 const data = await res.json();
                 if (res.ok && data.status === 'success') {
                     const selectedOpt = targetSelect.options[targetSelect.selectedIndex];
-                    const seqNum = selectedOpt ? selectedOpt.getAttribute('data-seq-num') : '';
-                    showToast(`成功与题目 #${seqNum || targetId} 建立关联绑定！`, 'success');
+                    const selectedId = selectedOpt ? selectedOpt.getAttribute('data-question-id') : '';
+                    showToast(`成功与题目 #${selectedId || targetId} 建立关联绑定！`, 'success');
 
                     // 刷新右侧预览区的关联变式题目卡片及下拉框
                     if (typeof loadAssociatedQuestionsInList === 'function') {
@@ -568,7 +568,7 @@
                             item.onclick = () => selectQuestionById(q.id);
                             item.innerHTML = `
                                 <div class="truncate pr-2">
-                                    <span class="font-bold text-brand-600 bg-brand-50 px-1.5 py-0.5 rounded text-[10px] mr-1.5 shadow-sm">#${window.MathBankSafe.escapeText(q.seq_num)}</span>
+                                    <span class="font-bold text-brand-600 bg-brand-50 px-1.5 py-0.5 rounded text-[10px] mr-1.5 shadow-sm">#${window.MathBankSafe.escapeText(q.id)}</span>
                                     <span class="text-[10px] bg-slate-100 px-1.5 py-0.5 rounded text-slate-500 mr-1.5">${window.MathBankSafe.escapeText(getTypeText(q.question_type))}</span>
                                     <span>${window.MathBankSafe.escapeText(cleanContent)}</span>
                                 </div>
@@ -773,7 +773,7 @@
                     document.getElementById('editorSection').scrollTop = 0;
                     
                     // Scroll to card active or highlight in current view
-                    showToast(`题目 #${fullItem.seq_num} 载入成功`);
+                    showToast(`题目 #${fullItem.id} 载入成功`);
          
                     // Backup the original loaded question state directly from the DOM!
                     backupEditorState(fullItem.id, null);
@@ -798,7 +798,6 @@
             }
             selectQuestion({
                 id: EditorState.questionId,
-                seq_num: EditorState.seqNum,
                 created_at: EditorState.createdAt
             });
             return true;
@@ -1006,7 +1005,19 @@
                 formData.append('extra_topics', JSON.stringify(typeof window.collectExtraTopics === 'function' ? window.collectExtraTopics() : []));
                 formData.append('difficulty', difficulty);
                 formData.append('source', source);
-                formData.append('sources', JSON.stringify(Array.isArray(window.EditorSources) ? window.EditorSources : []));
+                // 原卷题号属于「题 × 卷」关系：内联「题号」字段管的是主来源，
+                // 落库时写进主来源的 question_no，再由后端镜像回主表字段。
+                const editorSourcesPayload = (Array.isArray(window.EditorSources) ? window.EditorSources : [])
+                    .map(function (item) { return Object.assign({}, item); });
+                if (editorSourcesPayload.length) {
+                    const orderedSources = typeof window.sortEditorSources === 'function'
+                        ? window.sortEditorSources(editorSourcesPayload)
+                        : editorSourcesPayload;
+                    if (orderedSources[0]) {
+                        orderedSources[0].question_no = String(meta.paper_question_no || '').trim();
+                    }
+                }
+                formData.append('sources', JSON.stringify(editorSourcesPayload));
                 formData.append('answer_markdown', answerMarkdown);
                 formData.append('review', review);
                 formData.append('related_question_id', relatedQuestionId);
@@ -4001,7 +4012,7 @@
             row.className = 'rounded-xl border border-slate-200 bg-white p-3 dark:border-slate-700 dark:bg-slate-900/80';
             const title = document.createElement('div');
             title.className = 'flex flex-wrap items-center gap-2 text-[10px] font-bold text-slate-600 dark:text-slate-200';
-            const seq = candidate.seq_num || candidate.id || '?';
+            const seq = candidate.id || '?';
             const source = window.MathBankSafe.sanitizePlainText(String(candidate.source || '来源未标注'));
             title.textContent = `已收录 #${seq} · ${source} · 相似度 ${Math.round(Number(candidate.score || 0) * 100)}%`;
             row.appendChild(title);
@@ -4249,7 +4260,7 @@
                 '<div class="flex items-start gap-4 border-b border-slate-200/70 p-5 dark:border-slate-700 sm:p-6">' +
                 '<span class="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-emerald-50 text-lg text-emerald-600 dark:bg-emerald-500/15 dark:text-emerald-300"><i class="fa-solid fa-circle-plus" aria-hidden="true"></i></span>' +
                 '<div class="min-w-0 flex-1"><h3 tabindex="-1" data-modal-initial-focus="true" class="text-base font-bold text-slate-800 dark:text-slate-100">并入已有题 · 追加来源</h3>' +
-                '<p class="mt-1.5 text-xs leading-5 text-slate-600 dark:text-slate-300">题目正文与解析保持不变，仅把本次录题的来源记录追加到题库第 ' + escapeHtml(String(candidateSeq == null ? candidateId : candidateSeq)) + ' 题。</p></div>' +
+                '<p class="mt-1.5 text-xs leading-5 text-slate-600 dark:text-slate-300">题目正文与解析保持不变，仅把本次录题的来源记录追加到内部 ID #' + escapeHtml(String(candidateId)) + ' 的题目。</p></div>' +
                 '<button type="button" data-modal-close aria-label="关闭" class="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-700 focus:outline-none focus:ring-2 focus:ring-brand-500/30 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-white"><i class="fa-solid fa-xmark" aria-hidden="true"></i></button>' +
                 '</div>' +
                 '<div class="min-h-0 flex-1 space-y-3 overflow-y-auto p-5 custom-scrollbar sm:p-6">' +
@@ -4257,6 +4268,7 @@
                 '<div><label class="mb-1 block text-xs font-bold text-slate-600 dark:text-slate-300">学校 / 地区</label><input id="mergeSrcRegion" type="text" placeholder="如 哈三中、省实验、全国甲卷" class="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100"></div>' +
                 '<div><label class="mb-1 block text-xs font-bold text-slate-600 dark:text-slate-300">考试类型</label><input id="mergeSrcExamType" type="text" placeholder="如 三模、期末、月考、高考" class="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100"></div>' +
                 '<div><label class="mb-1 block text-xs font-bold text-slate-600 dark:text-slate-300">整卷出处（试卷标题，可空）</label><input id="mergeSrcPaperTitle" type="text" placeholder="如 2026届哈三中高三三模数学试卷" class="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100"></div>' +
+                '<div><label class="mb-1 block text-xs font-bold text-slate-600 dark:text-slate-300">原卷题号（可空）</label><input id="mergeSrcQuestionNo" type="text" placeholder="如 18，非题库 ID" class="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100"></div>' +
                 '</div>' +
                 '<div class="flex flex-col-reverse gap-2 border-t border-slate-200/70 bg-slate-50/70 p-4 dark:border-slate-700 dark:bg-slate-900/70 sm:flex-row sm:items-center sm:justify-end sm:p-5">' +
                 '<button type="button" id="mergeSrcCancel" class="glass-btn min-h-11 rounded-xl px-4 py-2 text-xs font-bold text-slate-600 dark:text-slate-200">取消</button>' +
@@ -4271,7 +4283,8 @@
                 mergeSrcYear: presetSource.year,
                 mergeSrcRegion: presetSource.region,
                 mergeSrcExamType: presetSource.exam_type,
-                mergeSrcPaperTitle: presetSource.paper_title
+                mergeSrcPaperTitle: presetSource.paper_title,
+                mergeSrcQuestionNo: presetSource.question_no
             };
             Object.keys(prefillMap).forEach(function (inputId) {
                 const input = document.getElementById(inputId);
@@ -4286,6 +4299,7 @@
                 const region = (document.getElementById('mergeSrcRegion').value || '').trim();
                 const examType = (document.getElementById('mergeSrcExamType').value || '').trim();
                 const paperTitle = (document.getElementById('mergeSrcPaperTitle').value || '').trim();
+                const questionNo = (document.getElementById('mergeSrcQuestionNo').value || '').trim();
                 if (!year && !region && !examType) {
                     showToast('年份 / 学校地区 / 考试类型至少填写一项。', 'warning');
                     return;
@@ -4304,7 +4318,8 @@
                         year: year,
                         region: region,
                         exam_type: examType,
-                        paper_title: paperTitle
+                        paper_title: paperTitle,
+                        question_no: questionNo
                     })
                 }).then(function (resp) {
                     if (!resp.ok) {
@@ -4314,8 +4329,7 @@
                     }
                     return resp.json();
                 }).then(function () {
-                    const seqLabel = String(candidateSeq == null ? candidateId : candidateSeq);
-                    showToast('已并入题库第 ' + escapeHtml(seqLabel) + ' 题，来源已追加。', 'success');
+                    showToast('已并入内部 ID #' + escapeHtml(String(candidateId)) + ' 的题目，来源已追加。', 'success');
                     closeMergeSourceModal(modal);
                     if (typeof onMergeSuccess === 'function') {
                         onMergeSuccess();
@@ -4786,7 +4800,7 @@
                         body: JSON.stringify({ tag: tag })
                     });
                     fetch(`/api/questions/${savedId}/add-tag`,
-                        tagJson(`疑似变式#${candidate.seq_num || candidateId}`)).catch(() => {});
+                        tagJson(`疑似变式#${targetId}`)).catch(() => {});
                     fetch(`/api/questions/${targetId}/add-tag`,
                         tagJson(`疑似变式#${savedId}`)).catch(() => {});
                     showToast(`已把本题与题库第 ${candidateId} 题标记为相似题。`, 'success');
@@ -4880,7 +4894,7 @@
                 candidates.forEach((candidate, candidateIndex) => {
                     const option = document.createElement('option');
                     option.value = String(candidateIndex);
-                    option.textContent = `候选 ${candidateIndex + 1} · #${candidate.seq_num || candidate.id || '?'}`;
+                    option.textContent = `候选 ${candidateIndex + 1} · #${candidate.id || '?'}`;
                     select.appendChild(option);
                 });
                 select.addEventListener('change', () => {
@@ -5155,7 +5169,18 @@
                 ? String(parsedQuestionsData[entryIndex].source || '')
                 : '';
             const presetSource = collectImportSourceFields();
-            openMergeSourceModal(candidate.id, candidate.seq_num, () => {
+            const card = entryIndex >= 0 && Array.isArray(parsedQuestionsData)
+                && parsedQuestionsData[entryIndex]
+                ? parsedQuestionsData[entryIndex]
+                : null;
+            const cardElement = entryIndex >= 0 ? document.getElementById('parsed-card-' + entryIndex) : null;
+            const cardQuestionNoInput = cardElement ? cardElement.querySelector('.card-question-no') : null;
+            const cardQuestionNo = String(
+                (cardQuestionNoInput ? cardQuestionNoInput.value : '')
+                || (card ? card.paper_question_no : '')
+                || ''
+            ).trim();
+            openMergeSourceModal(candidate.id, candidate.id, () => {
                 if (entryIndex >= 0) parsedDuplicateMergedIndices.add(entryIndex);
                 if (buttonEl) {
                     buttonEl.disabled = true;
@@ -5175,7 +5200,8 @@
                 year: presetSource.year,
                 region: presetSource.region,
                 exam_type: presetSource.examType,
-                paper_title: cardSource
+                paper_title: cardSource,
+                question_no: cardQuestionNo
             });
         }
 
@@ -10189,17 +10215,17 @@ function saveParsedQuestion(index) {
                         let found = false;
                         for (let i = 0; i < relatedSelect.options.length; i++) {
                             const opt = relatedSelect.options[i];
-                            if (opt.getAttribute('data-seq-num') === val) {
+                            if (opt.getAttribute('data-question-id') === val) {
                                 relatedSelect.value = opt.value;
                                 found = true;
                                 break;
                             }
                         }
                         if (!found) {
-                            // 万题红线：题号不在已加载的最新 200 项里时，走 lean 单条反查补选项，
-                            // 绝不为了解析一个题号去整库拉取。
+                            // 万题红线：编号不在已加载的最新 200 项里时，走 lean 单条反查补选项，
+                            // 绝不为了解析一个编号去整库拉取。
                             if (/^\d+$/.test(val)) {
-                                resolveRelatedQuestionBySeq(val);
+                                resolveRelatedQuestionById(val);
                             } else {
                                 relatedSelect.value = '';
                             }
@@ -10210,7 +10236,7 @@ function saveParsedQuestion(index) {
                 relatedSelect.addEventListener('change', () => {
                     const selectedOpt = relatedSelect.options[relatedSelect.selectedIndex];
                     if (selectedOpt && selectedOpt.value) {
-                        relatedNumInput.value = selectedOpt.getAttribute('data-seq-num') || '';
+                        relatedNumInput.value = selectedOpt.getAttribute('data-question-id') || '';
                     } else {
                         relatedNumInput.value = '';
                     }
