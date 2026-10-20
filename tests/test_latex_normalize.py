@@ -778,8 +778,8 @@ def test_solution_empty_choices_shell_is_purged():
     """解析里的空壳 choices 环境必须彻底删掉（2024 大庆卷第 2 题实测脏形）。
 
     MinerU 在解析区误留一个孤零零的「B.」标号行，选项包装器把它当成选项，于是
-    【分析】与【详解】之间凭空多出一个只有空 \\item 的 choices 环境——卷面上是一片
-    莫名其妙的空白选项。
+    分析段与详解段之间凭空多出一个只有空 \\item 的 choices 环境——卷面上是一片
+    莫名其妙的空白选项。（板块标题本身已被扁平化成加粗短语，见 flatten 的用例。）
     """
     answer = (
         "【答案】D\n\n【解析】\n\n【分析】利用集合的交并补运算，及韦恩图求阴影部分对应的集合.\n\n"
@@ -789,7 +789,11 @@ def test_solution_empty_choices_shell_is_purged():
     out = normalize_for_storage(answer, is_answer=True)
     assert "choices" not in out, out
     assert "\\item" not in out, out
-    assert "【分析】" in out and "【详解】" in out and "故选：D" in out
+    # 层级扁平化：最外层只有一个【解析】，分析/详解降级为加粗短语，正文一字不删
+    assert out.count("【解析】") == 1, out
+    assert r"\textbf{分析：}" in out and r"\textbf{详解：}" in out, out
+    assert "利用集合的交并补运算" in out and "故选：D" in out, out
+    assert "【分析】" not in out and "【详解】" not in out, out
     # 幂等：删干净之后再跑一遍必须字节不变
     assert normalize_for_storage(out, is_answer=True) == out
 
@@ -836,8 +840,12 @@ def test_bare_math_variable_wrapped_at_storage_time():
 
 
 def test_bare_variable_wrapper_leaves_words_and_math_alone_at_storage_time():
-    """入库侧的零误伤口径：单词、单位、函数名、集合名都不该被拖进数学态。"""
-    for stem in ("集合 A 与 B 的交集", "长为 5 m 的绳子",
+    """入库侧的零误伤口径：英文单词、单位、函数名尾巴、全大写缩写都不该被拖进数学态。
+
+    「集合 A」这类**汉字 + 单个大写字母**是要包的（见 test_bare_set_letter_wrapped…），
+    所以这里的负例一律挑「左邻不是汉字」或「字母不单独成词」的形态。
+    """
+    for stem in ("长为 5 m 的绳子", "来源：PDF 原卷，AI 生成",
                  r"则 sin x 的最大值", "app 的 pH 值稳定"):
         out = normalize_for_storage(stem, "single_choice")
         assert "$" not in out, "误包成数学态：%s" % out
@@ -845,3 +853,140 @@ def test_bare_variable_wrapper_leaves_words_and_math_alone_at_storage_time():
     already = "已知 $p$ 与 $ q $，求其交集"
     out = normalize_for_storage(already, "single_choice")
     assert out.count("$") == already.count("$"), out
+
+
+# ---------------------------------------------------------------------------
+# 解析越界拦截 / 层级扁平化 / 分段结构 cases 归一 / 裸集合字母（Bug 2~5）
+# ---------------------------------------------------------------------------
+
+def test_solution_truncated_at_swallowed_section_heading():
+    r"""解析末尾把下一节大标题吞进来时，从那一行起整段丢弃（Bug 2）。"""
+    answer = (
+        "【答案】B\n\n【解析】由 $a+b=1$ 得最小值 $\\frac{1}{4}$ ，故选 B。\n\n"
+        "三、填空题（每小题 5 分，共 20 分）\n\n12. 已知向量 $\\vec{a}=(1,2)$…"
+    )
+    out = normalize_for_storage(answer, is_answer=True)
+    assert "三、填空题" not in out, out
+    assert "已知向量" not in out, out
+    assert out.endswith("故选 B。"), out
+    assert normalize_for_storage(out, is_answer=True) == out, "二次入库走形"
+
+
+def test_section_truncation_does_not_eat_real_solution_lines():
+    """越界判据收紧到「××题」收尾：解析正文里的「三、由题意可知」与自述条目必须原样留着。"""
+    kept = (
+        "【答案】B\n\n【解析】三、由题意可知 $a=1$ 时成立。",
+        "【答案】B\n\n【解析】分类讨论：一、当 $a>0$ 与二、当 $a<0$ 时取等。",
+    )
+    for answer in kept:
+        out = normalize_for_storage(answer, is_answer=True)
+        assert "三、由题意可知" in out or "一、当" in out, (answer, out)
+
+    # 整条解析就是一行越界标题：那是「本题没解析」的真实信号，不许静默抹平。
+    only_heading = "三、填空题（每小题 5 分，共 20 分）"
+    assert normalize_for_storage(only_heading, is_answer=True) != "", only_heading
+
+
+def test_solution_headings_flattened_to_a_single_outer_jiexi():
+    r"""【分析】/【详解】/【点睛】降级为加粗短语，最外层只留一个【解析】，正文一字不删（Bug 3）。"""
+    answer = (
+        "【答案】ACD\n\n【解析】\n\n【分析】利用基本不等式求最小值.\n\n"
+        "【详解】由 $a+b=1$ 得 $\\frac{1}{4}$.\n\n【点睛】注意等号成立条件."
+    )
+    out = normalize_for_storage(answer, is_answer=True)
+    assert out.count("【解析】") == 1, out
+    assert "【分析】" not in out and "【详解】" not in out and "【点睛】" not in out, out
+    assert r"\textbf{分析：}" in out and r"\textbf{详解：}" in out, out
+    assert r"\textbf{点睛：}" in out, out
+    # 正文一个字都不能少
+    for fragment in ("利用基本不等式求最小值", "由 $a+b=1$ 得", "注意等号成立条件"):
+        assert fragment in out, (fragment, out)
+    # 【答案】是结构契约（答案字母提取按它定位），不许动
+    assert out.startswith("【答案】ACD"), out
+    assert "**" not in out, "解析里不许留双星号（库里唯一加粗写法是 \\textbf）"
+    assert normalize_for_storage(out, is_answer=True) == out, "二次入库重复加码"
+
+
+def test_solution_detail_heading_is_promoted_to_jiexi():
+    """只有【详解】没有【解析】时，最外层标题归一成标准的【解析】。"""
+    answer = "【答案】C\n\n【详解】对于 A，$f(x)$ 的定义域为 $\\mathbf{R}$，故 A 错误。"
+    out = normalize_for_storage(answer, is_answer=True)
+    assert "【解析】对于 A" in out, out
+    assert "【详解】" not in out, out
+    assert "定义域" in out, out
+    assert normalize_for_storage(out, is_answer=True) == out
+
+
+def test_flatten_keeps_subquestion_and_protocol_markers_readable():
+    """小问标签与协议标记：小问标题降级加粗（信息留着），占位/待核对标记原文不动。"""
+    answer = "【答案】\n\n【小问 1 详解】设 $f(x)=x^2$。\n\n【小问 2 详解】取 $x=1$。"
+    out = normalize_for_storage(answer, is_answer=True)
+    assert r"\textbf{小问 1 详解：}" in out and r"\textbf{小问 2 详解：}" in out, out
+    assert "设 $f(x)=x^2$" in out, out
+
+    stem = "已知函数 $f(x)$ 【插图待补: 图3】，则其定义域为"
+    assert normalize_for_storage(stem, "single_choice") .count("【插图待补") == 1
+
+
+def test_braced_aligned_and_array_are_rewritten_to_cases():
+    r"""``\left\{ \begin{aligned} \right.`` / ``array{l}`` 一律改成 cases（Bug 4）。"""
+    answer = (
+        r"【答案】见解析" "\n\n【解析】"
+        r"由题意得 $\left\{\begin{aligned}2a&=2\\ a+b&=0\end{aligned}\right.$ ，"
+        r"且 $\left\{ \begin{array}{l} a > 0 \\ \Delta \leq 0 \end{array} \right.$ 恒成立。"
+    )
+    out = normalize_for_storage(answer, is_answer=True)
+    assert "aligned" not in out, out
+    assert r"\left\{" not in out and "array" not in out, out
+    assert out.count(r"\begin{cases}") == 2, out
+    assert r"2a&=2\\ a+b&=0" in out, "cases 里的 & 对齐必须原样保留"
+    assert normalize_for_storage(out, is_answer=True) == out, "cases 归一不幂等"
+
+
+def test_cases_wrapped_in_left_brace_is_unwrapped():
+    r"""已经是 cases 却又套了一层 ``\left\{ … \right.`` 的，把外壳剥掉。"""
+    stem = r"$f(x)=\left\{\begin{cases}2x^{2}-x+3,x\geq0\\ x+3,x<0\end{cases}\right.$"
+    out = normalize_for_storage(stem, "detailed_answer")
+    assert r"\left\{" not in out, out
+    assert r"\begin{cases}" in out, out
+    assert normalize_for_storage(out, "detailed_answer") == out
+
+
+def test_set_braces_and_sign_tables_are_never_touched():
+    r"""集合写法与带竖线的符号表不是分段结构：``\left\{ x \mid … \right\}`` 必须原样留着。"""
+    for text in (
+        r"已知集合 $A=\left\{ x \mid 1 < x < 3 \right\}$",
+        r"$\left\{\begin{array}{|c|c|} \hline x & 0 \\ \hline \end{array}\right.$",
+    ):
+        out = normalize_for_storage(text, "single_choice")
+        assert r"\left\{" in out, (text, out)
+        assert "cases" not in out, (text, out)
+
+
+def test_bare_set_letter_wrapped_at_storage_time():
+    r"""「集合 A」「点 P」这类大写单字母进数学态，全大写缩写与答案字母免疫（Bug 5）。"""
+    stem = "集合分别为 A 和 B，点 P 在圆 O 上，来源：PDF 原卷（AI 生成）"
+    out = normalize_for_storage(stem, "single_choice")
+    assert "集合分别为 $A$ 和 $B$" in out, out
+    assert "点 $P$ 在圆 $O$ 上" in out, out
+    for acronym in ("PDF", "AI"):
+        assert "$%s$" % acronym not in out, out
+
+    answer = "【答案】D\n\n【解析】故选：D"
+    out = normalize_for_storage(answer, is_answer=True)
+    assert out.startswith("【答案】D"), out
+    assert "故选：D" in out, "答案宣告句式不许被包成数学态"
+    assert normalize_for_storage(out, is_answer=True) == out
+
+
+def test_bare_upper_wrapper_skips_label_contexts():
+    r"""标签句式（编号 / 卷面答案字母）不包：「题目 A」「见右图 B」「选项 C」「第 2 组 D」。"""
+    for stem in ("同时命中考向 1 与考向 2 的题目 A。", "只命中考向 2 的题目 B。",
+                 "见右图 A 所示", "下列选项 D 正确", "第 2 组 A 的同学",
+                 "正方形 ABCD 的对角线长"):
+        out = normalize_for_storage(stem, "single_choice")
+        assert "$A$" not in out and "$B$" not in out and "$D$" not in out, (stem, out)
+
+    # 「对于 A，集合 M」是同一判据的正面对照：逗号后面接正文（集合）而不是接另一个字母。
+    out = normalize_for_storage("对于 A，集合 M 中的元素 -1", "single_choice")
+    assert "对于 $A$，集合 $M$ 中的元素" in out, out

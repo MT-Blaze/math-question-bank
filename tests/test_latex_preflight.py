@@ -731,21 +731,32 @@ def test_r10_positive_forms_from_the_bank():
         _as_document("命题 p：对任意 x 成立；命题 q：存在 y"))
     assert "命题 $p$：对任意 $x$ 成立；命题 $q$：存在 $y$" in fixed, fixed
 
-    # 大写 A 是点名/集合名的歧义形态，交给字符层判据；小写 l 是直线名，收。
+    # 大写单字母走「汉字 + 字母」这条无歧义分支：点名 A、集合 M 都收；小写 l 是直线名，也收。
     fixed, _ = repair_latex_before_compile(_as_document("点 A 到直线 l 的距离为 3"))
-    assert "点 A 到直线 $l$ 的距离为 3" in fixed, fixed
+    assert "点 $A$ 到直线 $l$ 的距离为 3" in fixed, fixed
+
+    fixed, _ = repair_latex_before_compile(
+        _as_document(r"集合分别为 A 和 B，则 $A \cap B$"))
+    assert "集合分别为 $A$ 和 $B$" in fixed, fixed
+    assert r"$A \cap B$" in fixed, "已有的数学串被二次包裹"
 
 
 def test_r10_leaves_words_units_and_commands_alone():
     r"""零误伤边界：英文单词、单位、函数名尾巴、选项标号、命令与已有公式一律不碰。"""
     for body in (
         "故选：D",
-        "集合 A 与 B 的交集",
         "长为 5 m 的绳子",
         r"则 sin x 的最大值",
         "已包好的 $p$ 与 $ q $",
         "app 的 pH 值稳定",
         r"用 \partial_{x} 与 $x^{2}$ 求导",
+        "来源：PDF 原卷，AI 生成，RGB 三色，200 W 用电器",
+        "A．4 B．5 C．6 D．7",
+        r"\item A．4",
+        "【答案】D",
+        "集合 A={1,2}",
+        "则 A = 2",
+        "全国·A卷 数学",
     ):
         fixed, notes = repair_latex_before_compile(_as_document(body))
         assert fixed == _as_document(body), "误伤：%s" % fixed

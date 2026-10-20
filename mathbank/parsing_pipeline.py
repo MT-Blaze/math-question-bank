@@ -24,9 +24,11 @@ from main import (
 )
 
 from mathbank.latex_normalize import (
+    _extract_inline_choice_run,
     normalize_choice_paren_macro,
     normalize_for_storage,
     normalize_stem_for_storage,
+    truncate_solution_at_section_heading,
 )
 from mathbank.figure_repair import repair_parsed_questions
 from mathbank.kaoxiang_tree import align_parsed_classification
@@ -989,6 +991,349 @@ def post_process_pdf_parsed_questions(parsed_questions: list, paper_title: str, 
     return apply_storage_normalization(parsed_questions)
 
 
+# ---------------------------------------------------------------------------
+# 入库前的结构性清洗（跨字段：题干 / 解析 / 题型 / 配图）
+# ---------------------------------------------------------------------------
+# 这几条规则的落点统一在 :func:`apply_storage_normalization` —— 三条录入路线
+# （MinerU / 原生文字 / 全图视觉 OCR / TeX / 批量图片 / Word）共同的**入库前最后一站**，
+# 写在这里「卡片预览 == 写库结果」才继续成立。
+# 单字段的文本级改写（越界标题截断、板块标题扁平化、cases 归一、裸字母补 ``$``）
+# 一律住在 ``latex_normalize.normalize_for_storage`` 那条唯一链里，本层不复制那份正则。
+
+# 题干里出现的解析板块标题：命中即为「题干吃进解析」，是串题的第一现场。
+_STEM_SOLUTION_HEADING_RE = re.compile(
+    r"【[ \t]*(?:分析|详解|解析|解答|参考详解|点睛|点评)[ \t]*】"
+)
+
+# 选项标号行：行首 A-H（可带 ``-``/``*`` 列表符）+ 标点，也认**裸标号行**
+# （选项是图形时图片写在下一行，与 _BARE_CHOICE_LABEL_RE 同口径）。
+_STEM_OPTION_LINE_RE = re.compile(
+    r"^[ \t]*[-*]?[ \t]*([A-H])[ \t]*(?:[.．、,，:：)）][ \t]*(?P<body>[^\n]*))?$"
+)
+
+# 【答案】段落首行：答案字母的唯一归属地（多小问答案与「见解析」都不在此列）。
+_ANSWER_BLOCK_RE = re.compile(r"【(?:参考答案|答案)】[ \t]*[：:]?[ \t]*([^\n]*)")
+
+# 答案段里允许出现的分隔噪声：除了字母与这些字符，别的一律说明那不是纯选项答案。
+_ANSWER_LETTER_NOISE_RE = re.compile(
+    r"[A-H\s，、。;；:：/|（）()\[\]{}\-—~或和与]*"
+)
+_TEXTBF_OPEN_RE = re.compile(r"\\textbf\{")
+
+
+def _answer_letters_from_markdown(answer: str) -> str:
+    r"""从解析的 ``【答案】`` 段取**独立**的选项字母串（如 ``ACD``），取不到返回空串。
+
+    判据是「整段除了字母和分隔符什么都没有」：``（1）A（2）B`` 这种多小问答案、
+    ``见解析`` 这种文字答案、``$[-1,1]$`` 这种区间答案一律返回空串，绝不参与题型判定。
+    """
+    if not answer:
+        return ""
+    match = _ANSWER_BLOCK_RE.search(answer)
+    if not match:
+        return ""
+    line = match.group(1).strip()
+    if not line or _ANSWER_LETTER_NOISE_RE.sub("", line):
+        return ""
+    letters = re.findall(r"[A-H]", line)
+    if not letters:
+        return ""
+    # 去重保序：「A、A」这种重复字母不构成第二个答案。
+    return "".join(dict.fromkeys(letters))
+
+
+def _stem_option_letters(content: str) -> list:
+    """题干里的选项标号序列：只认**从 A 开始的连续递增**序列，散标号返回空。
+
+    「对于 A，… 对于 B，…」这种解析正文里散落的字母不构成选项区（它们不在行首标号位），
+    而「点 A、B」即便误命中也只有 A 一个连续项，达不到提升阈值。
+    已有 ``\begin{choices}`` 时返回空：结构层已经把它办好了，本层不再多事。
+    """
+    if not content or r"\begin{choices}" in content:
+        return []
+    for line in content.split("\n"):
+        if _extract_inline_choice_run(line) is not None:
+            return ["A", "B", "C", "D"]
+    letters = []
+    for line in content.split("\n"):
+        match = _STEM_OPTION_LINE_RE.match(line)
+        if match:
+            letters.append(match.group(1))
+    run = []
+    for index, letter in enumerate("ABCDEFGH"):
+        if letter in letters:
+            run.append(letter)
+        else:
+            break
+    return run
+
+
+def _recover_options_into_stem(head: str, tail: str) -> tuple:
+    r"""把被解析一起吞走的**选项区**搬回题干，返回 ``(新题干, 新解析块)``。
+
+    不搬回去的话，「题干 → 【分析】… → A．B．C．D．」这种形态截完题干就没了选项
+    （Bug 1 与 Bug 7 是同一个现场的两半）。两种实测形态都认：
+      ① 尾部连续若干行 ``A．…``/``B．…``（每行一个选项）；
+      ② 行内四连标号「… A．1 B．2 C．3 D．4」。
+    保守边界：题干侧已经有选项区（``choices`` 环境或行首标号）就一律不搬，
+    免把「详解」里讨论选项的那几行当成选项搬回去。
+    """
+    if not tail or r"\begin{choices}" in head or _stem_option_letters(head):
+        return head, tail
+    lines = [line for line in tail.split("\n")]
+    while lines and not lines[-1].strip():
+        lines.pop()
+    if not lines:
+        return head, tail
+    # 形态①：从尾部往回收连续的标号行。
+    start = len(lines)
+    while start - 1 >= 0:
+        match = _STEM_OPTION_LINE_RE.match(lines[start - 1])
+        if not match:
+            break
+        start -= 1
+    group = lines[start:]
+    letters = [_STEM_OPTION_LINE_RE.match(line).group(1) for line in group]
+    if len(letters) >= 3 and letters == list("ABCDEFGH"[: len(letters)]):
+        moved = group
+        rest = "\n".join(lines[:start]).strip()
+        return "\n\n".join([part for part in (head.strip(), "\n".join(moved)) if part]), rest
+    # 形态②：任意一行里挤着完整四连标号（【分析】和选项同行的形态）。
+    for position in range(len(lines) - 1, -1, -1):
+        run = _extract_inline_choice_run(lines[position])
+        if run is None:
+            continue
+        prefix, options = run
+        moved = [
+            "%s．%s" % (letter, option)
+            for letter, option in zip("ABCDEFGH", options)
+        ]
+        lines[position] = prefix.strip()
+        tail_rest = "\n".join([line for line in lines if line.strip()]).strip()
+        return "\n\n".join([part for part in (head.strip(), "\n".join(moved)) if part]), tail_rest
+    return head, tail
+
+
+def _place_solution_block(answer: str, block: str) -> str:
+    r"""把从题干搬来的解析正文放在 ``【答案】`` 之后、原有解析之前。
+
+    不能追加到末尾：解析区末尾往往挂着越界吞下的「三、填空题」一类大标题，
+    :func:`~mathbank.latex_normalize.truncate_solution_at_section_heading` 会从那里截断，
+    搬来的正文会被连带删掉（实测：题干的【分析】搬走后整段凭空消失）。
+    搬走的本来就是该题解析的开头，落在答案块后面既守住「``【答案】`` 打头」的结构契约，
+    也永远在截断线之前。
+    """
+    if not answer:
+        return block
+    match = _ANSWER_BLOCK_RE.search(answer)
+    if match is None:
+        # 没有答案块（填空/解答题的纯解析卡）时只能落在最前面。
+        return "\n\n".join([part for part in (block, answer) if part])
+    head = answer[: match.end()].rstrip()
+    rest = answer[match.end():].strip()
+    return "\n\n".join([part for part in (head, block, rest) if part])
+
+
+def _split_stem_solution_leakage(q: dict) -> str:
+    r"""题干里混进的解析板块整块搬进 ``answer_markdown``，返回搬走的文本。
+
+    切点是题干里**第一处** ``【分析】/【详解】/【解析】/【解答】``：那之后的所有内容
+    都属于解析区，留在题干里就是「题干里长出解析」的串题现场（实测 2024 大庆卷：
+    【分析】整段挂在 choices 环境之后）。
+
+    三条保守规则：
+    1. 题干侧切完必须还剩正文——整张卡从头就是解析（没有题干）时不动，
+       那是「空题干壳题」的另一个问题，不该在这里被静默改写成一道无题干题；
+    2. 切点落在 ``\textbf{`` 未闭合的花括号里时，切点前移到该宏之前，
+       不给导出层留半个分组；
+    3. 切点落在 ``choices`` 环境内部时，题干侧补 ``\end{choices}`` 收尾。
+    """
+    content = q.get("content")
+    if not isinstance(content, str) or not content or "【" not in content:
+        return ""
+    match = _STEM_SOLUTION_HEADING_RE.search(content)
+    if match is None:
+        return ""
+    lines = content.split("\n")
+    cut_line = -1
+    cut_offset = 0
+    in_choices = False
+    for index, line in enumerate(lines):
+        line_match = _STEM_SOLUTION_HEADING_RE.search(line)
+        if line_match is not None:
+            cut_line = index
+            cut_offset = line_match.start()
+            break
+        in_choices = _choices_env_state(line, in_choices)
+    if cut_line < 0:
+        return ""
+    line_text = lines[cut_line]
+    head_part = line_text[:cut_offset]
+    # 保守规则 2：切点被 ``\textbf{`` 包着，前移到宏之前。
+    if len(_TEXTBF_OPEN_RE.findall(head_part)) > head_part.count("}"):
+        previous = head_part.rfind("\\textbf{")
+        if previous >= 0:
+            cut_offset = previous
+            head_part = line_text[:cut_offset]
+    head_lines = lines[:cut_line] + ([head_part.rstrip()] if head_part.strip() else [])
+    head = "\n".join(head_lines).strip()
+    if not head:
+        # 保守规则 1：整张卡都是解析，不动。
+        return ""
+    tail_lines = [line_text[cut_offset:].strip()] + lines[cut_line + 1:]
+    tail = "\n".join([line for line in tail_lines if line.strip()]).strip()
+    if not tail:
+        return ""
+    if r"\begin{choices}" in head and r"\end{choices}" not in head:
+        # 保守规则 3：环境内部被切断，题干侧补收尾。
+        head += "\n  \\end{choices}"
+    head, tail = _recover_options_into_stem(head, tail)
+    q["content"] = head
+    # 搬走的正文自己也可能带着越界的下一节大标题，先截一刀再落位：
+    # 否则它会把「解析区里更大标题在后」的正常内容一起顶到截断线之外。
+    tail = truncate_solution_at_section_heading(tail)
+    answer = (q.get("answer_markdown") or "").strip()
+    q["answer_markdown"] = _place_solution_block(answer, tail)
+    return tail
+
+
+def _promote_choice_type_from_stem(q: dict) -> str:
+    """题干末尾粘着整排 ABCD 选项，题型却不是选择题 → 修正为选择题。
+
+    结构层的选项包装器带「防误伤」闸门：非选择题一律不包 ``choices``（否则
+    「A．表示集合 A」这种纯文本会被炸成选项环境）。所以这里只负责**把题型改对**，
+    包装仍由唯一的结构层完成，本层不自己拼 ``choices``。
+    返回修正后的题型（空串表示没改）。
+    """
+    if q.get("question_type") in ("single_choice", "multi_choice"):
+        return ""
+    if len(_stem_option_letters(q.get("content") or "")) < 3:
+        return ""
+    letters = _answer_letters_from_markdown(q.get("answer_markdown") or "")
+    q["question_type"] = "multi_choice" if len(letters) >= 2 else "single_choice"
+    return q["question_type"]
+
+
+def _enforce_multi_choice_from_answer(q: dict) -> bool:
+    r"""答案里有 ≥2 个独立选项字母 → 强制 ``multi_choice``（防「ACD 配单选题」）。
+
+    必须在归一化**之后**跑：判据之一「题干里有选项区」看的是 ``\begin{choices}``，
+    而那正是结构层的产物。题干没有选项区时坚决不改：填空题答案写成 ``A、B``
+    被改成多选题，比漏改危害大得多。
+    """
+    if q.get("question_type") == "multi_choice":
+        return False
+    if len(_answer_letters_from_markdown(q.get("answer_markdown") or "")) < 2:
+        return False
+    if r"\begin{choices}" not in (q.get("content") or ""):
+        return False
+    q["question_type"] = "multi_choice"
+    return True
+
+
+def _image_ref_name(ref: str) -> str:
+    """图片引用的**文件名**：同一张图在正文里可能有三种 URL 形态，只有文件名同源。"""
+    match = re.match(r"!\[[^\]]*\]\(([^)]*)\)", ref)
+    if match is None:
+        match = re.match(r"\\includegraphics(?:\[[^\]]*\])?\{([^}]*)\}", ref)
+    url = (match.group(1) if match else "") or ""
+    return os.path.basename(url.split("?")[0].split("#")[0].replace("\\", "/").split("/")[-1])
+
+
+def _dedupe_answer_image_refs(q: dict) -> list:
+    """同一张图在解析里绝不渲染两次：只保留**最后一处**引用，其余删掉。
+
+    实测（2026-10 组卷）：一张解析配图在【分析】和【详解】里各出现一次，右侧预览
+    凭空多出一张图。源头有两处会造重复：MinerU 把同一张图写进两个版面块，
+    以及搬图规则按**整串 URL** 判重（同一文件的 ``images/a.jpg`` 与
+    ``/static/uploads/mineru_a.jpg`` 不同形，删不掉旧的那条又补一条新的）。
+    这里按文件名收口，做入库前的最后一道保证。
+
+    只保留最后出现的那一处：卷面顺序是【答案】→ 分析 → 详解，配图讲的是详解里的东西，
+    前面的那次引用是重复。整行只有图片时连行一起删；图片嵌在句子里时只摘图片语法、
+    正文一个字不动。
+    """
+    answer = q.get("answer_markdown")
+    if not isinstance(answer, str) or not answer or "[" not in answer:
+        return []
+    groups: dict = {}
+    for match in _IMAGE_REF_RE.finditer(answer):
+        name = _image_ref_name(match.group(0))
+        if name:
+            groups.setdefault(name, []).append(match)
+    duplicates = {name for name, group in groups.items() if len(group) > 1}
+    if not duplicates:
+        return []
+    cuts: list = []
+    for name in duplicates:
+        for match in groups[name][:-1]:
+            line_start = answer.rfind("\n", 0, match.start()) + 1
+            line_end = answer.find("\n", match.start())
+            if line_end < 0:
+                line_end = len(answer)
+            line = answer[line_start:line_end]
+            if not _IMAGE_SYNTAX_RE.sub("", line).strip():
+                # 整行只有图片：连行带换行一起删，别留空洞。
+                cuts.append((line_start, line_end + 1 if line_end < len(answer) else line_end))
+            else:
+                cuts.append((match.start(), match.end()))
+    pieces: list = []
+    cursor = 0
+    for start, end in sorted(cuts):
+        if start < cursor:
+            continue
+        pieces.append(answer[cursor:start])
+        cursor = end
+    pieces.append(answer[cursor:])
+    cleaned = "".join(pieces)
+    cleaned = re.sub(r"[ \t]+\n", "\n", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    q["answer_markdown"] = cleaned
+    return sorted(duplicates)
+
+
+def _clean_question_structures(parsed_questions: list) -> None:
+    """逐题跑结构性清洗并打日志（就地改卡片，供 :func:`apply_storage_normalization` 调用）。"""
+    for index, q in enumerate(parsed_questions, start=1):
+        # 先把解析越界吞下的「三、填空题」一类大标题截掉（该函数幂等，归一化链稍后会再跑一次）：
+        # 后面的「重复配图只保留最后一处」必须在截断后的正文上做，否则最后一处恰好落在越界区里时，
+        # 界内那张被删、留下那张又被截断，整题配图会凭空消失。
+        answer = q.get("answer_markdown")
+        if isinstance(answer, str) and answer:
+            q["answer_markdown"] = truncate_solution_at_section_heading(answer)
+        moved = _split_stem_solution_leakage(q)
+        if moved:
+            print(
+                f"[结构清洗] 第 {index} 题题干混进解析板块，已将「{moved[:24]}…」"
+                "整块归入解析区（选项区已按原样留在题干）。"
+            )
+        promoted = _promote_choice_type_from_stem(q)
+        if promoted:
+            print(
+                f"[结构清洗] 第 {index} 题题干带完整 ABCD 选项区，题型已修正为 {promoted}。"
+            )
+        dupes = _dedupe_answer_image_refs(q)
+        if dupes:
+            print(
+                f"[结构清洗] 第 {index} 题的解析里同一张配图被引用了两次，"
+                f"已只保留最后一处：{dupes}"
+            )
+
+
+def _enforce_choice_types_from_answers(parsed_questions: list) -> None:
+    r"""归一化**之后**再收一次题型：判据里的「题干有选项区」看的是 ``\begin{choices}``。
+
+    这一趟必须排在归一化之后：放在之前时第一次入库会漏网（那时纯文本选项还没被结构层
+    包成环境，判据认不出来），第二次跑才改对 —— 同一个卡片跑两遍得到两种题型，
+    顺序敏感是这类兜底最容易犯的错。
+    """
+    for index, q in enumerate(parsed_questions, start=1):
+        if _enforce_multi_choice_from_answer(q):
+            print(
+                f"[结构清洗] 第 {index} 题答案是多个独立选项字母，题型已强制改为 multi_choice。"
+            )
+
+
 def apply_storage_normalization(parsed_questions: list) -> list:
     # 入库前 LaTeX 归一化（结构层 + 字符层一致）：各条录入路线（MinerU / 原生 / 视觉 OCR /
     # TeX / 批量图片）在这里把各自风格的原料统一成同一种 LaTeX 风味源码——图片
@@ -998,6 +1343,9 @@ def apply_storage_normalization(parsed_questions: list) -> list:
     # 必须与写库边界跑同一条链（normalize_for_storage，而非只做结构层或只做字符层）：
     # 拆卷卡片里用户会手改文字，保存时边界再把同一条幂等链跑一遍，所以卡片预览必须
     # 等于入库结果；否则同一次导入里「未改动的题」与「改过一个字的题」格式就不一致。
+    # 归一化之前先跑跨字段的结构性清洗（题干吃进解析 / 选项区粘连 / 解析重复配图），
+    # 题型修正必须在结构层之前落地，否则防误伤闸门会把真选项当纯文本放行。
+    _clean_question_structures(parsed_questions)
     for q in parsed_questions:
         q_type = q.get("question_type") or ""
         if q.get("content"):
@@ -1014,6 +1362,8 @@ def apply_storage_normalization(parsed_questions: list) -> list:
         if q.get("answer_markdown"):
             # 解析（answer）不是选项，不传 question_type，避免把解析里的「A．」误转选项。
             q["answer_markdown"] = normalize_for_storage(q["answer_markdown"], is_answer=True)
+    # 题型与答案的矛盾必须在归一化之后收（见函数文档）。
+    _enforce_choice_types_from_answers(parsed_questions)
     return parsed_questions
 
 

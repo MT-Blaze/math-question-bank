@@ -21,7 +21,12 @@ from html.parser import HTMLParser
 
 # 补集号自愈与导出前预检共用同一份实现（见 mathbank/latex_preflight R9）：
 # 入库时就写对，卡片预览与题库源码才不会带着错字形示人；导出前再跑一遍是幂等兜底。
-from mathbank.latex_preflight import repair_complement_glyphs, wrap_bare_math_variables
+# ``math_region_flags`` 同时供解析板块标题扁平化避让数学区（见 flatten_solution_headings）。
+from mathbank.latex_preflight import (
+    math_region_flags,
+    repair_complement_glyphs,
+    wrap_bare_math_variables,
+)
 from mathbank.math_markdown import (
     compact_solution_markdown,
     normalize_fillin_macro,
@@ -738,6 +743,142 @@ def strip_empty_solution_choices(text: str) -> str:
     return cleaned.strip("\n")
 
 
+# ---------------------------------------------------------------------------
+# 解析越界拦截：绝不允许把下一大题的章节标题吞进本题解析
+# ---------------------------------------------------------------------------
+# 「三、填空题（每小题 5 分，共 20 分）」这种行只可能属于**卷面结构**，不可能是本题解析
+# 的内容：MinerU 按版面块切题，上一题解析末尾没有题号/「故选」之类的收束锚点时，下一节
+# 的大标题就被并进了解析尾部（组卷时会在解析里凭空多出一行 section 名）。
+# 判据收紧到「中文数字 + 顿号/句点 + 以『××题』收尾（可带分值括号）」，
+# 所以解析正文里「三、由题意可知」这类自述条目不会被误杀。
+_SECTION_HEADING_RE = re.compile(
+    r"^[ \t]*[一二三四五六七八九十]{1,3}[ \t]*[、.．][ \t]*"
+    r"(?:[^\n]{0,12}?)?"
+    r"(?:选择题|填空题|单选题|多选题|判断题|解答题|计算题|应用题|证明题|必考题|选考题|综合题)"
+    r"[ \t\r]*(?:[（(][^）)\n]{0,40}[）)])?[ \t\r]*[。．]?[ \t\r]*$"
+)
+
+
+def truncate_solution_at_section_heading(text: str) -> str:
+    """解析尾部越界吞进下一节标题时，从那一行起整段丢弃。
+
+    只认**非首行**的章节标题：整条解析就是一行章节标题时，那是「这题没解析」的真实信号，
+    删掉会把数据问题抹平，留给卡片与人工核对。
+    """
+    if not text:
+        return ""
+    lines = text.split("\n")
+    for index in range(1, len(lines)):
+        if _SECTION_HEADING_RE.match(lines[index]):
+            return "\n".join(lines[:index]).rstrip()
+    return text
+
+
+# ---------------------------------------------------------------------------
+# 解析层级扁平化：最外层只留一个【解析】，其余方括号小标题改成加粗短语
+# ---------------------------------------------------------------------------
+_SOLUTION_HEADING_RE = re.compile(r"【[ \t]*([^【】\n]{1,12}?)[ \t]*】")
+# 【答案】是**结构契约**，不是排版层级：教师版答案字母提取（paper_helper）、
+# 讲义/答案册的板块切分（lecture_export）、前端「已填答案」判定（import.js）都按它定位，
+# 一个字都不能动。
+_ANSWER_MARKER_LABELS = {"答案", "参考答案", "标准答案", "正确答案", "答案与解析", "答案见解析"}
+# 外层解析标题的同义词：第一个出现的（且仅第一个）升级为标准的【解析】，其余全部降级。
+_OUTER_SOLUTION_LABELS = {"解析", "详解", "解答", "分析", "解析与详解", "详解与解析", "点拨"}
+# 协议性标记（占位/待核对）必须原文保留，不能因为「看起来像小标题」就改写。
+_HEADING_KEEP_HINTS = ("待补", "待核对", "插图")
+
+
+def flatten_solution_headings(text: str) -> str:
+    r"""把解析里的多层 ``【XX】`` 小标题压平：最外层只留一个 ``【解析】``。
+
+    【分析】/【详解】/【点睛】/【点评】…… 是教辅排版的套娃层级，进题库后与
+    「答案 + 解析」的两段式模型对不上，导出时每个都自成一行标题。本函数**一个字正文都不删**，
+    只把它们降级成加粗短语：``【点睛】文字`` → ``**点睛：** 文字``，随后由结构层的
+    :func:`latexify_bold` 归一为库内唯一加粗写法 ``\textbf{点睛：}``（因此本函数必须
+    跑在结构层**之前**）。
+
+    幂等：降级后的文本里不再有方括号标题，第二次执行原样返回。
+    """
+    if not text or "【" not in text:
+        return text
+    flags = math_region_flags(text)
+    matches = list(_SOLUTION_HEADING_RE.finditer(text))
+    if not matches:
+        return text
+    outer_taken = False
+    edits: list = []
+    for match in matches:
+        label = match.group(1).strip()
+        if not label or flags[match.start()]:
+            # 数学区里的【】是 MinerU 把中文写进公式内部的形态，插 ``**`` 会炸定界符。
+            continue
+        if label in _ANSWER_MARKER_LABELS or any(hint in label for hint in _HEADING_KEEP_HINTS):
+            continue
+        if not outer_taken and label in _OUTER_SOLUTION_LABELS:
+            outer_taken = True
+            if label != "解析":
+                edits.append((match.start(), match.end(), "【解析】"))
+            continue
+        # 加粗标签后补一个空格再接正文：「**点睛：** 文字」读得下去，归一化成
+        # ``\textbf{点睛：} 文字`` 后 LaTeX 侧也只是多一个普通词间隔，不会粘连。
+        edits.append((match.start(), match.end(), "**%s：** " % label))
+    if not edits:
+        return text
+    pieces: list = []
+    cursor = 0
+    for start, end, new_text in edits:
+        pieces.append(text[cursor:start])
+        pieces.append(new_text)
+        cursor = end
+    pieces.append(text[cursor:])
+    return "".join(pieces)
+
+
+# ---------------------------------------------------------------------------
+# 分段函数 / 方程组排版标准化：只允许 cases
+# ---------------------------------------------------------------------------
+# 「``\left\{ \begin{aligned} … \end{aligned} \right.``」是 MinerU 与公式编辑器对
+# 分段函数、方程组、不等式组的共同产出形态：exam-zh 与 KaTeX 都能排，但选项编号、行距与
+# 对齐全都不受控，卷面丑且两处渲染不一致。题库的**唯一**写法是 ``\begin{cases}``
+# （条件用 ``&`` 分栏），Word/讲义/试卷三个出口因此才共用同一份源码。
+_PIECEWISE_ROW_ENVS = "aligned|alignedat|gathered|gathered*|cases|cases*|dcases|rcases|array|matrix|smallmatrix"
+# 只有「大括号 + 行式环境」这一种组合才是分段结构：``\left\{ x \mid … \right\}`` 是集合，
+# 不带环境，绝不在此列。
+_BRACED_ROW_ENV_RE = re.compile(
+    r"\\left[ \t]*\\?[ \t]*\{[ \t]*"
+    r"\\begin[ \t]*\{(?P<env>" + _PIECEWISE_ROW_ENVS + r")\}[ \t]*"
+    r"(?:\{(?P<cols>[^{}]*)\}[ \t]*)?"
+    r"(?P<body>.*?)"
+    r"\\end[ \t]*\{(?P=env)\}[ \t]*"
+    r"\\right[ \t]*(?:\\?[}.|\]])",
+    re.S,
+)
+
+
+def _braced_env_to_cases(match: "re.Match[str]") -> str:
+    original = match.group(0)
+    columns = match.group("cols")
+    # 带竖线列规格的是「符号表 / 单调性表」那一类表格，不是分段结构，搬进 cases 会散架。
+    if columns is not None and "|" in columns:
+        return original
+    body = (match.group("body") or "").strip()
+    if not body:
+        return original
+    return "\\begin{cases} %s \\end{cases}" % body
+
+
+def normalize_piecewise_math(text: str) -> str:
+    r"""把「``\left\{`` + ``aligned``/``array``/``matrix`` + ``\right.``」统一改写成 ``cases``。
+
+    只动**大括号包着行式环境**这一种形态，正文里独立的 ``aligned``（多行推导）不碰——
+    它不是分段结构，强行改会把对齐搞坏。转换后 ``&`` 与 ``\\`` 原样保留，
+    因此 ``cases`` 里依旧是「表达式 & 条件」两栏。幂等：改完不再含 ``\left\{`` 包裹。
+    """
+    if not text or "\\left" not in text:
+        return text
+    return _BRACED_ROW_ENV_RE.sub(_braced_env_to_cases, text)
+
+
 def normalize_for_storage(value: str, question_type: str = "", is_answer: bool = False) -> str:
     """入库前对题干/解析执行的**唯一**完整归一化链，顺序即语义，不可调换。
 
@@ -755,6 +896,12 @@ def normalize_for_storage(value: str, question_type: str = "", is_answer: bool =
        整行会被包成 ``$| a | b |$``，结构层就再也认不出这是表格行（表格丢行）。
        字符层认识 tabular/choices/includegraphics 并整体保护它们。
     4. ``$$..$$`` 降级与多余空行压缩只属于解析；题干的独立公式是合理的。
+    5. **解析侧的文本级清洗（越界截断、板块标题扁平化）必须走在结构层之前**：扁平化
+       产出的是 markdown 加粗 ``**点睛：**``，正要靠结构层的 ``latexify_bold`` 归一成
+       库内唯一加粗写法 ``\textbf{点睛：}``；放在之后会把 ``**`` 直接落进库里，
+       与「库里没有双星号」这条既有不变量冲突。
+    6. ``cases`` 归一（分段函数 / 方程组 / 不等式组）排在字符层之前：它只认
+       ``\\left\\{`` + 行式环境这一种纯数学形态，与表格、定界符互不干扰。
 
     ⚠️ 本函数必须**只在真正要落地的时候跑**（``post_process`` 末段与写库边界），
     任何录入路径都不许在它之前单独跑其中的某一步：这条链只对「自己的输出」幂等
@@ -771,7 +918,15 @@ def normalize_for_storage(value: str, question_type: str = "", is_answer: bool =
     # 补集号 ∁ 的字形错乱必须最早修：后面字符层会把 R 之类包成 \mathrm{R}，
     # 判据就认不出来了（针对 \check{\partial}_{R} 这类形态）。
     value = repair_complement_glyphs(value)[0]
+    # 分段结构归一（题库只允许 cases）：题干与解析同一条规则，写法分歧在此终结。
+    value = normalize_piecewise_math(value)
     value = strip_page_markers(value)
+    if is_answer:
+        # 越界标题必须先截：吞进来的「三、填空题」不是板块标题，扁平化会把它们
+        # 降级成一堆加粗噪声，反而把越界藏起来。
+        value = truncate_solution_at_section_heading(value)
+        # 层级扁平化：最外层只留一个【解析】，其余【XX】降级为加粗短语（正文一字不删）。
+        value = flatten_solution_headings(value)
     value = normalize_fillin_macro(value)
     value = normalize_content_for_latex_storage(value, question_type)
     value = normalize_question_math_markdown(value)

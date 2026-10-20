@@ -26,7 +26,7 @@ from __future__ import annotations
 import re
 
 __all__ = ["repair_latex_before_compile", "repair_complement_glyphs",
-           "wrap_bare_math_variables", "MAX_NOTE_SAMPLES"]
+           "wrap_bare_math_variables", "math_region_flags", "MAX_NOTE_SAMPLES"]
 
 # 每条规则最多附几个样例进上报文案：够定位即可，整卷样例会把响应头撑爆。
 MAX_NOTE_SAMPLES = 3
@@ -522,8 +522,10 @@ def repair_complement_glyphs(text: str) -> tuple[str, int, list[str]]:
 #      也不许是 ``\``、``$``、``_``、``^``、``{``、``}``、``%`` 这类结构字符
 #      —— 于是 ``\p`` 与已在数学态里的 ``$p$`` 天然被排除，也保证本规则**幂等**；
 #   ② 至少一侧（跳过空格后）是中文字符或全角标点：英文句子里的孤立字母不会被包；
-#   ③ 只认小写：大写单字母既可能是集合名（A）又可能是选项标号/点名（「故选：D」「点 A」），
-#      歧义太大，一律交给字符层的高置信度判据；
+#   ③ 小写按 ①②④ 直接包；大写单字母歧义大（既可能是集合名「集合 A」，也可能是选项标号
+#      「A．4」、作答括号「（A）」或全大写缩写「PDF」「AI」），因此额外要求
+#      「汉字 + 单个大写字母」这一无歧义形态，五条否决守卫见
+#      :func:`_bare_upper_is_math_letter`；
 #   ④ 不在已有数学区里（$...$ / $$...$$ / \(...\) / \[...\] 与 equation、align 一类行式
 #      环境）：数学态里的字母本就是斜体，而 MinerU 会把中文连接词写在公式**内部**
 #      （存量 id=200：``$A\otimes B=\{x\mid x\in A\cup B 且 x\notin A\cap B\}$``），
@@ -531,8 +533,33 @@ def repair_complement_glyphs(text: str) -> tuple[str, int, list[str]]:
 # 单位形态（「5 m」）与函数名后的变元（「sin x」）靠「跳过空格后仍贴 ASCII 字母/数字」
 # 这条邻位判据挡掉。
 _BARE_VAR_RE = re.compile(r"[a-z]")
+# 大写单字母（集合 / 点 / 曲线 / 事件名）：与小写同一条链，但判据更严。
+_BARE_UPPER_RE = re.compile(r"[A-Z]")
 # 紧邻处出现即否决的字符：单词的一部分、LaTeX 命令、已有数学定界符/结构件。
 _BARE_VAR_REJECT_NEIGHBOR = set("\\$_{}^%&~") | set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+# 大写单字母**紧跟**这些标点即否决：那是选项标号（``A．4``）、枚举（``A、B``）
+# 或作答括号里的字母（``（A）``），不是要包数学斜体的变量。
+# ⚠️ 半角/全角**逗号不在本列**：「对于 A，集合 M 中的元素」里的 A 后面正是逗号，
+# 那种形态该包；真正的枚举（``A，B，C``）交给「跳过分隔符后紧跟 ASCII 字母」那条否决，
+# 否则同一串枚举只包头一个，卷面就变成「一半斜体一半正体」。
+_UPPER_LABEL_PUNCT = set(".．、:：)）】")
+# 左邻扫描允许跳过的书写噪声（空格、冒号与枚举逗号）。
+_UPPER_LEFT_SKIP = " ：:，、,"
+# 右邻扫描允许跳过的枚举分隔符：跳过之后若是 ASCII 字母，说明这是一串枚举，整串放行。
+_UPPER_RIGHT_SKIP = " ，、,"
+# 汉字本体（**不含**全角标点）：大写规则的左邻判据。左邻必须是汉字，
+# 「200 W」「全国·A卷」「维生素 C 片」这类形态因此一律放过。
+_CJK_IDEOGRAPH_RE = re.compile(r"[\u4e00-\u9fff]")
+# 「标签句式」：紧跟在这些词后面的大写单字母是**编号 / 卷面答案字母**，不是数学对象：
+# - 答案宣告（``故选：D`` / ``应选 B`` / ``填 A``）：``paper_helper`` 的答案字母提取与
+#   ``figure_repair`` 的解析带定位都靠这类句式收口，包成 ``$D$`` 等于动结构契约；
+# - 命名编号（``题目 A`` / ``试卷 B`` / ``见右图 C`` / ``选项 D`` / ``第 2 组 A``）：
+#   那是标签，排成斜体反而像漏了定界符的公式。
+# 本判据只作用在大写分支，所以「集合 A」「点 P」「对于 A，集合 M」「A 和 B」照常收。
+_UPPER_TAG_CONTEXT_RE = re.compile(
+    r"(?:题目|题|试卷|卷|插图|图|表格|表|类型|型|选项|项|编号|号|小组|组|级别|级|档次|档|"
+    r"份|故选|应选|答案为|答案|选择|选|填)$"
+)
 
 
 # 数学区定界符与行式数学环境：R10 用它判断字母是否已经在数学态里。
@@ -604,15 +631,90 @@ def _math_region_flags(text: str) -> bytearray:
     return flags
 
 
+def math_region_flags(text: str) -> bytearray:
+    """公开包装：逐字符标记「已经在数学区里」（私有实现见 :func:`_math_region_flags`）。
+
+    入库层的解析板块标题扁平化要用它避开 ``$...$`` 里的 ``【】``（那是 MinerU 把中文
+    写进公式内部的形态，在数学区里插 ``**加粗**`` 会把定界符炸成文本）。
+    """
+    return _math_region_flags(text)
+
+
+def _prev_skipping(text: str, index: int, skip: str) -> str:
+    """向左跳过 ``skip`` 里的字符后的第一个字符（越界返回空串）。
+
+    与 :func:`_neighbor` 的差别只在「允许跳过的字符」：大写规则要连全角/半角冒号一起
+    跳过，才能把 ``故选：D`` 的左邻认成汉字「选」（该包），而把 ``【答案】：D`` 的左邻
+    认成 ``】``（答案标记契约，绝不能包，否则教师版答案字母提取会失配）。
+    """
+    j = index
+    while 0 <= j < len(text) and text[j] in skip:
+        j -= 1
+    return text[j] if j >= 0 else ""
+
+
+def _next_skipping(text: str, index: int, skip: str) -> str:
+    """向右跳过 ``skip`` 里的字符后的第一个字符（越界返回空串）。"""
+    j = index
+    while 0 <= j < len(text) and text[j] in skip:
+        j += 1
+    return text[j] if j < len(text) else ""
+
+
+def _bare_upper_is_math_letter(text: str, start: int, end: int, flags) -> bool:
+    r"""判断这个裸大写单字母是不是集合 / 点 / 曲线 / 事件名（R10 大写分支）。
+
+    「集合分别为 A 和 B」里的 A、B 是数学对象，库里却以正文字面形态入库，卷面上与旁边的
+    $A$ 不是一套字形。但大写单字母的歧义远大于小写，所以五条否决守卫**任一命中就放行**
+    （宁漏不错）：
+      ① 不在已有数学区里，且左右紧邻不是字母/数字/结构字符 —— 于是 ``PDF``、``AI``、
+         ``x2``、``\alpha``、``$A$`` 天然免疫（第二个字母紧邻第一个字母）；
+      ② 字母**紧跟**``.．、:：）】``的不包 —— 那是选项标号 ``A．4``、枚举 ``A、B``、
+         作答括号 ``（A）`` 或 ``【答案】D``（答案字母由 ``paper_helper`` 按标记提取，
+         包成 ``$D$`` 会让提取失配）；
+      ③ 左邻（跳过空格与冒号后）必须是**汉字本体**：「集合 A」「点 P」「对于 A」成立，
+         「200 W」「全国·A卷」「（　）A」不成立，行首的竖排选项因此一并豁免；
+      ④ 右邻（跳过空格与枚举逗号后）不许是 ASCII 字符：``A = 2`` 交给别的规则，
+         ``A，B，C`` 这种枚举整串放行（只包头一个会变成一半斜体一半正体），
+         行尾与换行放行（「故集合 A」要包），「对于 A，集合 M」要包。
+      ⑤ 「故选：D」「题目 A」「见右图 B」「选项 C」这类**标签句式**不包：前者是卷面答案
+         字母（提取契约），后者是编号，都不是数学对象（见 :data:`_UPPER_TAG_CONTEXT_RE`）。
+    """
+    if flags[start]:
+        return False
+    prev_char = text[start - 1] if start else ""
+    next_char = text[end] if end < len(text) else ""
+    if prev_char in _BARE_VAR_REJECT_NEIGHBOR or next_char in _BARE_VAR_REJECT_NEIGHBOR:
+        return False
+    if next_char in _UPPER_LABEL_PUNCT:
+        return False
+    left = _prev_skipping(text, start - 1, _UPPER_LEFT_SKIP)
+    if not (left and _CJK_IDEOGRAPH_RE.match(left)):
+        return False
+    # 标签句式（答案宣告 / 命名编号）不包，见 _UPPER_TAG_CONTEXT_RE。
+    if _UPPER_TAG_CONTEXT_RE.search(text[:start].rstrip(_UPPER_LEFT_SKIP)):
+        return False
+    right = _next_skipping(text, end, _UPPER_RIGHT_SKIP)
+    if right and right not in "\n\r" and right.isascii():
+        return False
+    return True
+
+
 def wrap_bare_math_variables(text: str) -> tuple[str, int, list[str]]:
-    r"""给中文语境里单独成词的小写数学变量补上 $ 定界符（R10）。"""
+    r"""给中文语境里单独成词的裸数学字母补上 $ 定界符（R10）。
+
+    .. note::
+        「是否已经在数学区里」这条判据被入库层的解析板块标题扁平化复用
+        （见 :func:`mathbank.latex_normalize.flatten_solution_headings`），
+        所以 :func:`math_region_flags` 是公开函数，别再当私有实现改签名。
+
+    两条分支（小写变量 / 大写集合名）共用「已在数学区就避让」「单独成词」这两条硬约束，
+    大写分支再叠五条否决守卫，见 :func:`_bare_upper_is_math_letter`。
+    """
     if not text:
         return text, 0, []
     flags = _math_region_flags(text)
-    pieces: list = []
-    cursor = 0
-    count = 0
-    samples: list = []
+    spans: list = []
     for match in _BARE_VAR_RE.finditer(text):
         start, end = match.start(), match.end()
         if flags[start]:
@@ -631,11 +733,25 @@ def wrap_bare_math_variables(text: str) -> tuple[str, int, list[str]]:
         #   「函数名正体 + 变元斜体」的毛病摆得更显眼（那属于 \sin 归一化的事）。
         if _is_ascii_alnum(left) or _is_ascii_alnum(right):
             continue
+        spans.append((start, end))
+    for match in _BARE_UPPER_RE.finditer(text):
+        if _bare_upper_is_math_letter(text, match.start(), match.end(), flags):
+            spans.append((match.start(), match.end()))
+    if not spans:
+        return text, 0, []
+    pieces: list = []
+    cursor = 0
+    count = 0
+    samples: list = []
+    # 两条分支按字符命中，位置互不重叠；排序只为样例与改写顺序稳定可预期。
+    for start, end in sorted(spans):
+        if start < cursor:
+            continue
         count += 1
         if len(samples) < MAX_NOTE_SAMPLES:
             samples.append(_sample(text[max(0, start - 12):end + 12]))
         pieces.append(text[cursor:start])
-        pieces.append("$" + match.group(0) + "$")
+        pieces.append("$" + text[start:end] + "$")
         cursor = end
     if not count:
         return text, 0, []

@@ -355,6 +355,42 @@ def _layout(blocks, names):
     return figure_repair.build_figure_layout(blocks, mapping)
 
 
+def test_geo_apply_drops_every_url_form_of_the_same_asset():
+    r"""搬图删旧引用必须按**文件名**：同一张图的整串 URL 与裸文件名两种形态都要清掉。
+
+    按整串 URL 比时，删不掉另一种写法的那一条，再补写一条新的 → 解析里同一张图渲染两次
+    （2026-10 组卷实测：【分析】和【详解】里各一张）。
+    """
+    card = {
+        "content": "如图，求阴影部分面积\nA．1\nB．2\nC．3\nD．4",
+        "answer_markdown": (
+            "【答案】B\n\n【解析】\n\n【分析】见下图\n\n![](/static/uploads/mineru_5_1.jpg)\n\n"
+            "【详解】$S=2$ .\n\n![](mineru_5_1.jpg)"
+        ),
+        "question_type": "single_choice",
+        "image_paths": ["/static/uploads/mineru_5_1.jpg"],
+    }
+    figure_repair._geo_apply(
+        card,
+        {"verdicts": {"mineru_5_1.jpg": {
+            "url": "/static/uploads/mineru_5_1.jpg", "zone": "answer", "label": None}}},
+        [],
+    )
+    assert card["answer_markdown"].count("mineru_5_1") == 1, card["answer_markdown"]
+    assert "【分析】见下图" in card["answer_markdown"], card["answer_markdown"]
+    assert "【详解】" in card["answer_markdown"], card["answer_markdown"]
+
+    # 幂等：搬完再跑一遍不得二次改动
+    before = dict(card)
+    figure_repair._geo_apply(
+        card,
+        {"verdicts": {"mineru_5_1.jpg": {
+            "url": "/static/uploads/mineru_5_1.jpg", "zone": "answer", "label": None}}},
+        [],
+    )
+    assert card["answer_markdown"] == before["answer_markdown"], card["answer_markdown"]
+
+
 def test_geo_pins_daqing_option_grid_by_coordinate():
     """第 4 题：四片按 bbox 各归 A/B/C/D，解析里的幽灵图清零——坐标口径 100% 判准。"""
     cards, layout, mapping = _daqing_case()

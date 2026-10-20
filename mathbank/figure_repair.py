@@ -844,7 +844,7 @@ def _geo_decide(q, layout, window, used_anchors):
 def _is_relocatable_image_line(line, urls):
     """整行只有一张待搬图 → 删它；行内图与别的行一律原样留着。"""
     kind, payload = _line_kind(line)
-    return kind == "image" and payload in urls
+    return kind == "image" and _asset_name(payload) in urls
 
 
 def _option_start_index(lines):
@@ -976,6 +976,12 @@ def _geo_apply(q, decision, records):
         records.append(rec)
     if not drop:
         return
+    # 待删集合按**文件名**而非整串 URL：同一张 MinerU 图在卡片里可能同时以
+    # ``/static/uploads/mineru_1_2.jpg`` 与相对形态 ``mineru_1_2.jpg`` 出现（前者是
+    # MinerU 落盘引用、后者是搬图补写的），按整串比就删不掉旧的那一条，
+    # 再补一条新的 → 解析里同一张图渲染两次（2026-10 组卷实测）。
+    # 与全项目「图片比对一律按文件名」的口径同源（见 _figure_locations / step 5 兜底）。
+    drop = {_asset_name(url) for url in drop}
     lines = [ln for ln in (q.get("content") or "").split("\n")
              if not _is_relocatable_image_line(ln, drop)]
     answer_lines = [ln for ln in (q.get("answer_markdown") or "").split("\n")
