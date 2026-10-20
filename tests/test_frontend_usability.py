@@ -5885,3 +5885,12 @@ def test_batch_import_solve_calls_send_the_configured_solve_model():
     # 取不到系统配置时发空串，让后端读环境变量——前端绝不写死厂商
     assert "systemPreferSolveModel : 'deepseek" not in import_source
     assert ": '')" in import_source
+    # 批量入口没有【深度思考】复选框：漏传时服务端 Form 默认 enabled，每题都按推理
+    # 输出计费并拖成分钟级（实测百炼网关 3500 字答案 29 秒），必须两处都显式关。
+    assert import_source.count("formData.append('thinking', 'disabled')") == 2
+
+    api_source = _read(STATIC_JS_DIR / "api.js")
+    # 首屏抢跑防线：/api/settings 回来之前 import.js 发出去的必须是空串。
+    assert 'let systemPreferSolveModel = "";' in api_source
+    assert "let systemPreferSolveModel = 'deepseek" not in api_source
+    assert "systemPreferSolveModel = settings.prefer_solve_model || '';" in api_source

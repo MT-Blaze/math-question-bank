@@ -84,6 +84,12 @@ def test_solve_prompt_keeps_exactly_answer_and_analysis_blocks(question_type):
     # 而 "第一个字符必须是..." 仍指向旧名。
     assert "第一个字符必须是“\\textbf{【答案】}”" in system_prompt
 
+    # 唯一答案块铁律：模型自我推翻时第一处【答案】是错答案，而提取按第一处定位。
+    # 提示词是源头约束，入库前的折叠只是兜底，两种题型都不许漏写。
+    assert "唯一答案块铁律" in system_prompt
+    assert "绝对不允许出现自我推翻、重新思考或输出多组答案板块" in system_prompt
+    assert "如果计算错误，请在解析正文中修正，不要重新生成答案块" in system_prompt
+
 
 def test_extract_choice_answer_letter_reads_new_answer_block():
     """新格式（【答案】+答案）必须仍能被答案字母提取链路命中。"""

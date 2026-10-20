@@ -93,6 +93,29 @@ def test_domestic_provider_requests_bypass_proxies_immediately(
     )
 
 
+@pytest.mark.parametrize(
+    "gateway_url",
+    [
+        "http://api.qianwenaiapi.com/v1",
+        "https://token-plan.maas.qianwenaiapi.com/compatible-mode/v1",
+    ],
+)
+def test_qianwen_gateway_also_bypasses_system_proxy(gateway_url):
+    """实测在用的百炼兼容模式网关域名必须免代理：走系统代理会被拖慢甚至连接失败。"""
+    response = MagicMock(status_code=200)
+
+    with patch("mathbank.ai_http.requests.post", return_value=response) as request_mock:
+        result = robust_request_post(gateway_url, json={"model": "qwen3.8-flash"}, timeout=10)
+
+    assert result is response
+    request_mock.assert_called_once_with(
+        gateway_url,
+        json={"model": "qwen3.8-flash"},
+        timeout=10,
+        proxies={"http": None, "https": None},
+    )
+
+
 def test_external_request_retries_once_without_proxies_on_proxy_error():
     response = MagicMock(status_code=200)
 

@@ -806,6 +806,78 @@ _OUTER_SOLUTION_LABELS = {"解析", "详解", "解答", "分析", "解析与详�
 # 协议性标记（占位/待核对）必须原文保留，不能因为「看起来像小标题」就改写。
 _HEADING_KEEP_HINTS = ("待补", "待核对", "插图")
 
+# ---------------------------------------------------------------------------
+# 双答案块折叠：解答模型「算错后自我推翻」时，只保留最后一个【答案】
+# ---------------------------------------------------------------------------
+# 排版外壳：标记前面紧跟的 ``\textbf{`` 或 ``**``。摘块时连外壳一起摘，否则留下孤立 ``}``。
+# 双反斜杠形态排在前面：模型偶发多转义一层，而写库链的 ``restore_doubled_control_words``
+# 只在归一化链上跑，接口直接返回给前端的那份还没压过。
+_ANSWER_BLOCK_SHELLS = (r"\\textbf{", r"\textbf{", "**")
+
+
+def _answer_marker_shell_start(text: str, marker_start: int) -> int:
+    for shell in _ANSWER_BLOCK_SHELLS:
+        if text[max(0, marker_start - len(shell)):marker_start] == shell:
+            return marker_start - len(shell)
+    return marker_start
+
+
+def _answer_block_spans(text: str) -> list[tuple[int, int]]:
+    """数学区外每个【答案】块的 ``(起, 止)``；不足两块返回空列表。
+
+    块终点取「该标记之后的第一个结构标题」的排版外壳起点，没有则到文本末尾，所以
+    块与块互不重叠，且 ``\textbf{【解析】}`` 这类相邻标题不会被啃掉半个壳。
+    """
+    if not text or "【" not in text:
+        return []
+    flags = math_region_flags(text)
+    headings = [m for m in _SOLUTION_HEADING_RE.finditer(text) if not flags[m.start()]]
+    markers = [m for m in headings if m.group(1).strip() in _ANSWER_MARKER_LABELS]
+    if len(markers) < 2:
+        return []
+    bounds = sorted({_answer_marker_shell_start(text, m.start()) for m in headings})
+    spans: list[tuple[int, int]] = []
+    for marker in markers:
+        start = _answer_marker_shell_start(text, marker.start())
+        end = next((b for b in bounds if b > marker.start()), len(text))
+        spans.append((start, max(end, start)))
+    return spans
+
+
+def collapse_duplicate_answer_blocks(text: str) -> tuple[str, int]:
+    r"""解析里出现多个【答案】块时只保留**最后一个**，返回 ``(文本, 丢弃块数)``。
+
+    实测解答模型有概率算错后自我推翻，形态有两种，处理方式必须分开：
+
+    1. **末尾整对重做**（真卷 488 实测）：先出一段「【答案】错值 + 自我纠错碎碎念」，
+       最后再给一整套 ``\textbf{【答案】}`` + ``\textbf{【解析】}``。最后一个答案块之后
+       还有板块标题，说明那一段是自带解析的完整重做，前面的整段都是被推翻的草稿，
+       从最后一个答案块起整段保留、之前的全部丢弃。
+    2. **只推翻答案**：末尾只有一个孤立【答案】，中间是真正的解析。这时把最后一块
+       搬回开头、先前那些答案块（连同它们自己的正文）整块摘除，其余解析正文一个字不删。
+
+    答案字母提取（`paper_helper`）、答案册板块切分（`lecture_export`）与前端「已填答案」
+    判定都按**第一处**【答案】定位，所以放任第一块入库就等于把错答案印到卷面上。这里与
+    :func:`dedupe_answer_image_references` 保留最后一处同口径。
+
+    保守边界：数学区里的【】不参与（那是 MinerU 把中文写进公式内部的形态）；不足两块
+    原样返回；跑完只剩一块，因此幂等。
+    """
+    spans = _answer_block_spans(text)
+    if not spans:
+        return text or "", 0
+    last_start, last_end = spans[-1]
+    if last_end < len(text.rstrip()):
+        # 形态 1：最后一个【答案】之后还有板块标题 → 完整重做，前面整段都是废稿。
+        return re.sub(r"\n{3,}", "\n\n", text[last_start:].strip()), len(spans) - 1
+    kept = text[last_start:last_end].strip()
+    remainder = text
+    for start, end in reversed(spans):
+        remainder = remainder[:start] + remainder[end:]
+    remainder = remainder.strip()
+    collapsed = f"{kept}\n\n{remainder}" if remainder else kept
+    return re.sub(r"\n{3,}", "\n\n", collapsed), len(spans) - 1
+
 
 def flatten_solution_headings(text: str) -> str:
     r"""把解析里的多层 ``【XX】`` 小标题压平：最外层只留一个 ``【解析】``。
@@ -1274,6 +1346,10 @@ def normalize_for_storage(value: str, question_type: str = "", is_answer: bool =
         # 越界标题必须先截：吞进来的「三、填空题」不是板块标题，扁平化会把它们
         # 降级成一堆加粗噪声，反而把越界藏起来。
         value = truncate_solution_at_section_heading(value)
+        # 双答案块折叠紧跟截断：越界标题以下本来就要整段丢弃，先折叠会把本该截掉的
+        # 第二个答案块错误地当成「最终答案」搬到开头。必须早于配图去重与扁平化，
+        # 让后面每一步都只看幸存的那一块。
+        value = collapse_duplicate_answer_blocks(value)[0]
         # 重复配图去重必须在截断之后：最后一处引用若落在越界区里，先删前一处的做法
         # 会让界内那张被删、界外那张又被截掉，整题配图凭空消失。
         value = dedupe_answer_image_references(value)[0]

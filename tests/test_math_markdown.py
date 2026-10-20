@@ -400,6 +400,22 @@ def test_every_import_path_wires_the_compaction_helper():
         ), f"{module.__name__} 绕过了解析紧凑化"
 
 
+def test_answer_paths_wire_the_duplicate_answer_block_guard():
+    """双答案块防御必须在入库链上（三条通道共用），并在单题解答接口就地兜一次。
+
+    提取答案字母与答案册切分都按**第一处**【答案】定位，模型自我推翻时第一块是错答案。
+    """
+    from mathbank import latex_normalize, routes_ai
+
+    chain_source = inspect.getsource(latex_normalize.normalize_for_storage)
+    assert re.search(r"\bcollapse_duplicate_answer_blocks\b", chain_source), (
+        "入库链绕过了双答案块折叠，拆卷卡片与写库源码都会留着错答案"
+    )
+    assert re.search(r"\bcollapse_duplicate_answer_blocks\b", inspect.getsource(routes_ai)), (
+        "/api/ai/solve 返回给前端的解析没有折叠答案块"
+    )
+
+
 def _parse_with_mock_payload(payload):
     """让 parse_paper_text_internal 返回指定 JSON，绕开真实模型调用。"""
     response = MagicMock()

@@ -1071,3 +1071,93 @@ def test_bare_upper_wrapper_skips_label_contexts():
     # 「对于 A，集合 M」是同一判据的正面对照：逗号后面接正文（集合）而不是接另一个字母。
     out = normalize_for_storage("对于 A，集合 M 中的元素 -1", "single_choice")
     assert "对于 $A$，集合 $M$ 中的元素" in out, out
+
+
+# ---------------------------------------------------------------------------
+# 双答案块折叠（模型「算错后自我推翻」的防御）
+# ---------------------------------------------------------------------------
+def _fold(value):
+    from mathbank.latex_normalize import collapse_duplicate_answer_blocks
+
+    return collapse_duplicate_answer_blocks(value)
+
+
+def test_duplicate_answer_blocks_keep_the_last_one():
+    r"""孤立的后置【答案】搬回开头，先前那块连同它的正文一起摘除，解析一个字不删。"""
+    raw = (
+        "\\textbf{【答案】} B\n\n"
+        "\\textbf{【解析】} 由题意 $a>0$，先算得 B。\n\n"
+        "等等，重新计算：$b^2-4ac<0$，应选 A。\n\n"
+        "\\textbf{【答案】} A\n"
+    )
+    folded, dropped = _fold(raw)
+
+    assert dropped == 1
+    assert folded.startswith("\\textbf{【答案】} A")
+    assert folded.count("【答案】") == 1
+    assert "重新计算" in folded, "解析正文被误删"
+    assert _fold(folded)[0] == folded
+
+
+def test_answer_block_shell_is_not_left_orphaned():
+    r"""摘块必须连 ``\textbf{`` 外壳一起摘，markdown 加粗外壳同理，不能留下孤立 ``}``。"""
+    for raw, head in (
+        ("**【答案】** C\n\n**【解析】** 推导略。\n\n**【答案】** D\n", "**【答案】** D"),
+        (
+            "\\textbf{【答案】} C\n\n\\textbf{【解析】} 推导略。\n\n\\textbf{【答案】} D\n",
+            "\\textbf{【答案】} D",
+        ),
+        (
+            "\\\\textbf{【答案】} C\n\n\\\\textbf{【解析】} 推导略。\n\n\\\\textbf{【答案】} D\n",
+            "\\\\textbf{【答案】} D",
+        ),
+    ):
+        folded, dropped = _fold(raw)
+        assert dropped == 1 and folded.startswith(head), (raw, folded)
+        assert "}}" not in folded, folded
+
+
+def test_full_redo_pair_drops_the_overturned_draft():
+    r"""最后一个【答案】之后还带自己的【解析】时，前面整段都是废稿（真卷 488 实测形态）。"""
+    raw = (
+        "\\textbf{【答案】}\n（1）$a=\\frac{1}{2}$；\n（2）最大值为 $\\log_{1/2} 3$。\n\n"
+        "\\textbf{【解析】}\n*自我纠错*：有些版本这道题的点可能是 $(1,-2)$……\n\n"
+        "\\textbf{【答案】}\n（1）$a=2$；\n（2）最大值为 $2$。\n\n"
+        "\\textbf{【解析】}\n（1）将点 $(1,2)$ 代入得 $\\log_a 4 = 2$，所以 $a=2$。"
+    )
+    folded, dropped = _fold(raw)
+
+    assert dropped == 1
+    assert "$a=2$" in folded and "\\frac{1}{2}" not in folded
+    assert "自我纠错" not in folded
+    assert folded.count("【答案】") == 1 == folded.count("【解析】")
+    assert _fold(folded)[0] == folded
+
+
+def test_single_answer_block_and_math_region_markers_untouched():
+    r"""只有一块时原样返回；数学区里的【答案】是 MinerU 把中文写进公式，不参与。"""
+    clean = "\\textbf{【答案】} B\n\n\\textbf{【解析】} 正常解析。"
+    assert _fold(clean) == (clean, 0)
+
+    in_math = (
+        "\\textbf{【答案】} B\n\n"
+        "\\textbf{【解析】} 其中 $\\text{【答案】}$ 只是公式里的中文。"
+    )
+    assert _fold(in_math) == (in_math, 0)
+    assert normalize_for_storage(in_math, "single_choice", is_answer=True).count("【答案】") == 2
+
+
+def test_duplicate_answer_block_collapses_on_the_storage_chain():
+    r"""三条录入通道共用的一条链必须在截断越界标题之后折叠答案块，且结果幂等。"""
+    raw = (
+        "\\textbf{【答案】} B\n\n"
+        "\\textbf{【解析】} 先算得 B。\n\n"
+        "\\textbf{【答案】} A\n\n"
+        "三、填空题：本题共4小题，每小题5分，共20分.\n"
+    )
+    stored = normalize_for_storage(raw, "single_choice", is_answer=True)
+
+    assert stored.count("【答案】") == 1
+    assert stored.startswith("\\textbf{【答案】} A"), stored
+    assert "填空题" not in stored
+    assert normalize_for_storage(stored, "single_choice", is_answer=True) == stored

@@ -143,33 +143,47 @@ def build_ai_solve_prompts(
     }
     type_str = type_mapping.get(question_type, "数学题")
 
+    # 四种题型共用同一条「唯一答案块」禁令：实测解答模型有概率在算错后自我推翻、
+    # 重新输出第二个 \textbf{【答案】}，而答案提取与答案册切分都按【答案】定位，
+    # 第一个恰是错答案。提示词是源头约束，入库前的折叠函数只是兜底。
+    single_answer_rule = (
+        "3. 唯一答案块铁律：必须直接给出唯一的"
+        "\\\\textbf{【答案】}和\\\\textbf{【解析】}，绝对不允许出现自我推翻、"
+        "重新思考或输出多组答案板块。如果计算错误，请在解析正文中修正，"
+        "不要重新生成答案块。"
+    )
+
     if question_type == "single_choice":
         first_block_header = "\\\\textbf{【答案】}"
         format_rules = (
             "【必须包含的结构化板块 (使用 LaTeX 粗体 `\\\\textbf{...}`)，全篇只有这两个板块，不得增删】:\n"
             "1. \\\\textbf{【答案】}：最开头第一行直接醒目输出该单选题的唯一正确选项字母（如 A、B、C 或 D），随后直接换行进入解析；严禁包含长篇推导。\n"
-            "2. \\\\textbf{【解析】}：极简凝练地写出选项推导、排除理由与分析步骤。"
+            "2. \\\\textbf{【解析】}：极简凝练地写出选项推导、排除理由与分析步骤。\n"
+            f"{single_answer_rule}"
         )
     elif question_type == "multi_choice":
         first_block_header = "\\\\textbf{【答案】}"
         format_rules = (
             "【必须包含的结构化板块 (使用 LaTeX 粗体 `\\\\textbf{...}`)，全篇只有这两个板块，不得增删】:\n"
             "1. \\\\textbf{【答案】}：最开头第一行直接醒目输出该多选题的所有正确选项字母（如 AB、ACD），随后直接换行进入解析；严禁包含长篇推导。\n"
-            "2. \\\\textbf{【解析】}：极简凝练地写出各个选项的逐一推导、证明与分析步骤。"
+            "2. \\\\textbf{【解析】}：极简凝练地写出各个选项的逐一推导、证明与分析步骤。\n"
+            f"{single_answer_rule}"
         )
     elif question_type == "fill_in_blank":
         first_block_header = "\\\\textbf{【答案】}"
         format_rules = (
             "【必须包含的结构化板块 (使用 LaTeX 粗体 `\\\\textbf{...}`)，全篇只有这两个板块，不得增删】:\n"
             "1. \\\\textbf{【答案】}：最开头第一行直接醒目输出该填空题最终正确答案（如具体数值、公式、集合或区间），随后直接换行进入解析；严禁包含长篇推导。\n"
-            "2. \\\\textbf{【解析】}：极简凝练地写出求解推导与分析步骤。"
+            "2. \\\\textbf{【解析】}：极简凝练地写出求解推导与分析步骤。\n"
+            f"{single_answer_rule}"
         )
     else:
         first_block_header = "\\\\textbf{【答案】}"
         format_rules = (
             "【必须包含的结构化板块 (使用 LaTeX 粗体 `\\\\textbf{...}`)，全篇只有这两个板块，不得增删】:\n"
             "1. \\\\textbf{【答案】}：最开头第一行直接醒目输出最终结论，随后直接换行进入解析；若有多个小问（如 (1)、(2)），按小问分行依次给出各自结论。\n"
-            "2. \\\\textbf{【解析】}：符合高考卷面得分规范的标准解答步骤，写齐必要推理逻辑与定理依据，无冗余废话。"
+            "2. \\\\textbf{【解析】}：符合高考卷面得分规范的标准解答步骤，写齐必要推理逻辑与定理依据，无冗余废话。\n"
+            f"{single_answer_rule}"
         )
 
     system_instructions = (

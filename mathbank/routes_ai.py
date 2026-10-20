@@ -16,6 +16,7 @@ from mathbank.ai_providers import MultimodalProviderConfig, apply_bailian_thinki
 from mathbank.asset_security import AssetSecurityError, InvalidImageError, UploadTooLargeError, normalize_raster_image, normalize_upload_asset_reference, read_stream_limited, resolve_upload_asset
 from mathbank.auth import LOCAL_TOKEN
 from mathbank.database import engine
+from mathbank.latex_normalize import collapse_duplicate_answer_blocks
 from mathbank.math_markdown import compact_solution_markdown, normalize_question_math_markdown
 from mathbank.paper_helper import build_restricted_tex_environment
 from mathbank.prompts import COMMON_OCR_PROMPT, ILLUSTRATION_BOX_PROMPT, PDF_PAGE_ILLUSTRATION_BOX_PROMPT, build_ai_solve_prompts, build_classification_system_prompt, build_tikz_correction_prompt, build_tikz_draw_prompt
@@ -694,6 +695,15 @@ def ai_solve(
 
         # 排版紧凑化：模型偶发仍用 $$...$$ 逐式独立成行，这里兜底降级为行内 $...$。
         ai_message = compact_solution_markdown(ai_message)
+        # 双答案块防御：模型算错后自我推翻会输出第二个【答案】，而答案提取按第一处
+        # 定位——那是错答案。这里就地只保留最后一块，写库链上还有同一函数兜底。
+        ai_message, dropped_blocks = collapse_duplicate_answer_blocks(ai_message)
+        if dropped_blocks:
+            print(
+                f"[Solve API] Collapsed {dropped_blocks} duplicate answer "
+                f"block(s), kept the last one (provider={provider.provider_code}, "
+                f"model={model_name})."
+            )
 
         return {
             "status": "success",

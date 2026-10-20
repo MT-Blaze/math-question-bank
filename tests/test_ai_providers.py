@@ -354,6 +354,71 @@ def test_bailian_ocr_disables_thinking_with_bounded_completion():
     assert result["max_completion_tokens"] == 16384
 
 
+@pytest.mark.parametrize("task", ["solve", "classify", "parse", "draw", "ocr"])
+def test_qwen38_flash_is_a_no_thinking_fast_tier_on_every_task(task):
+    """qwen3.8-flash 属于 Qwen 契约（用 max_completion_tokens），但任何任务都不许带思考。
+
+    它此前掉进「非 Qwen」分支：既没有 token 上限也没有思考开关，网关默认开思考，
+    实测单卷分类 5000+ 推理 token、130 秒直接顶穿 120 秒 deadline 导致整卷静默降级。
+    与 reasoning_effort / thinking_budget 绝不同发（这两枚是别档的控制参数）。
+    """
+    result = apply_bailian_thinking_policy(
+        {
+            "model": "qwen3.8-flash",
+            "max_tokens": 8192,
+            "reasoning_effort": "high",
+            "thinking_budget": 4096,
+        },
+        provider_code="bailian",
+        model_name="qwen3.8-flash",
+        task=task,
+        thinking_enabled=True,
+    )
+
+    assert result["enable_thinking"] is False
+    assert result["max_completion_tokens"] == 16384
+    assert "reasoning_effort" not in result
+    assert "thinking_budget" not in result
+    assert "max_tokens" not in result
+
+
+@pytest.mark.parametrize(
+    "task",
+    ["classify", "parse", "paper_selection", "latex_diagnostic", "solve"],
+)
+def test_bailian_non_qwen_models_disable_thinking_even_for_solve(task):
+    """非 Qwen 模型在网关上默认开思考，解答也必须硬关掉——前端传什么都不算。
+
+    批量解答是唯一会走 solve 的入口，53 tok/s 的推理输出会把秒级任务拖成分钟级。
+    token 契约保持不动（这些模型没有 max_completion_tokens 语义）。
+    """
+    result = apply_bailian_thinking_policy(
+        {"model": "deepseek-v4.1-flash", "max_tokens": 4096},
+        provider_code="bailian",
+        model_name="deepseek-v4.1-flash",
+        task=task,
+        thinking_enabled=True,
+    )
+
+    assert result["enable_thinking"] is False
+    assert result["max_tokens"] == 4096
+    assert "max_completion_tokens" not in result
+
+
+def test_qwen37_solve_still_follows_the_frontend_switch():
+    """关思考只加在非 Qwen 分支：Qwen3.7 的解答仍服从【深度思考】复选框。"""
+    result = apply_bailian_thinking_policy(
+        {"model": "qwen3.7-plus"},
+        provider_code="bailian",
+        model_name="qwen3.7-plus",
+        task="solve",
+        thinking_enabled=True,
+    )
+
+    assert result["enable_thinking"] is True
+    assert result["thinking_budget"] == 16384
+
+
 def test_bailian_model_id_is_preserved_after_effort_is_removed():
     config = resolve_text_provider(
         "BAILIAN/qwen3.7-max:high",

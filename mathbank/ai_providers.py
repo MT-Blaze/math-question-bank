@@ -211,6 +211,12 @@ _BAILIAN_NO_THINKING_TASKS = frozenset(
     {"classify", "parse", "paper_selection", "latex_diagnostic"}
 )
 
+# 非 Qwen 模型在百炼网关上没有「前端开关」可服从：解答是它唯一还会带思考的任务，
+# 而这类模型默认开思考（实测网关 53 tok/s），批量解答会拖成分钟级并按推理 token 计费。
+# 所以这里只在非 Qwen 分支上额外关掉 solve，绝不往 _BAILIAN_NO_THINKING_TASKS 里加
+# "solve"——那会连带把 Qwen3.7/3.8 Max 的解答思考也一起关掉，违反「解答服从前端开关」。
+_BAILIAN_NON_QWEN_NO_THINKING_TASKS = _BAILIAN_NO_THINKING_TASKS | {"solve"}
+
 # DeepSeek V4-generation models (``deepseek-flash`` = V4.1-Flash, ``deepseek-v4-pro``)
 # expose the OpenAI-style ``thinking`` toggle plus ``reasoning_effort``.  The
 # legacy ``deepseek-chat`` / ``deepseek-reasoner`` entries do not accept the
@@ -327,10 +333,11 @@ def apply_bailian_thinking_policy(
     Other providers and transit/custom requests are returned unchanged so this
     policy cannot alter DeepSeek, SiliconFlow, transit, or saved legacy
     behavior. Qwen3.7 uses ``thinking_budget`` while Qwen3.8 Max uses
-    ``reasoning_effort``; the two controls are never sent together. Non-Qwen
-    models served through the Bailian gateway only get the generic
-    ``enable_thinking`` off-switch for structured tasks, and no token fields
-    are rewritten there.
+    ``reasoning_effort``; the two controls are never sent together. Qwen3.8
+    Flash is a fast-execution tier: it uses ``max_completion_tokens`` and always
+    gets ``enable_thinking`` off, on every task. Non-Qwen models served through
+    the Bailian gateway only get the generic ``enable_thinking`` off-switch for
+    structured tasks and ``solve``, and no token fields are rewritten there.
     """
 
     result = dict(payload)
@@ -341,14 +348,17 @@ def apply_bailian_thinking_policy(
     is_qwen38_max = normalized_model == "qwen3.8-max" or normalized_model.startswith(
         "qwen3.8-max-"
     )
+    is_qwen38_flash = normalized_model == "qwen3.8-flash" or normalized_model.startswith(
+        "qwen3.8-flash-"
+    )
     if normalized_provider != "bailian":
         return result
-    if not (is_qwen37 or is_qwen38_max):
+    if not (is_qwen37 or is_qwen38_max or is_qwen38_flash):
         # 网关转发的非 Qwen 模型（实测在用的 deepseek-v4.1-flash）没有 Qwen 的
         # thinking_budget / max_completion_tokens 契约，只有通用的 enable_thinking，
-        # 且默认开思考。结构化任务必须显式关掉，否则批量解析按 53 tok/s 的
+        # 且默认开思考。结构化任务与解答必须显式关掉，否则批量解析按 53 tok/s 的
         # 推理输出计费并拖成分钟级；其余取值不动，交给调用方与厂商默认。
-        if normalized_task in _BAILIAN_NO_THINKING_TASKS:
+        if normalized_task in _BAILIAN_NON_QWEN_NO_THINKING_TASKS:
             result["enable_thinking"] = False
         return result
 
@@ -358,6 +368,15 @@ def apply_bailian_thinking_policy(
     # Current Qwen APIs deprecate max_tokens; structured JSON tasks should not
     # impose the old answer-only cap because it can truncate valid JSON.
     result.pop("max_tokens", None)
+
+    if is_qwen38_flash:
+        # qwen3.8-flash 带 Qwen 的 max_completion_tokens 契约，但它默认自带 5000+
+        # 推理 token：实测单卷分类 130 秒直接顶穿 120 秒 deadline，导致整卷静默降级。
+        # 它是快速执行档，不区分任务一律关思考，且绝不下发 reasoning_effort 或
+        # thinking_budget（这两枚控制参数与 flash 的契约无关，同发会被网关拒绝）。
+        result["enable_thinking"] = False
+        result["max_completion_tokens"] = 16384
+        return result
 
     if normalized_task == "ocr":
         result["enable_thinking"] = False

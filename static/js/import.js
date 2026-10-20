@@ -11190,6 +11190,9 @@ function saveParsedQuestion(index) {
                 formData.append('content', q.content || '');
                 formData.append('question_type', q.question_type || 'detailed_answer');
                 formData.append('model', typeof systemPreferSolveModel !== 'undefined' ? systemPreferSolveModel : '');
+                // 批量入口没有【深度思考】复选框，必须显式关思考：漏传时服务端默认 enabled，
+                // 每题都按推理输出计费和拖慢（实测百炼网关 3500 字答案 29 秒）。
+                formData.append('thinking', 'disabled');
                 formData.append('stream', 'false');
 
                 const res = await fetch('/api/ai/solve', {
@@ -11311,6 +11314,8 @@ function saveParsedQuestion(index) {
                         formData.append('content', q.content || '');
                         formData.append('question_type', q.question_type || 'detailed_answer');
                         formData.append('model', typeof systemPreferSolveModel !== 'undefined' ? systemPreferSolveModel : '');
+                        // 同上：队列里的批量解答一律关思考。
+                        formData.append('thinking', 'disabled');
                         formData.append('stream', 'false');
 
                         const res = await fetch('/api/ai/solve', {

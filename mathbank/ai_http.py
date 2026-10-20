@@ -6,6 +6,10 @@ from typing import Any, Callable, Dict, Optional, Protocol
 
 import requests
 
+# 免代理豁免域名：国内网关走系统代理会被拖慢甚至连接失败，必须直连。
+# qianwenaiapi.com 是实测在用的百炼兼容模式网关（token-plan.maas.qianwenaiapi.com）。
+_DOMESTIC_NO_PROXY_DOMAINS = ("aliyuncs.com", "siliconflow", "qianwenaiapi.com")
+
 
 class ChatProviderConfig(Protocol):
     provider_label: str
@@ -27,7 +31,7 @@ def robust_request_post(url: str, **kwargs):
     """
 
     is_domestic = any(
-        domain in url.lower() for domain in ("aliyuncs.com", "siliconflow")
+        domain in url.lower() for domain in _DOMESTIC_NO_PROXY_DOMAINS
     )
     if is_domestic and "proxies" not in kwargs:
         kwargs["proxies"] = {"http": None, "https": None}
@@ -53,7 +57,7 @@ def robust_request_get(url: str, **kwargs):
     """GET with the project's existing proxy-bypass retry behavior."""
 
     is_domestic = any(
-        domain in url.lower() for domain in ("aliyuncs.com", "siliconflow")
+        domain in url.lower() for domain in _DOMESTIC_NO_PROXY_DOMAINS
     )
     if is_domestic and "proxies" not in kwargs:
         kwargs["proxies"] = {"http": None, "https": None}

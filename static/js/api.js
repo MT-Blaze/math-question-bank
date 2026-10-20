@@ -1085,7 +1085,10 @@ window.topicName = function(t) {
         }
 
         let systemPreferEngine = 'siliconflow';
-        let systemPreferSolveModel = 'deepseek-flash';
+        // 首屏抢跑防线：/api/settings 返回前这里必须是空串。任何写死的厂商默认值
+        // 都会被 import.js 原样发出去，在只配了百炼密钥的机器上撞「未配置 DEEPSEEK_API_KEY」。
+        // 空串交给后端按 PREFER_SOLVE_MODEL → PREFER_PARSE_MODEL 兜底。
+        let systemPreferSolveModel = "";
         let systemPreferParseModel = 'deepseek-flash';
 
         // Fetch Environment Config Settings Status
@@ -1095,12 +1098,15 @@ window.topicName = function(t) {
                 .then(r => r.json())
                 .then(settings => {
                     systemPreferEngine = settings.prefer_engine || 'siliconflow';
-                    systemPreferSolveModel = settings.prefer_solve_model || 'deepseek-flash';
+                    // 后端没配 PREFER_SOLVE_MODEL 时这里留空串：/api/ai/solve 缺省即按
+                    // PREFER_SOLVE_MODEL → PREFER_PARSE_MODEL → deepseek-flash 兜底，
+                    // 比前端写死一个「大概率没密钥」的厂商准确得多。
+                    systemPreferSolveModel = settings.prefer_solve_model || '';
                     systemPreferParseModel = settings.prefer_parse_model || 'deepseek-flash';
                     
                     // Update main page model selector to match preference
                     const mainModelSelect = document.getElementById('aiModelSelect');
-                    if (mainModelSelect) {
+                    if (mainModelSelect && systemPreferSolveModel) {
                         mainModelSelect.value = systemPreferSolveModel;
                     }
                     
