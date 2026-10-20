@@ -998,7 +998,7 @@ def test_braced_aligned_and_array_are_rewritten_to_cases():
     assert "aligned" not in out, out
     assert r"\left\{" not in out and "array" not in out, out
     assert out.count(r"\begin{cases}") == 2, out
-    assert r"2a&=2\\ a+b&=0" in out, "cases 里的 & 对齐必须原样保留"
+    assert r"2a=2\\ a+b=0" in out, "aligned 遗留的 a&=0 式 & 在 cases 里会拉出大空白，必须删掉"
     assert normalize_for_storage(out, is_answer=True) == out, "cases 归一不幂等"
 
 

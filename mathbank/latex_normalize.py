@@ -1050,6 +1050,176 @@ def normalize_piecewise_math(text: str) -> str:
     return _BRACED_ROW_ENV_RE.sub(_braced_env_to_cases, text)
 
 
+# ---------------------------------------------------------------------------
+# 分段函数补对齐符：``\begin{cases} 1, x>0 \\ -1, x<0 \end{cases}`` → ``1, & x>0``
+# ---------------------------------------------------------------------------
+# cases 缺 ``&`` 时条件列在 PDF 里跟着表达式长短左右漂，无法竖直对齐。判定极度保守：
+# 整块**每一行**都必须恰好有一个顶层逗号、逗号前是不含关系符的表达式、逗号后是带
+# 关系符（或「其他/否则」）的条件，才整块补；任一行不满足就整块不动。方程组 /
+# 不等式组（行内没有分隔逗号）本来就是单栏，天然不受影响。
+_CASES_BLOCK_RE = re.compile(r"(\\begin\{cases\})(.*?)(\\end\{cases\})", re.S)
+_CASES_ROW_SPLIT_RE = re.compile(r"(\\\\(?:\[[^\]]*\])?)")
+_CASES_RELATION_RE = re.compile(
+    r"[<>=≤≥≠]|\\(?:le|ge|leq|geq|leqslant|geqslant|ne|neq|lt|gt|in|notin)(?![a-zA-Z])"
+)
+_CASES_OTHERWISE_RE = re.compile(r"其他|其它|否则|otherwise")
+_CASES_TRAILING_PUNCT = ",，.。;；"
+
+
+def _top_level_commas(row: str) -> list:
+    positions: list = []
+    depth = 0
+    i = 0
+    while i < len(row):
+        ch = row[i]
+        if ch == "\\":
+            nxt = row[i + 1] if i + 1 < len(row) else ""
+            if nxt.isalpha():
+                i += 2
+                while i < len(row) and row[i].isalpha():
+                    i += 1
+                continue
+            if nxt == "{":
+                depth += 1
+            elif nxt == "}":
+                depth -= 1
+            i += 2  # ``\,`` 是细空格，不是分隔逗号
+            continue
+        if ch in "{([":
+            depth += 1
+        elif ch in "})]":
+            depth -= 1
+        elif ch in ",，" and depth == 0:
+            positions.append(i)
+        if depth < 0:
+            return [-1]
+        i += 1
+    return positions
+
+
+def _align_cases_row(row: str):
+    """返回 ``(新行, None)``；不认识时返回 ``(None, 原因)``；行内无分隔逗号返回 ``(None, "")``。"""
+    core = row.rstrip()
+    trailing_ws = row[len(core):]
+    stripped = core.rstrip(_CASES_TRAILING_PUNCT + " \t")
+    tail = core[len(stripped):]
+    commas = _top_level_commas(stripped)
+    if commas == [-1]:
+        return None, "括号不配对"
+    if not commas:
+        return None, ""
+    if len(commas) > 1:
+        return None, "一行里有多个顶层逗号"
+    cut = commas[0]
+    left, comma, right = stripped[:cut], stripped[cut], stripped[cut + 1:]
+    if not left.strip():
+        return None, "逗号前没有表达式"
+    if _CASES_RELATION_RE.search(left):
+        return None, "逗号前含关系符（像方程/不等式而非取值）"
+    if not (_CASES_RELATION_RE.search(right) or _CASES_OTHERWISE_RE.search(right)):
+        return None, "逗号后不像条件（无关系符）"
+    return left.rstrip() + comma + " & " + right.lstrip() + tail + trailing_ws, None
+
+
+_ALIGNED_AMP_RE = re.compile(
+    r"[ \t]*&[ \t]*(?=[<>=≤≥≠]|\\(?:le|ge|leq|geq|leqslant|geqslant|ne|neq|lt|gt|in|notin)(?![a-zA-Z]))"
+)
+_LEADING_AMP_RE = re.compile(r"^(\s*)&[ \t]*")
+
+
+def _strip_stale_amps(body: str) -> str:
+    """删 aligned 遗留的 ``&``：行首孤立的 ``&``，以及紧贴关系符之前的 ``a&=0`` 式 ``&``。"""
+    pieces = _CASES_ROW_SPLIT_RE.split(body)
+    for idx in range(0, len(pieces), 2):
+        # 行首 & 紧贴 ``\\`` 时留一个空格：``\\&\dfrac`` 直接删成 ``\\\dfrac`` 会被认成多转义的控制词。
+        row = _LEADING_AMP_RE.sub(lambda m: m.group(1) or (" " if idx else ""), pieces[idx])
+        pieces[idx] = _ALIGNED_AMP_RE.sub("", row)
+    return "".join(pieces)
+
+
+def _fill_missing_amps(body: str):
+    """部分行已是「值, & 条件」、其余行缺 ``&`` 时补齐；任一行判不准返回 None。"""
+    pieces = _CASES_ROW_SPLIT_RE.split(body)
+    filled = 0
+    for idx in range(0, len(pieces), 2):
+        row = pieces[idx]
+        if not row.strip():
+            continue
+        count = row.count("&")
+        if count > 1:
+            return None
+        if count == 1:
+            continue
+        new_row, _reason = _align_cases_row(row)
+        if new_row is None:
+            return None
+        pieces[idx] = new_row
+        filled += 1
+    return "".join(pieces) if filled else None
+
+
+def classify_cases_body(body: str) -> tuple:
+    """判定单个 cases 块体：返回 ``(状态, 新块体或 None, 原因)``。
+
+    状态：``has_amp`` 已有对齐符 / ``aligned`` 可补 / ``system`` 方程组·不等式组（单栏，
+    不需要 ``&``）/ ``ambiguous`` 模棱两可（不改）/ ``stale_amp`` aligned 遗留的错位
+    ``&``（行首孤立或紧贴关系符之前），删掉后重判的结果。
+    """
+    if "\\begin" in body:
+        return "ambiguous", None, "块内嵌套环境"
+    if "&" in body:
+        # aligned 的 & 用来对齐等号，搬进 cases 后成了「表达式 | 条件」分栏，关系符前会空出一大段。
+        cleaned = _strip_stale_amps(body)
+        if cleaned != body:
+            status, new_body, reason = classify_cases_body(cleaned)
+            if status == "ambiguous":
+                return status, None, reason
+            return "stale_amp", new_body if new_body is not None else cleaned, ""
+        filled = _fill_missing_amps(body)
+        if filled is not None:
+            return "aligned", filled, ""
+        if any(
+            "&" not in row for row in _CASES_ROW_SPLIT_RE.split(body)[::2] if row.strip()
+        ):
+            return "ambiguous", None, "部分行有 &、部分行没有，且补不齐"
+        return "has_amp", None, ""
+    pieces = _CASES_ROW_SPLIT_RE.split(body)
+    out = list(pieces)
+    aligned_rows = 0
+    plain_rows = 0
+    for idx in range(0, len(pieces), 2):
+        row = pieces[idx]
+        if not row.strip():
+            continue
+        new_row, reason = _align_cases_row(row)
+        if new_row is not None:
+            out[idx] = new_row
+            aligned_rows += 1
+        elif reason:
+            return "ambiguous", None, reason
+        else:
+            plain_rows += 1
+    if aligned_rows == 0:
+        return "system", None, ""
+    if plain_rows:
+        return "ambiguous", None, "部分行有「值, 条件」、部分行没有"
+    return "aligned", "".join(out), ""
+
+
+def align_cases_conditions(text: str) -> str:
+    """给缺 ``&`` 的分段函数 cases 补对齐符、删 aligned 遗留的错位 ``&``；判不准的块原样保留。幂等。"""
+    if not text or "\\begin{cases}" not in text:
+        return text
+
+    def _sub(match: "re.Match[str]") -> str:
+        status, body, _reason = classify_cases_body(match.group(2))
+        if status not in ("aligned", "stale_amp"):
+            return match.group(0)
+        return match.group(1) + body + match.group(3)
+
+    return _CASES_BLOCK_RE.sub(_sub, text)
+
+
 def normalize_for_storage(value: str, question_type: str = "", is_answer: bool = False) -> str:
     """入库前对题干/解析执行的**唯一**完整归一化链，顺序即语义，不可调换。
 
@@ -1097,6 +1267,8 @@ def normalize_for_storage(value: str, question_type: str = "", is_answer: bool =
     value = repair_complement_glyphs(value)[0]
     # 分段结构归一（题库只允许 cases）：题干与解析同一条规则，写法分歧在此终结。
     value = normalize_piecewise_math(value)
+    # 必须紧跟 cases 归一：aligned 刚被改写成 cases，遗留的 ``a&=0`` 式 & 要在这里清掉。
+    value = align_cases_conditions(value)
     value = strip_page_markers(value)
     if is_answer:
         # 越界标题必须先截：吞进来的「三、填空题」不是板块标题，扁平化会把它们
