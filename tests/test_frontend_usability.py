@@ -210,7 +210,7 @@ for (const [source, expected] of [
   [String.raw`$a$$b$$c$$d$$e$`, String.raw`$\displaystyle a$$\displaystyle b$$\displaystyle c$$\displaystyle d$$\displaystyle e$`],
   [String.raw`prefix$$a+b$$suffix`, String.raw`prefix$$a+b$$suffix`],
   [String.raw`text $a$ and $b$`, String.raw`text $\displaystyle a$ and $\displaystyle b$`],
-  [String.raw`\(x < \frac{1}{2}\)`, String.raw`\(\displaystyle x < \frac{1}{2}\)`],
+  [String.raw`\(a \lt \frac{1}{2}\)`, String.raw`\(\displaystyle a \lt \frac{1}{2}\)`],
   [String.raw`$\displaystyle \frac{1}{2}$`, String.raw`$\displaystyle \frac{1}{2}$`],
 ]) {
   const rendered = window.preprocessFormulaForKaTeX(source);
@@ -223,6 +223,17 @@ for (const [source, expected] of [
   if (rendered.includes('@@MATH_PLACEHOLDER_')) {
     throw new Error(`math placeholder leaked: ${rendered}`);
   }
+}
+
+// 裸 < 在 \(..\) 里走的是「占位符恢复时 escapeHtml」这条路（$..$ 那条早在保护前就换成 \lt ），
+// 所以第二趟会把 & 再转义一次、逐字并不幂等；这里只钉「照样吃到 \displaystyle」，
+// 浏览器把 innerHTML 解回 textContent 后 KaTeX 拿到的仍是 `x < \frac{1}{2}`。
+const rawLess = window.preprocessFormulaForKaTeX(String.raw`\(x < \frac{1}{2}\)`);
+if (!rawLess.startsWith(String.raw`\(\displaystyle x`)) {
+  throw new Error(`裸 < 的行内公式没拿到 displaystyle: ${rawLess}`);
+}
+if (rawLess.includes('@@MATH_PLACEHOLDER_')) {
+  throw new Error(`math placeholder leaked: ${rawLess}`);
 }
 """
     result = _run_node_script(script)

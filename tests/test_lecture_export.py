@@ -316,8 +316,11 @@ def test_preamble_is_shared_not_copied():
     text = source.read_text(encoding="utf-8")
     assert "build_exam_preamble" in text
     assert r"\documentclass[fontset=fandol]{exam-zh}" not in text
-    # 统考卷行内公式口径：行内一律 displaystyle，试卷与讲义共用同一条 \everymath。
-    assert r"\everymath{\displaystyle}" in "\n".join(build_exam_preamble())
+    # 统考卷行内公式口径：行内一律 displaystyle，试卷与讲义共用同一条 \everymath；
+    # cases 的单元格就地清回默认风格，否则分段函数里的 \frac 与条件文字一样高、行距被顶开。
+    preamble = "\n".join(build_exam_preamble())
+    assert r"\everymath{\displaystyle}" in preamble
+    assert r"\AtBeginEnvironment{cases}{\everymath={}}" in preamble
 
 
 def test_collect_images_resolves_both_reference_forms(tmp_path):

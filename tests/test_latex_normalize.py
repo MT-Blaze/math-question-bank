@@ -302,6 +302,25 @@ def test_existing_choices_env_keeps_bare_labels_without_content():
     assert "\\item B．\n" in out
 
 
+def test_choice_label_dots_consumes_the_original_punctuation():
+    r"""选项标号统一成全角点必须**吃掉**原标点，且对已统一的写法幂等。
+
+    前视断言写法只替换标号字母、不消费后面的 `.`/`、`/`．`，于是
+    `\item A. 甲` 会排成 `A．. 甲`、已经标准的 `\item B．` 会变成 `B．．`，
+    既不幂等又把脏标点写进库与 PDF。裸标号（后面没有任何标点）保持原样。
+    """
+
+    from mathbank.latex_normalize import normalize_choice_label_dots
+
+    env = "\\begin{choices}\n%s\n\\end{choices}"
+    unified = normalize_choice_label_dots(env % "\\item A. 甲\n\\item B、乙\n\\item C，丙\n\\item D: 丁")
+    assert unified == env % "\\item A． 甲\n\\item B．乙\n\\item C．丙\n\\item D． 丁", unified
+    assert normalize_choice_label_dots(unified) == unified, "统一后必须幂等"
+    bare = env % "\\item E\n\\item F．已有全角点"
+    assert normalize_choice_label_dots(bare) == bare, normalize_choice_label_dots(bare)
+    assert "．．" not in normalize_choice_label_dots(env % "\\item A．")
+
+
 def test_rowspan_html_table_kept_verbatim():
     """过于复杂的 HTML 表（rowspan）不强行转 tabular，避免产出错误 LaTeX。"""
     html = '<table><tr><td rowspan="2">a</td><td>b</td></tr><tr><td>c</td></tr></table>'

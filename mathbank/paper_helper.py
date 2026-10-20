@@ -759,6 +759,12 @@ def build_exam_preamble(include_answers: bool = False, title: str = "") -> list:
     lines.append(r"    }")
     lines.append(r"}")
     lines.append(r"\everymath{\displaystyle}")
+    # 分段函数的行必须留在 textstyle（与 KaTeX 同口径）：\everymath 会把 cases 的每个
+    # 单元格也抬成 displaystyle，实测分子分母涨到正文同号 10.5pt、行盒 17.85pt，卷面就成了
+    # 「括号里一个高分数、旁边的条件文字悬在半空」；KaTeX 的 cases 单元格恒为小一号
+    # （行内与独立公式都一样）。就地清空 \everymath 后实测回到 7.88pt / 行盒 14.88pt，
+    # 而行内 $x<\frac{1}{2}$ 仍是 10.5pt——预览与成品这才相等。
+    lines.append(r"\AtBeginEnvironment{cases}{\everymath={}}")
     lines.append("")
     lines.append(f"\\title{{{paper_title}}}")
     lines.append(r"\subject{数学}")

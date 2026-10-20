@@ -1247,9 +1247,10 @@ def normalize_choice_paren_macro(value: str, question_type: str = "") -> str:
 
 # 选择题选项标号统一为全角点（U+FF0E）
 # 覆盖形态：A. / A、/ A，/ A: / A： → A．
+# ⚠️ 必须**消费**原标点而不是用前视断言：只看不吃会让 `\item A. 甲` 变成 `A．. 甲`、
+# 让已经统一的 `\item B．` 变成 `B．．`，既不幂等又把脏标点写进库和 PDF。
 _CHOICE_LABEL_DOT_RE = re.compile(
-    r"(\\item\s+)([A-H])(?=[\.、．,，:：])",
-    re.MULTILINE,
+    r"(\\item\s+)([A-H])\s*[\.、．,，:：]",
 )
 
 

@@ -592,6 +592,9 @@ def _book_preamble(title: str) -> list:
     lines = [r"\documentclass[12pt,lang=cn,chinesefont=nofont]{elegantbook}"]
     lines.extend(_mb_shim_lines())
     lines.append(r"\everymath{\displaystyle}")
+    # 与组卷侧同口径：行内抬到 displaystyle，但 cases 的单元格留在 textstyle，
+    # 否则分段函数里的 \frac 会和条件文字一样高、把行距顶开（KaTeX 不是这样排的）。
+    lines.append(r"\AtBeginEnvironment{cases}{\everymath={}}")
     lines.append(r"\title{%s}" % escape_text(title))
     lines.append("")
     return lines

@@ -2849,6 +2849,10 @@ function deleteDraft(id) {
                                 i = take(i, end + 2, closeDisplayMath(src.slice(i, end + 2)));
                                 continue;
                             }
+                            // 落单的 `$$`（没有闭合）不当独立公式，也不当行内公式的开头：
+                            // 只前进一格，让第二个 $ 去配后面的 $，与旧逐对正则的行为一致。
+                            i += 1;
+                            continue;
                         }
                         const end = src.indexOf("$", i + 1);
                         if (end >= 0) {
