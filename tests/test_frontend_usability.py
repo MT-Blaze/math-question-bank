@@ -3805,6 +3805,163 @@ console.log('PREFILL_OK');
     assert "PREFILL_OK" in result.stdout, result.stdout + result.stderr
 
 
+def test_filename_prefill_covers_real_world_grade_exam_and_school_forms():
+    """真实文件名摸底的四类缺口：年级带「年级」、长尾卷名、联考优先级、学校别名/省域。
+
+    旧实现的四个静默失败：
+    1) 「高一年级上学期」因正则要求「高一」后直接跟「上/下」而年级学期双双留空；
+    2) 「第二次阶段性考试」「综合素质检测」不在词表，考试类型留空；
+    3) 词表里「期中」排在「联考」之前，「11月期中联考」被读成期中；
+    4) 学校只比对 name：「哈师大附中」对不上词库名「哈师附」，而「省实验」在
+       吉林/黑龙江各有一所，裸最长匹配按词库顺序把黑龙江卷归到吉林。
+    """
+
+    import_source = _read(IMPORT_JS_FOR_SOURCE)
+    helper = _extract_import_source(
+        import_source, "function prefillSourceFromFilename", "function buildStandardPaperTitle")
+    # 助手必须落在同一段提取范围内，否则测试替身里根本不存在这些函数。
+    for fn in ("function schoolMatchKeys(", "function detectSourceGeoContext(",
+               "function matchSchoolFromFilename("):
+        assert fn in helper, fn
+
+    script = _SOURCE_STUB_PRELUDE + "\n" + helper + r"""
+window._schoolsDict = [
+  { name: '哈师附', short_name: '哈师附', full_name: '哈尔滨师范大学附属中学', province: '黑龙江省', city: '哈尔滨市' },
+  { name: '东北师大附中', short_name: '东北师大附中', full_name: '东北师范大学附属中学', province: '吉林省', city: '长春市' },
+  { name: '省实验', short_name: '省实验', full_name: '吉林省实验中学', province: '吉林省', city: '长春市' },
+  { name: '省实验', short_name: '省实验', full_name: '黑龙江省实验中学', province: '黑龙江省', city: '哈尔滨市' },
+  { name: '德强', short_name: '德强', full_name: '哈尔滨德强高级中学', province: '黑龙江省', city: '哈尔滨市' },
+];
+
+const CASES = [
+  ['2024年哈师大附中高一年级上学期10月月考.pdf',
+    { grade: 'g1', sem: '上', exam: '10月月考', school: '哈师附', province: '黑龙江省', city: '哈尔滨市' }],
+  ['2024年东北师大附中高三上学期第二次阶段性考试.pdf',
+    { grade: 'g3', sem: '上', exam: '第二次阶段性考试', school: '东北师大附中', province: '吉林省', city: '长春市' }],
+  ['2024年吉林省省实验高二下学期综合素质检测.pdf',
+    { grade: 'g2', sem: '下', exam: '综合素质检测', school: '省实验', province: '吉林省', city: '长春市' }],
+  // 联考优先于期中，且保留月份。
+  ['2024年德强高中高一上学期11月期中联考.pdf',
+    { grade: 'g1', sem: '上', exam: '11月联考', school: '德强', province: '黑龙江省', city: '哈尔滨市' }],
+  ['2024年高三上学期期中联考.pdf', { exam: '联考' }],
+  // 全称直接命中：黑龙江的「省实验」必须压过吉林的同名简称。
+  ['2024年黑龙江省实验中学高一上学期期中考试.pdf',
+    { school: '省实验', province: '黑龙江省', city: '哈尔滨市' }],
+  // 文件名写了省、但从头到尾只出现简称：必须强制同省。
+  ['2024年黑龙江省省实验高一上学期期中考试.pdf',
+    { school: '省实验', province: '黑龙江省', city: '哈尔滨市' }],
+  // 只写「师大附中」没有城市缩写：按省域在词库里召回唯一候选。
+  ['2024年黑龙江省师大附中高一上学期期中考试.pdf',
+    { school: '哈师附', province: '黑龙江省', city: '哈尔滨市' }],
+  // 没有任何省/市线索的两所「省实验」→ 不猜，留给用户手选。
+  ['2024年省实验高一上学期期中考试.pdf', { school: '', province: '', city: '' }],
+];
+
+const FIELDS = {
+  year: 'importSrcYear', grade: 'importApplicableGrade', sem: 'importSrcSemester',
+  exam: 'importSrcExamType', school: 'importSrcRegion', province: 'importSrcProvince',
+  city: 'importSrcCity',
+};
+const fails = [];
+for (const [file, want] of CASES) {
+  Object.keys(FIELDS).forEach((k) => { document.getElementById(FIELDS[k]).value = ''; });
+  window._srcYearPair = null;
+  prefillSourceFromFilename(file);
+  for (const key of Object.keys(want)) {
+    const got = String(document.getElementById(FIELDS[key]).value);
+    if (got !== String(want[key])) {
+      fails.push(file + ' [' + key + '] 期望 ' + JSON.stringify(want[key]) + ' 实得 ' + JSON.stringify(got));
+    }
+  }
+}
+if (fails.length) { console.log('FAILS::' + fails.join(' ;; ')); process.exit(1); }
+console.log('REAL_FILENAME_OK');
+"""
+
+    result = _run_node_script(script)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "REAL_FILENAME_OK" in result.stdout, result.stdout + result.stderr
+
+
+def test_new_file_drop_clears_previous_source_fields_before_prefill():
+    """拖入新文件必须覆盖上一份文件的来源数据，而不是被「已有值」守卫留下。
+
+    实测 Bug：先后拖入两份试卷时，年份/学校/省市区/考试类型仍是第一份文件的；
+    prefill 的每一处赋值都带 `!el.value` 守卫，旧值因此永远不被覆盖。
+    """
+
+    import_source = _read(IMPORT_JS_FOR_SOURCE)
+    helper = _extract_import_source(
+        import_source, "let _sourcePrefillGeneration", "function buildStandardPaperTitle")
+    handler = _extract_import_source(
+        import_source, "function handleTexFileSelect", "// 旧版独立配图区在部分页面布局中不存在")
+
+    # 重置必须发生在分支判断之前，否则 docx/pdf/markdown 各自预填时旧值还在。
+    assert "resetImportSourceFields();" in handler
+    assert handler.index("resetImportSourceFields();") < handler.index("if (lowerFileName.endsWith('.docx'))")
+    assert "let _sourcePrefillGeneration" in helper
+
+    script = _SOURCE_STUB_PRELUDE + "\n" + helper + "\n" + handler + r"""
+const latexTextarea = new El('TEXTAREA');
+const texFileName = new El('SPAN');
+const texFileIcon = new El('I');
+const texInput = new El('INPUT');
+const texImagesSection = el('DIV', 'texImagesSection');
+el('DIV', 'pdfPageRangeContainer');
+El.prototype.classList = { add() {}, remove() {}, toggle() {}, contains() { return false; } };
+window._schoolsDict = [
+  { name: '德强', full_name: '哈尔滨德强高级中学', short_name: '德强', province: '黑龙江省', city: '哈尔滨市' },
+  { name: '大庆实验', full_name: '大庆实验中学', short_name: '大庆实验', province: '黑龙江省', city: '大庆市' },
+];
+window._regionsTree = [{ province: '黑龙江省', cities: ['哈尔滨市', '大庆市'] }];
+
+const FIELDS = {
+  year: 'importSrcYear', grade: 'importApplicableGrade', sem: 'importSrcSemester',
+  exam: 'importSrcExamType', school: 'importSrcRegion', province: 'importSrcProvince',
+  city: 'importSrcCity', title: 'importPaperTitle',
+};
+// 上一份文件留下的脏数据：新文件解析失败时这些值最容易被原样保留。
+document.getElementById('importSrcYear').value = '2021';
+document.getElementById('importApplicableGrade').value = 'g2';
+document.getElementById('importSrcSemester').value = '下';
+document.getElementById('importSrcExamType').value = '期末';
+document.getElementById('importSrcRegion').value = '老学校';
+document.getElementById('importSrcProvince').value = '吉林省';
+document.getElementById('importSrcCity').value = '长春市';
+document.getElementById('importPaperTitle').value = '旧试卷标题';
+window._srcYearPair = ['2021', '2022'];
+window._lastSrcProvince = '吉林省';
+window._lastSrcCity = '长春市';
+
+const fails = [];
+function check(label, want) {
+  const got = String(document.getElementById(FIELDS[label]).value);
+  if (got !== String(want)) fails.push(label + ' 期望 ' + JSON.stringify(want) + ' 实得 ' + JSON.stringify(got));
+}
+
+handleTexFileSelect({ name: '德强高中2022—2023学年度高一上学期11月月考+答案.pdf' });
+check('year', '2022'); check('grade', 'g1'); check('sem', '上');
+check('exam', '11月月考'); check('school', '德强');
+check('province', '黑龙江省'); check('city', '哈尔滨市');
+check('title', '德强高中2022—2023学年度高一上学期11月月考+答案');
+if (String(window._srcYearPair) !== '2022,2023') fails.push('yearPair 未随新文件更新: ' + window._srcYearPair);
+
+// 第二次拖入：必须在上一份的解析结果之上整体覆盖，而不是叠加。
+handleTexFileSelect({ name: '【数学】大庆实验中学2024-2025学年高一上学期期中考试试卷（含答案解析）.pdf' });
+check('year', '2024'); check('grade', 'g1'); check('sem', '上');
+check('exam', '期中'); check('school', '大庆实验');
+check('province', '黑龙江省'); check('city', '大庆市');
+check('title', '【数学】大庆实验中学2024-2025学年高一上学期期中考试试卷（含答案解析）');
+if (window._lastSrcCity !== '大庆市') fails.push('_lastSrcCity 未更新: ' + window._lastSrcCity);
+if (fails.length) { console.log('FAILS::' + fails.join(' ;; ')); process.exit(1); }
+console.log('RESET_OK');
+"""
+
+    result = _run_node_script(script)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "RESET_OK" in result.stdout, result.stdout + result.stderr
+
+
 def test_school_soft_warning_is_non_blocking_and_dismisses_on_match():
     """#13 学校软警告：词库外提示、命中或清空即消失，且绝不清空用户输入。"""
 

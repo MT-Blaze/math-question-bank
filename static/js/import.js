@@ -2028,6 +2028,9 @@
                     return;
                 }
                 window.currentTexReadToken = null;
+                // 新文件 = 新来源：先整体清空再预填，彻底覆盖上一份文件的数据。
+                const prefillGeneration = ++_sourcePrefillGeneration;
+                resetImportSourceFields();
                 const texImagesSection = document.getElementById('texImagesSection');
                 
                 if (lowerFileName.endsWith('.docx')) {
@@ -2065,6 +2068,9 @@
 
                     decodeTexFileLocally(file)
                         .then(source => {
+                            // 读取是异步的：期间又拖入新文件时，旧读取不得把旧文件名
+                            // 预填回已重置的表单。
+                            if (prefillGeneration !== _sourcePrefillGeneration) return;
                             latexTextarea.value = source;
                             latexTextarea.disabled = false;
                             const titleInput = document.getElementById('importPaperTitle');
@@ -2079,6 +2085,7 @@
                             showToast('Markdown 试卷已读入编辑框，可继续配图后一键拆解。', 'info');
                         })
                         .catch(error => {
+                            if (prefillGeneration !== _sourcePrefillGeneration) return;
                             latexTextarea.value = '';
                             latexTextarea.disabled = false;
                             texInput.value = '';
@@ -2114,6 +2121,9 @@
                     texFileIcon.className = "fa-solid fa-file-circle-check text-brand-500 text-xl mb-1.5 animate-bounce";
                     latexTextarea.disabled = true;
                     latexTextarea.value = '正在安全读取并检查 TeX 源码编码与结构...';
+                    // TeX 分支此前完全没走文件名预填；重置会让表单变空，必须同样补齐。
+                    if (typeof prefillSourceFromFilename === 'function') prefillSourceFromFilename(file.name);
+                    if (typeof applyStandardPaperTitle === 'function') applyStandardPaperTitle();
                     
                     const pdfRangeContainer = document.getElementById('pdfPageRangeContainer');
                     if (pdfRangeContainer) pdfRangeContainer.classList.add('hidden');
@@ -9050,6 +9060,28 @@
             }
         }
 
+        // 每次载入新试卷文件都先清空来源字段：上一份文件的年份/学校/省市区/考试类型
+        // 与新文件无关，prefill 的「已有值就不覆盖」守卫会让它们原样残留。
+        // 清空后仍由 prefill 按新文件名自动填充，解析不到的项保持为空由用户补。
+        let _sourcePrefillGeneration = 0;
+
+        function resetImportSourceFields() {
+            [
+                'importSrcYear', 'importApplicableGrade', 'importSrcSemester',
+                'importSrcExamType', 'importSrcRegion', 'importSrcProvince',
+                'importSrcCity', 'importPaperTitle',
+            ].forEach((id) => {
+                const el = document.getElementById(id);
+                if (el) el.value = '';
+            });
+            window._srcYearPair = null;
+            window._lastSrcProvince = '';
+            window._lastSrcCity = '';
+            fillCitySelect();
+            refreshSchoolDatalist();
+            if (typeof updateSchoolSoftWarning === 'function') updateSchoolSoftWarning();
+        }
+
         function prefillSourceFromFilename(name) {
             if (!name) return;
             const n = String(name).replace(/\.[^.]+$/, '');
@@ -9065,8 +9097,10 @@
             // 年份
             const ym = n.match(/(20\d{2})/);
             if (ym && yearEl && !yearEl.value.trim()) yearEl.value = ym[1];
-            // 年级学期：高二下 / 高2下 / 高一上学期 / 高一上半学期
-            const gm = n.match(/高\s*([一二三123])\s*([上下])(?:半?学期|学期)?/);
+            // 年级学期：高二下 / 高2下 / 高一上学期 / 高一年级上学期 / 高一上半学期
+            // 「年级」是真实卷面常见写法（如「高一年级上学期期中考试」），旧正则要求
+            // 「高一」后直接跟「上/下」，整条不命中，年级与学期双双留空。
+            const gm = n.match(/高\s*(?:([一二三123])\s*(?:年级)?)\s*([上下])(?:半?学期|学期)?/);
             if (gm) {
                 const gMap = { '一': 'g1', '二': 'g2', '三': 'g3', '1': 'g1', '2': 'g2', '3': 'g3' };
                 const g = gMap[gm[1]] || '';
@@ -9085,23 +9119,32 @@
             // 序数词必须和「月考」绑在一起才认：单字捕获会把「第一试卷」「三轮复习」切成「一」「轮」。
             const emMonth = n.match(/(\d{1,2})月(?:第[一二三四五六七八九十]+(?:次|轮)?)?月考/);
             const emOrdinal = !emMonth && n.match(/(第[一二三四五六七八九十]+(?:次|轮)?月考)/);
-            const em = emMonth || emOrdinal
-                || n.match(/(期末|期中|一模|二模|三模|高考|学考|会考|联考|模考|月考)/);
-            if (em && examEl && !examEl.value.trim()) {
-                examEl.value = emMonth ? `${emMonth[1]}月月考` : em[1];
+            // 「联考」优先于「期中/期末」：词表按顺序匹配时「11月期中联考」会先命中「期中」，
+            // 把整卷读成期中考试；联考是更精确的卷种，月份存在时一并保留（11月联考）。
+            const emJoint = !emMonth && !emOrdinal
+                && n.match(/(?:(\d{1,2})月[^，。；;、\s()（）]{0,6})?联考/);
+            // 长尾卷名：第二次阶段性考试 / 综合素质检测 / 学业质量检测 等真实语料写法。
+            // 序数仍必须与考试名绑定，避免「第一学期」被切成「第一」。
+            const emLong = !emMonth && !emOrdinal && !emJoint && (
+                n.match(/(第[一二三四五六七八九十]+(?:次|轮)?(?:阶段性(?:考试|检测|测试)|阶段(?:考试|检测|测试)|综合素质(?:检测|测试|评价)|质量(?:检测|监测)|学业水平(?:考试|测试)|调研(?:考试|测试)|适应性(?:考试|测试)|诊断(?:考试|测试)))/)
+                || n.match(/(阶段性(?:考试|检测|测试)|阶段(?:考试|检测|测试)|综合素质(?:检测|测试|评价)|质量(?:检测|监测)|学业水平(?:考试|测试)|调研(?:考试|测试)|适应性(?:考试|测试)|诊断(?:考试|测试))/)
+            );
+            const emGeneric = !emMonth && !emOrdinal && !emJoint && !emLong
+                && n.match(/(期末|期中|一模|二模|三模|四模|高考|学考|会考|模考|月考)/);
+            if (examEl && !examEl.value.trim()) {
+                if (emMonth) examEl.value = `${emMonth[1]}月月考`;
+                else if (emOrdinal) examEl.value = emOrdinal[1];
+                else if (emJoint) examEl.value = emJoint[1] ? `${emJoint[1]}月联考` : '联考';
+                else if (emLong) examEl.value = emLong[1];
+                else if (emGeneric) examEl.value = emGeneric[1];
             }
-            // 学校：词库最长匹配
+            // 学校：别名 + 省/市上下文匹配（见 matchSchoolFromFilename）
             let matchedSchool = null;
             if (window._schoolsDict && window._schoolsDict.length && regionEl && !regionEl.value.trim()) {
-                let best = null;
-                for (const s of window._schoolsDict) {
-                    if (s.name && n.includes(s.name) && (!best || s.name.length > best.name.length)) {
-                        best = s;
-                    }
-                }
+                const best = matchSchoolFromFilename(n);
                 if (best) {
                     matchedSchool = best;
-                    regionEl.value = best.name;
+                    regionEl.value = best.name || best.short_name || best.full_name || '';
                     if (provSel) provSel.value = best.province || '';
                     fillCitySelect();
                     const citySel = document.getElementById('importSrcCity');
@@ -9111,23 +9154,15 @@
                 }
             }
             // 未匹配到学校时，从文件名中直接提取「省 + 市」（如 辽宁省抚顺市第一中学...）
-            if (!matchedSchool && provSel && window._regionsTree && window._regionsTree.length) {
-                const citySel = document.getElementById('importSrcCity');
-                for (const r of window._regionsTree) {
-                    if (!r.province || !n.includes(r.province)) continue;
-                    if (!provSel.value) provSel.value = r.province;
+            if (!matchedSchool && provSel) {
+                const geo = detectSourceGeoContext(n);
+                if (geo.province) {
+                    if (!provSel.value) provSel.value = geo.province;
                     fillCitySelect();
-                    if (r.cities && citySel) {
-                        for (const c of r.cities) {
-                            if (c && n.includes(c)) {
-                                citySel.value = c;
-                                window._lastSrcCity = c;
-                                break;
-                            }
-                        }
-                    }
-                    window._lastSrcProvince = r.province;
-                    break;
+                    const citySel = document.getElementById('importSrcCity');
+                    if (geo.city && citySel) citySel.value = geo.city;
+                    window._lastSrcProvince = geo.province;
+                    window._lastSrcCity = geo.city || '';
                 }
             }
             // 学年联动：上学期→学年度第一年，下学期→学年度第二年
@@ -9138,6 +9173,142 @@
                     yearEl.value = window._srcYearPair[0];
                 }
             }
+        }
+
+        // ===== 文件名学校匹配：别名归一化 + 省/市上下文消歧 =====
+        // 词库同时存口语简称与全称（哈师附 / 哈尔滨师范大学附属中学），文件名却常写
+        // 另一种缩写（哈师大附中），只比对 name 会漏配。且「省实验」在吉林/黑龙江各
+        // 有一所，裸最长匹配按词库顺序取第一个，会把黑龙江卷归到吉林——文件名里出现
+        // 省份时必须强制同省，仍不唯一则不猜、留给用户手选。
+        const SCHOOL_ADMIN_SUFFIX_RE = /(?:省|市|自治区|特别行政区|地区|盟)$/;
+
+        function normalizeSchoolAlias(value) {
+            return String(value || '')
+                .replace(/\s+/g, '')
+                .replace(/师范大学/g, '师大')
+                .replace(/师范学院/g, '师院')
+                .replace(/附属高级中学/g, '附中')
+                .replace(/附属中学/g, '附中')
+                .replace(/大学/g, '大')
+                .replace(/学院/g, '院')
+                .replace(/附属/g, '附');
+        }
+
+        function schoolMatchKeys(school) {
+            if (!school) return [];
+            const raw = [school.name, school.short_name, school.full_name]
+                .map((v) => String(v || '').trim())
+                .filter(Boolean);
+            const keys = new Set(raw);
+            const city = String(school.city || '').replace(SCHOOL_ADMIN_SUFFIX_RE, '');
+            const province = String(school.province || '').replace(SCHOOL_ADMIN_SUFFIX_RE, '');
+            for (const name of raw) {
+                const norm = normalizeSchoolAlias(name);
+                if (norm) keys.add(norm);
+                // 全称 → 城市缩写：哈尔滨师范大学附属中学 → 哈尔滨师大附中 → 哈师大附中
+                if (city.length >= 2 && norm.includes(city)) {
+                    keys.add(norm.replace(city, city.charAt(0)));
+                }
+                if (province.length >= 2 && norm.includes(province)) {
+                    keys.add(norm.replace(province, province.charAt(0)));
+                }
+                const noAdmin = norm.replace(/省|市|自治区/g, '');
+                if (noAdmin.length >= 3) keys.add(noAdmin);
+            }
+            // 词库确有「德强」这类两字简称，过滤门槛放到 2；更短的会误伤「一中」等通用词。
+            return Array.from(keys).filter((k) => k.length >= 2);
+        }
+
+        // 「吉林」既是省名也是市名：短名紧跟「省/自治区」时只算省，不算市。
+        function textMentionsPlace(text, full, short) {
+            if (!full) return false;
+            if (text.includes(full)) return true;
+            if (!short || short.length < 2 || !text.includes(short)) return false;
+            let idx = text.indexOf(short);
+            while (idx >= 0) {
+                const tail = text.slice(idx + short.length, idx + short.length + 3);
+                if (!/^(?:省|自治区)/.test(tail)) return true;
+                idx = text.indexOf(short, idx + 1);
+            }
+            return false;
+        }
+
+        function detectSourceGeoContext(text) {
+            const t = String(text || '');
+            const provinces = new Set();
+            const cities = new Set();
+            const dict = window._schoolsDict || [];
+            for (const s of dict) {
+                if (s && s.province) provinces.add(s.province);
+                if (s && s.city) cities.add(s.city);
+            }
+            for (const r of (window._regionsTree || [])) {
+                if (r && r.province) provinces.add(r.province);
+                for (const c of ((r && r.cities) || [])) cities.add(c);
+            }
+            const pick = (values, allowShort) => Array.from(values)
+                .filter((v) => v && textMentionsPlace(t, v, allowShort ? v.replace(SCHOOL_ADMIN_SUFFIX_RE, '') : ''))
+                .sort((a, b) => b.length - a.length);
+            let province = pick(provinces, true)[0] || '';
+            const city = pick(cities, true)[0] || '';
+            if (!province && city) {
+                const shortCity = city.replace(SCHOOL_ADMIN_SUFFIX_RE, '');
+                const node = (window._regionsTree || []).find((r) => r && ((r.cities || []).includes(city)
+                    || (r.cities || []).some((c) => String(c || '').replace(SCHOOL_ADMIN_SUFFIX_RE, '') === shortCity)));
+                if (node && node.province) province = node.province;
+                else {
+                    const school = dict.find((s) => s && s.city === city && s.province);
+                    if (school) province = school.province;
+                }
+            }
+            return { province, city };
+        }
+
+        function matchSchoolFromFilename(text) {
+            const t = String(text || '');
+            const dict = window._schoolsDict || [];
+            if (!t || !dict.length) return null;
+            const geo = detectSourceGeoContext(t);
+            const applyGeo = (items) => {
+                if (geo.province) {
+                    // 文件名明确写了省 → 强制同省，绝不跨省猜同名学校
+                    return items.filter((it) => (it.school.province || '') === geo.province);
+                }
+                if (geo.city) {
+                    const same = items.filter((it) => (it.school.city || '') === geo.city);
+                    if (same.length) return same;
+                }
+                return items;
+            };
+            const scored = [];
+            for (const school of dict) {
+                let bestKey = '';
+                for (const key of schoolMatchKeys(school)) {
+                    if (t.includes(key) && key.length > bestKey.length) bestKey = key;
+                }
+                if (bestKey) scored.push({ school, len: bestKey.length });
+            }
+            let pool = applyGeo(scored);
+            if (!pool.length) {
+                // 别名/全称都没命中，再按共同后缀模糊召回（「哈师大附中」→「师大附中」），
+                // 只有省/市上下文能筛到唯一候选时才采用。
+                const fuzzy = [];
+                for (const school of dict) {
+                    const hit = schoolMatchKeys(school)
+                        .some((k) => k.includes('师大附中') && t.includes('师大附中'));
+                    if (hit) fuzzy.push({ school, len: 0 });
+                }
+                pool = applyGeo(fuzzy);
+                return pool.length === 1 ? pool[0].school : null;
+            }
+            const maxLen = Math.max(...pool.map((it) => it.len));
+            const top = pool.filter((it) => it.len === maxLen);
+            const unique = [];
+            for (const it of top) {
+                if (!unique.some((u) => u.school === it.school)) unique.push(it);
+            }
+            // 同长度多义（两所「省实验」）且没有省/市上下文 → 不猜，留给用户手选。
+            return unique.length === 1 ? unique[0].school : null;
         }
 
         function buildStandardPaperTitle() {
